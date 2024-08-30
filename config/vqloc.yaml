@@ -1,0 +1,61 @@
+defaults:
+  - train: augments
+  - model: vqloc
+  - base
+  - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+exp:
+  exp_name: 'train'
+  exp_group: 'vq2d'
+  log_dir: './log'
+  workers: 8
+  print_freq: 100
+  vis_freq: 1000
+  eval_vis_freq: 100
+  seed: 42
+
+dataset:
+  name: 'ego4d_vq2d'
+  name_val: 'ego4d_vq2d'
+  query_size: [448, 448]
+  clip_size: [448, 448]  # height, width
+  clip_num_frames: 30
+  frame_interval: 1
+  query_padding: False
+  query_square: True  # then, what about queries with extreme aspect ratios?
+  padding_value: 'zero'
+
+model:
+  query_size: ${dataset.query_size}
+  clip_size_fine: ${dataset.clip_size_fine}
+  clip_size_coarse: ${dataset.clip_size_coarse}
+  clip_num_frames: ${dataset.clip_num_frames}
+
+train:
+  resume: True
+  batch_size: 4
+  total_iteration: 60000
+  lr: 0.0003
+  weight_decay: 0.005
+  scheduler_warmup_iter: 1000
+  scheduler_milestones: [7000, 14000, 20000, 25000]
+  scheduler_gamma: 0.3
+  grad_max: 20.0
+  accumulation_step: 1
+  use_hnm: False
+  use_query_roi: False
+  frame_flipped_inference: False
+
+test:
+  batch_size: 4
+  compute_metric: True
+  fg_threshold: 0.5
+
+
+hydra:
+  run:
+    # `batch_dir` will be replaced with 'debug' if within srun, 'batch' if within sbatch.
+    # It is the registered resolver. See run.py.
+    dir: ./outputs/${batch_dir:}/${now:%Y-%m-%d}/${now:%H-%M-%S}

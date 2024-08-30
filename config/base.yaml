@@ -1,0 +1,55 @@
+defaults:
+  - _self_
+  - train: augments
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
+
+trainer:
+  ##### trainer #####
+  detect_anomaly: True
+  max_epochs: 100
+  total_iteration: 60000   # minimum of those
+  accumulate_grad_batches: 1
+  gpus: 1
+  log_every_n_steps: 1
+  auto_lr_find: False
+  precision: bf16
+  gradient_clip_val: 1.0
+  deterministic: True
+  random_seed: 42
+  ##### ddp #####
+  find_unused_parameters: False
+
+dataset:
+  ###### torch #####
+  num_workers: 8
+  prefetch_factor: 16
+  pin_memory: True
+  persistent_workers: True
+  ##### custom #####
+  num_frames: 30
+  frame_interval: 1
+  segment_size: [448, 448]  # height, width
+  query_size: [448, 448]  # height, width
+  query_padding: False
+  query_square: True
+  padding_value: 'zero'  # zero or mean
+
+cpt_path: './cpt_best_prob.pth.tar'
+
+optim:
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 0.0003
+    weight_decay: 0.005
+  scheduler_warmup_iter: 1000
+  scheduler_milestones: [7000, 14000, 20000, 25000]
+  scheduler_gamma: 0.3
+  grad_max: 20.0
+
+
+hydra:
+  run:
+    # `batch_dir` will be replaced with 'debug' if within srun, 'batch' if within sbatch.
+    # It is the registered resolver. See run.py.
+    dir: ./outputs/${batch_dir:}/${now:%Y-%m-%d}/${now:%H-%M-%S}

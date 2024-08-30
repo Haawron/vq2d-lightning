@@ -1,0 +1,16 @@
+{
+    "exclude": [
+        "__pycache__",
+        "jsons/",
+        "weights/",
+        "samples/",
+        "*.egg-info/",
+        "build/",
+        "logs/",
+        "saved*",
+        "results/",
+        "multirun/",
+        "wandb/",
+        "*.sif",
+    ]
+}

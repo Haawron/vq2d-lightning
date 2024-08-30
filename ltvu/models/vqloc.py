@@ -1,9 +1,12 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 import math
 import torchvision
+
+from ltvu.loss import get_losses_with_anchor
+from ltvu.bbox_ops import bbox_xyhwToxyxy, recover_bbox, generate_anchor_boxes_on_regions
 
 
 base_sizes = torch.tensor([[16, 16], [32, 32], [64, 64], [128, 128]], dtype=torch.float32)    # 4 types of size
@@ -12,22 +15,21 @@ n_base_sizes = base_sizes.shape[0]
 n_aspect_ratios = aspect_ratios.shape[0]
 
 
-def build_backbone(config):
+def build_backbone(backbone_name, backbone_type):
     # TODO: 이거 허깅페이스로 바까버려
     # TODO: torch.compile 시도해보기
     # 웨이트 이름만 바꿔주면 되는 거 아닌가?
-    name, type = config.model.backbone_name, config.model.backbone_type
-    if name == 'dinov2':
-        assert type in ['vits14', 'vitb14', 'vitl14', 'vitg14']
+    if backbone_name == 'dinov2':
+        assert backbone_type in ['vits14', 'vitb14', 'vitl14', 'vitg14']
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
             warnings.simplefilter('ignore', FutureWarning)
-            backbone = torch.hub.load('facebookresearch/dinov2', 'dinov2_{}'.format(type))
+            backbone = torch.hub.load('facebookresearch/dinov2', 'dinov2_{}'.format(backbone_type))
         down_rate = 14
-        if type == 'vitb14':
+        if backbone_type == 'vitb14':
             backbone_dim = 768
-        elif type == 'vits14':
+        elif backbone_type == 'vits14':
             backbone_dim = 384
     return backbone, down_rate, backbone_dim
 
@@ -40,129 +42,49 @@ def BasicBlock_Conv2D(in_dim, out_dim):
     return module
 
 
-def bbox_xyhwToxyxy(bbox_xyhw):
-    '''
-    bbox_xyhw in shape [..., 4]
-    height and width of bbox is the full height and width
-    '''
-    bbox_center = bbox_xyhw[..., :2]
-    bbox_hw = bbox_xyhw[..., 2:]
-    bbox_hw_half = 0.5 * bbox_hw
-
-    bbox_xyxy = torch.cat([bbox_center - bbox_hw_half, bbox_center + bbox_hw_half], dim=-1)
-    return bbox_xyxy
-
-
-def recover_bbox(bbox, h, w):
-    '''
-    bbox torch tensor in shape [4] or [...,4], under torch axis
-    '''
-    bbox_cp = bbox.clone()
-    if len(bbox.shape) > 1: # [N,4]
-        bbox_cp[..., 0] *= h
-        bbox_cp[..., 1] *= w
-        bbox_cp[..., 2] *= h
-        bbox_cp[..., 3] *= w
-        return bbox_cp
-    else:
-        return torch.tensor([bbox_cp[0]*h, bbox_cp[1]*w, bbox_cp[2]*h, bbox_cp[3]*w])
-
-
-def generate_anchor_boxes(base_sizes, aspect_ratios, dtype=torch.float32, device='cpu'):
-    """
-    Generate a set of anchor boxes with different sizes and aspect ratios.
-
-    Arguments:
-    base_sizes -- torch.Tensor of shape [N,2], containing N base sizes for the anchor boxes
-    aspect_ratios -- torch.Tensor of shape [M], containing M aspect ratios for each base size
-    dtype -- the data type of the output tensor
-    device -- the device of the output tensor
-
-    Returns:
-    anchor_boxes -- torch.Tensor of shape [N*M,4], containing N*M anchor boxes represented as (center_h, center_w, box_h, box_w)
-    """
-
-    num_base_sizes = base_sizes.shape[0]
-    num_aspect_ratios = aspect_ratios.shape[0]
-
-    # Generate base anchor boxes
-    base_boxes = torch.zeros((num_base_sizes * num_aspect_ratios, 4), dtype=dtype, device=device)
-    for i in range(num_base_sizes):
-        for j in range(num_aspect_ratios):
-            w = torch.sqrt(base_sizes[i, 0] * base_sizes[i, 1] / aspect_ratios[j])
-            h = aspect_ratios[j] * w
-            idx = i * num_aspect_ratios + j
-            base_boxes[idx] = torch.tensor([0, 0, h, w], dtype=dtype, device=device)
-
-    return base_boxes
-
-
-def generate_anchor_boxes_on_regions(
-    image_size,
-    num_regions,
-    base_sizes=torch.tensor([[16, 16], [32, 32], [64, 64], [128, 128]], dtype=torch.float32),
-    aspect_ratios=torch.tensor([0.5, 1, 2], dtype=torch.float32),
-    dtype=torch.float32,
-    device='cpu'
-):
-    """
-    Generate a set of anchor boxes with different sizes and aspect ratios for each region of a split image.
-
-    Arguments:
-    image_size -- tuple of two integers, the height and width of the original image
-    num_regions -- tuple of two integers, the number of regions in the height and width directions
-    aspect_ratios -- torch.Tensor of shape [M], containing M aspect ratios for each base size
-    dtype -- the data type of the output tensor
-    device -- the device of the output tensor
-
-    Returns:
-    anchor_boxes -- torch.Tensor of shape [R^2*N*M,4], containing R^2*N*M anchor boxes represented as (center_h, center_w, box_h, box_w)
-    """
-
-    # Calculate the base sizes for each region
-    region_size = (image_size[0] / num_regions[0], image_size[1] / num_regions[1])
-
-    # Calculate the anchor boxes for each region
-    anchor_boxes = torch.empty((0, 4), dtype=dtype, device=device)
-    for i in range(num_regions[0]):
-        for j in range(num_regions[1]):
-            center_h = (i + 0.5) * region_size[0]
-            center_w = (j + 0.5) * region_size[1]
-            base_boxes = generate_anchor_boxes(base_sizes, aspect_ratios, dtype=dtype, device=device)
-            base_boxes[:, 0] += center_h
-            base_boxes[:, 1] += center_w
-            anchor_boxes = torch.cat([anchor_boxes, base_boxes], dim=0)
-
-    return anchor_boxes
-
-
 class ClipMatcher(nn.Module):
-    def __init__(self, config) -> None:
+    def __init__(self,
+        backbone_name = 'dinov2',
+        backbone_type = 'vitb14',
+        fix_backbone = True,
+        window_transformer = 5,  # sec
+        resolution_transformer = 8,
+        num_anchor_regions = 16,
+        num_layers_st_transformer = 3,
+        positive_threshold = .2,
+        positive_topk = 5,
+
+        query_size = 448,
+        clip_size_fine = 448,
+        clip_size_coarse = 448,
+        clip_num_frames = 30,
+    ) -> None:
         super().__init__()
-        self.config = config
 
-        self.backbone, self.down_rate, self.backbone_dim = build_backbone(config)
-        self.backbone_name = config.model.backbone_name
+        self.backbone, self.down_rate, self.backbone_dim = build_backbone(backbone_name, backbone_type)
+        self.backbone_name = backbone_name
 
-        self.query_size = config.dataset.query_size
-        self.clip_size_fine = config.dataset.clip_size_fine
-        self.clip_size_coarse = config.dataset.clip_size_coarse
+        self.query_size = query_size
+        self.clip_size_fine = clip_size_fine
+        self.clip_size_coarse = clip_size_coarse
 
         self.query_feat_size = self.query_size // self.down_rate
         self.clip_feat_size_fine = self.clip_size_fine // self.down_rate
         self.clip_feat_size_coarse = self.clip_size_coarse // self.down_rate
 
-        self.type_transformer = config.model.type_transformer
-        assert self.type_transformer in ['local', 'global']
-        self.window_transformer = config.model.window_transformer
-        self.resolution_transformer = config.model.resolution_transformer
-        self.resolution_anchor_feat = config.model.resolution_anchor_feat
+        self.window_transformer = window_transformer
+        self.resolution_transformer = resolution_transformer
+        self.num_anchor_regions = num_anchor_regions
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
-            num_regions=[self.resolution_anchor_feat, self.resolution_anchor_feat])
+            num_regions=[self.num_anchor_regions, self.num_anchor_regions])
         self.anchors_xyhw = self.anchors_xyhw / self.clip_size_coarse   # [R^2*N*M,4], value range [0,1], represented by [c_x,c_y,h,w] in torch axis
         self.anchors_xyxy = bbox_xyhwToxyxy(self.anchors_xyhw)
+
+        if fix_backbone:  # TODO: compile
+            for param in self.backbone.parameters():
+                param.requires_grad = False
 
         # query down heads
         self.query_down_heads = []
@@ -214,13 +136,13 @@ class ClipMatcher(nn.Module):
         self.down_heads = nn.ModuleList(self.down_heads)
 
         # spatial-temporal PE
-        self.pe_3d = torch.zeros(1, config.dataset.clip_num_frames * self.resolution_transformer ** 2, 256)
+        self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, 256)
         self.pe_3d = nn.parameter.Parameter(self.pe_3d)
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
-        self.num_transformer = config.model.num_transformer
-        for _ in range(self.num_transformer):
+        self.num_layers_st_transformer = num_layers_st_transformer
+        for _ in range(self.num_layers_st_transformer):
             self.feat_corr_transformer.append(
                     torch.nn.TransformerEncoderLayer(
                         d_model=256,
@@ -233,7 +155,7 @@ class ClipMatcher(nn.Module):
         self.temporal_mask = None
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.resolution_anchor_feat)
+        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
 
     def init_weights_linear(self, m):
         if type(m) == nn.Linear:
@@ -261,17 +183,22 @@ class ClipMatcher(nn.Module):
             if return_h_w:
                 return out, h, w
             return out
-        elif self.backbone_name == 'mae':
-            b, _, h_origin, w_origin = x.shape
-            out = self.backbone.forward_features(x) # [b,1+h*w,c]
-            h, w = int(h_origin / self.backbone.patch_embed.patch_size[0]), int(w_origin / self.backbone.patch_embed.patch_size[1])
-            dim = out.shape[-1]
-            out = out[:,1:].reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
-            out = F.interpolate(out, size=(16,16), mode='bilinear')
-            if return_h_w:
-                return out, h, w
-            return out
 
+    def get_mask(self, src, t):
+        if not torch.is_tensor(self.temporal_mask):
+            hw = src.shape[1] // t
+            thw = src.shape[1]
+            mask = torch.ones(thw, thw).float() * float('-inf')
+
+            window_size = self.window_transformer // 2
+
+            for i in range(t):
+                min_idx = max(0, (i-window_size)*hw)
+                max_idx = min(thw, (i+window_size+1)*hw)
+                mask[i*hw: (i+1)*hw, min_idx: max_idx] = 0.0
+            mask = mask.to(src.device)
+            self.temporal_mask = mask
+        return self.temporal_mask
 
     def replicate_for_hnm(self, query_feat, clip_feat):
         '''
@@ -297,29 +224,27 @@ class ClipMatcher(nn.Module):
         return new_clip_feat, new_query_feat
 
 
-    def forward(self, clip, query, query_frame_bbox=None, training=False, fix_backbone=True):
+    def forward(
+        self,
+        segment,
+        query,
+        before_query: torch.Tensor[bool] = None,
+        gt_bboxes = None,
+        gt_prob = None,
+        training = False,
+        **kwargs
+    ):
         '''
         clip: in shape [b,t,c,h,w]
         query: in shape [b,c,h2,w2]
         '''
-        b, t = clip.shape[:2]
-        clip = rearrange(clip, 'b t c h w -> (b t) c h w')
+        b, t = segment.shape[:2]
+        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
 
         # get backbone features
-        if fix_backbone:
-            with torch.no_grad():
-                query_feat = self.extract_feature(query)
-                clip_feat = self.extract_feature(clip)
-        else:
-            query_feat = self.extract_feature(query)        # [b c h w]
-            clip_feat = self.extract_feature(clip)          # (b t) c h w
+        query_feat = self.extract_feature(query)        # [b c h w]
+        clip_feat = self.extract_feature(segment)          # (b t) c h w
         h, w = clip_feat.shape[-2:]
-
-        if torch.is_tensor(query_frame_bbox) and self.config.train.use_query_roi:
-            idx_tensor = torch.arange(b, device=clip.device).float().view(-1, 1)
-            query_frame_bbox = recover_bbox(query_frame_bbox, h, w)
-            roi_bbox = torch.cat([idx_tensor, query_frame_bbox], dim=1)
-            query_feat = torchvision.ops.roi_align(query_feat, roi_bbox, (h,w))
 
         # reduce channel size
         all_feat = torch.cat([query_feat, clip_feat], dim=0)
@@ -328,14 +253,15 @@ class ClipMatcher(nn.Module):
 
         if self.config.train.use_hnm and training:
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
-            b = b**2
+            b **= 2
 
         # find spatial correspondence between query-frame
-        query_feat = rearrange(query_feat.unsqueeze(1).repeat(1,t,1,1,1), 'b t c h w -> (b t) (h w) c')  # [b*t,n,c]
-        clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')                                         # [b*t,n,c]
+        query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c] # DEBUG: same as below
+        # query_feat = rearrange(query_feat.unsqueeze(1).repeat(1,t,1,1,1), 'b t c h w -> (b t) (h w) c')# [b*t,n,c]
+        clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')            # [b*t,n,c]
         for layer in self.CQ_corr_transformer:
-            clip_feat = layer(clip_feat, query_feat)                                                     # [b*t,n,c]
-        clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)                               # [b*t,c,h,w]
+            clip_feat = layer(clip_feat, query_feat)                        # [b*t,n,c]
+        clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
 
         # down-size features and find spatial-temporal correspondence
         for head in self.down_heads:
@@ -363,32 +289,32 @@ class ClipMatcher(nn.Module):
         hw = 0.5 * hw                                                           # anchor's hw is defined as real hw
         bbox = torch.cat([center - hw, center + hw], dim=-1)                    # [b,t,N,4]
 
-        result = {
+        results = {
             'center': center,           # [b,t,N,2]
             'hw': hw,                   # [b,t,N,2]
             'bbox': bbox,               # [b,t,N,4]
             'prob': prob.squeeze(-1),   # [b,t,N]
             'anchor': anchors_xyxy      # [1,1,N,4]
         }
-        return result
 
+        if not training:
+            return results
 
-    def get_mask(self, src, t):
-        if not torch.is_tensor(self.temporal_mask):
-            hw = src.shape[1] // t
-            thw = src.shape[1]
-            mask = torch.ones(thw, thw).float() * float('-inf')
-
-            window_size = self.window_transformer // 2
-
-            for i in range(t):
-                min_idx = max(0, (i-window_size)*hw)
-                max_idx = min(thw, (i+window_size+1)*hw)
-                mask[i*hw: (i+1)*hw, min_idx: max_idx] = 0.0
-            mask = mask.to(src.device)
-            self.temporal_mask = mask
-        return self.temporal_mask
-
+        else:
+            gts = {
+                'before_query': before_query,  # [b,t]
+                'clip_with_bbox': gt_prob,  # [b,t]
+                'clip_bbox': gt_bboxes,  # [b,t,4]
+            }
+            loss_dict, preds_top, gts = get_losses_with_anchor(results, gts)
+            total_loss = sum(loss_dict[k.replace('loss_', 'weight_')] * v for k, v in loss_dict.items() if 'loss_' in k)
+            loss_dict = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in loss_dict.items()}
+            return (
+                total_loss,
+                loss_dict,  # losses start with 'loss_'
+                preds_top,  # bbox: [b,t,4], prob: [b,t]
+                gts,        # gts with hw, center computed
+            )
 
 
 class Head(nn.Module):

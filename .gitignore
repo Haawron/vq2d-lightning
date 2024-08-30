@@ -1,0 +1,8 @@
+*.tar
+*.pt
+*.pth
+outputs/
+wandb/
+logs/
+*.sif
+__pycache__/

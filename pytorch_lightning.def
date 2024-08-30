@@ -1,0 +1,75 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%labels
+    Maintainer Hyogun Lee
+
+%files
+    ~/.zshrc /root/.zshrc
+
+%post
+    # SINGULARITY_CACHEDIR=/data/$USER/.singularity singularity build --fakeroot pytorch_lightning.sif pytorch_lightning.def
+
+    # Timezone setting
+    export TZ='Asia/Seoul'
+    export DEBIAN_FRONTEND=noninteractive
+    # Update package list and install dependencies
+    sed -i 's|http://archive.ubuntu.com/ubuntu/|http://mirror.kakao.com/ubuntu/|g' /etc/apt/sources.list
+    apt-get update && apt-get install -y \
+        software-properties-common \
+        wget \
+        build-essential \
+        libssl-dev \
+        zlib1g-dev \
+        libbz2-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        whiptail \
+        curl \
+        libncursesw5-dev \
+        xz-utils \
+        tk-dev \
+        libxml2-dev \
+        libxmlsec1-dev \
+        libffi-dev \
+        liblzma-dev \
+        git \
+        zsh \
+        && apt-get clean
+
+    # Add deadsnakes PPA and install Python 3.12
+    add-apt-repository ppa:deadsnakes/ppa -y
+    apt-get update && apt-get install -y python3.12
+    # install pip
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12
+
+    # Upgrade pip
+    # --root-user-action ignore: I know what I'm doing
+    python3.12 -m pip install --root-user-action ignore --upgrade pip
+
+    # Install PyTorch 2 and Lightning 2
+    python3.12 -m pip install --root-user-action ignore torch --index-url https://download.pytorch.org/whl/cu118
+    python3.12 -m pip install --root-user-action ignore torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    python3.12 -m pip install --root-user-action ignore lightning hydra-core
+    python3.12 -m pip install --root-user-action ignore ipykernel jupyterlab matplotlib seaborn pandas scipy \
+        ffmpeg-python transformers einops timm av opencv-python decord sentence-transformers tqdm \
+        python-dotenv pytorchvideo
+
+%environment
+    export PATH=/usr/bin/python3.12:$PATH
+    export PYTHONPATH=/usr/local/lib/python3.12/dist-packages:$PYTHONPATH
+
+%test
+    # Basic tests to verify installation
+    python3.12 --version
+    python3.12 -m pip show torch
+    python3.12 -m pip show lightning
+
+%runscript
+    # Command to run when the container is executed
+    exec python3.12 "$@"
+
+%help
+    This Singularity container includes Python 3.12, PyTorch 2, and Lightning 2.
+    To run a Python script with this container, use:
+    singularity run <container_name>.sif <your_script>.py
