@@ -1,33 +1,57 @@
 defaults:
   - _self_
   - train: augments
+  - model: vqloc
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
+random_seed: 42
+
+# resolvers should be evaluated only once
+jid: ${oc.env:SLURM_JOB_ID}
+runtime_outdir: ${runtime_outdir:}
+job_type: ${job_type:}  # debug or batch
+YY: ${now:%Y}
+mm: ${now:%m}  # month
+dd: ${now:%d}  # day
+
+run_type: train  # train, val, test, predict=eval
+
+
 trainer:
-  ##### trainer #####
-  detect_anomaly: True
+  ##### directly affects to performance #####
+  devices: 'auto'  # maximum available
   max_epochs: 100
-  total_iteration: 60000   # minimum of those
+  max_steps: 60000   # minimum of those
   accumulate_grad_batches: 1
-  gpus: 1
+  precision: bf16-mixed
+  gradient_clip_val: 20.
+  benchmark: True
+  deterministic: False
+  ##### logging or automl #####
   log_every_n_steps: 1
-  auto_lr_find: False
-  precision: bf16
-  gradient_clip_val: 1.0
-  deterministic: True
-  random_seed: 42
-  ##### ddp #####
-  find_unused_parameters: False
+  logger:
+    - _target_: pytorch_lightning.loggers.WandbLogger
+      project: 'ltvu++'
+      entity: 'team-khu'
+      group: 'smoke_${YY}${mm}${dd}'  # for grouping runs (does not mean an organization)
+      job_type: ${job_type}  # train, eval, test, predict, debug, for filtering
+      name: hg-${jid}  # displayname
+      tags: []  # for filtering
+      notes: null  # real note, a log string
+      save_dir: ${runtime_outdir}/wandb
+      log_model: False    # as we use custom checkpointing
 
 dataset:
   ###### torch #####
+  batch_size: 4
   num_workers: 8
-  prefetch_factor: 16
+  prefetch_factor: 2
   pin_memory: True
   persistent_workers: True
-  ##### custom #####
-  num_frames: 30
+  ##### project-related #####
+  clips_dir: '/data/datasets/ego4d_data/v2/vq2d_clips_448'  # clips should be located like: THISPATH/{clip_uid}.mp4
+  num_frames: 32
   frame_interval: 1
   segment_size: [448, 448]  # height, width
   query_size: [448, 448]  # height, width
@@ -35,21 +59,15 @@ dataset:
   query_square: True
   padding_value: 'zero'  # zero or mean
 
-cpt_path: './cpt_best_prob.pth.tar'
-
 optim:
   optimizer:
     _target_: torch.optim.AdamW
     lr: 0.0003
     weight_decay: 0.005
-  scheduler_warmup_iter: 1000
-  scheduler_milestones: [7000, 14000, 20000, 25000]
-  scheduler_gamma: 0.3
-  grad_max: 20.0
-
+  lr_scheduler:
+    warmup_iter: 1000
+    max_steps: ${trainer.max_steps}
 
 hydra:
   run:
-    # `batch_dir` will be replaced with 'debug' if within srun, 'batch' if within sbatch.
-    # It is the registered resolver. See run.py.
-    dir: ./outputs/${batch_dir:}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./outputs/${job_type}/${YY}-${mm}-${dd}/${jid}

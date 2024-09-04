@@ -4,9 +4,10 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
 import torchvision
+from transformers import Dinov2Model
 
 from ltvu.loss import get_losses_with_anchor
-from ltvu.bbox_ops import bbox_xyhwToxyxy, recover_bbox, generate_anchor_boxes_on_regions
+from ltvu.bbox_ops import bbox_xyhwToxyxy, generate_anchor_boxes_on_regions
 
 
 base_sizes = torch.tensor([[16, 16], [32, 32], [64, 64], [128, 128]], dtype=torch.float32)    # 4 types of size
@@ -15,10 +16,18 @@ n_base_sizes = base_sizes.shape[0]
 n_aspect_ratios = aspect_ratios.shape[0]
 
 
+def detach_dict(d):
+    # recursively detach all tensors in a dict
+    for k, v in d.items():
+        if isinstance(v, dict):
+            d[k] = detach_dict(v)
+        elif isinstance(v, torch.Tensor):
+            d[k] = v.detach()
+    return d
+
+
 def build_backbone(backbone_name, backbone_type):
     # TODO: 이거 허깅페이스로 바까버려
-    # TODO: torch.compile 시도해보기
-    # 웨이트 이름만 바꿔주면 되는 거 아닌가?
     if backbone_name == 'dinov2':
         assert backbone_type in ['vits14', 'vitb14', 'vitl14', 'vitg14']
         import warnings
@@ -31,6 +40,10 @@ def build_backbone(backbone_name, backbone_type):
             backbone_dim = 768
         elif backbone_type == 'vits14':
             backbone_dim = 384
+    elif backbone_name == 'dinov2-hf':
+        backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
+        down_rate = 14
+        backbone_dim = 768
     return backbone, down_rate, backbone_dim
 
 
@@ -51,8 +64,6 @@ class ClipMatcher(nn.Module):
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
-        positive_threshold = .2,
-        positive_topk = 5,
 
         query_size = 448,
         clip_size_fine = 448,
@@ -228,15 +239,18 @@ class ClipMatcher(nn.Module):
         self,
         segment,
         query,
-        before_query: torch.Tensor[bool] = None,
+        before_query_mask: torch.Tensor = None,
         gt_bboxes = None,
-        gt_prob = None,
-        training = False,
+        gt_probs = None,
+        compute_loss = False,
+        use_hnm = False,
         **kwargs
     ):
         '''
         clip: in shape [b,t,c,h,w]
         query: in shape [b,c,h2,w2]
+        before_query_mask: 
+        gt_bboxes: 
         '''
         b, t = segment.shape[:2]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
@@ -251,7 +265,7 @@ class ClipMatcher(nn.Module):
         all_feat = self.reduce(all_feat)
         query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
 
-        if self.config.train.use_hnm and training:
+        if use_hnm and compute_loss:
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
             b **= 2
 
@@ -289,32 +303,49 @@ class ClipMatcher(nn.Module):
         hw = 0.5 * hw                                                           # anchor's hw is defined as real hw
         bbox = torch.cat([center - hw, center + hw], dim=-1)                    # [b,t,N,4]
 
-        results = {
+        pred_dict = {
             'center': center,           # [b,t,N,2]
             'hw': hw,                   # [b,t,N,2]
             'bbox': bbox,               # [b,t,N,4]
             'prob': prob.squeeze(-1),   # [b,t,N]
             'anchor': anchors_xyxy      # [1,1,N,4]
         }
+        output_dict = {'pred_dict': pred_dict}
 
-        if not training:
-            return results
-
-        else:
+        if compute_loss:
             gts = {
-                'before_query': before_query,  # [b,t]
-                'clip_with_bbox': gt_prob,  # [b,t]
-                'clip_bbox': gt_bboxes,  # [b,t,4]
+                'before_query': before_query_mask,  # [b,t]
+                'clip_with_bbox': gt_probs,         # [b,t]
+                'clip_bbox': gt_bboxes,             # [b,t,4]
+                # 'hw': None,                     # [b,t,2]
+                # 'center': None,                 # [b,t,2]
             }
-            loss_dict, preds_top, gts = get_losses_with_anchor(results, gts)
+            # acutal loss calculation
+            loss_dict, preds_top, gts = get_losses_with_anchor(pred_dict, gts)
             total_loss = sum(loss_dict[k.replace('loss_', 'weight_')] * v for k, v in loss_dict.items() if 'loss_' in k)
-            loss_dict = {k: v.detach() if isinstance(v, torch.Tensor) else v for k, v in loss_dict.items()}
-            return (
-                total_loss,
-                loss_dict,  # losses start with 'loss_'
-                preds_top,  # bbox: [b,t,4], prob: [b,t]
-                gts,        # gts with hw, center computed
-            )
+            output_dict.update({'loss': total_loss})
+
+            # for logging
+            loss_dict = detach_dict(loss_dict)
+            preds_top = detach_dict(preds_top)
+            log_dict = {
+                'loss': total_loss.detach(),
+                'loss_bbox_center': loss_dict['loss_bbox_center'].mean(),
+                'loss_bbox_hw': loss_dict['loss_bbox_hw'].mean(),
+                'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
+                'loss_prob': loss_dict['loss_prob'].mean(),
+                'iou': loss_dict['iou'].mean(),
+                'giou': loss_dict['giou'].mean(),
+            }
+            output_dict.update({'log_dict': log_dict})
+            info_dict = {
+                'loss_dict': loss_dict,     # losses starting with 'loss_', weights starting with 'weight_', iou, giou
+                'preds_top': preds_top,     # bbox: [b,t,4], prob: [b,t]
+                'gts': gts,                 # gts with hw, center computed
+            }
+            output_dict.update({'info_dict': info_dict})
+
+        return output_dict
 
 
 class Head(nn.Module):

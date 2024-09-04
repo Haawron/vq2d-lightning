@@ -172,6 +172,7 @@ def get_losses_with_anchor(
     if torch.sum(positive.float()).item() == 0:
         positive[:1] = True
     loss_mask = positive.float().unsqueeze(1)                                    # [b*t*N,1]
+    # DEBUG: why didn't mask before_query here?
 
     # anchor box regression loss
     if torch.sum(positive.float()).item() > 0:
@@ -209,14 +210,16 @@ def get_losses_with_anchor(
         'loss_bbox_hw': loss_hw,
         'loss_bbox_giou': loss_giou,
         'loss_prob': loss_prob,
+
         # weights
         'weight_bbox_center': weight_bbox_center,
         'weight_bbox_hw': weight_bbox_hw,
         'weight_bbox_giou': weight_bbox_giou,
         'weight_prob': weight_prob,
+
         # information
         'iou': iou.detach(),
-        'giou': giou.detach()
+        'giou': giou.detach(),
     }
 
     # get top prediction

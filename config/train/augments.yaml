@@ -1,7 +1,8 @@
 augments:
-  clip: True
+  segment: True
   query: False
-  clip_iter: -1  # iter to start clip augmentation
+  segment_iter: -1  # iter to start segment augmentation
+  segment_size: ${dataset.segment_size}
   prob_crop: 1.0
   crop_scale: 0.8
   crop_ratio_min: 0.8

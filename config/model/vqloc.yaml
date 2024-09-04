@@ -1,18 +1,23 @@
-_target_: project.models.vqloc.VQLoc
+_target_: ltvu.models.VQLOC
 backbone_name: 'dinov2'
 backbone_type: 'vitb14'
 fix_backbone: True
-num_transformer: 3
-resolution_transformer: 8
-resolution_anchor_feat: 16
-pe_transformer: 'zero'
 window_transformer: 5
-positive_threshold: 0.2
-positive_topk: 5
+resolution_transformer: 8
+num_anchor_regions: 16
+num_layers_st_transformer: 3
+# pe_transformer: 'zero'
 
-weight_bbox: 1.0
-weight_bbox_center: 1.0
-weight_bbox_hw: 1.0
-weight_bbox_ratio: 1.0
-weight_bbox_giou: 0.3
-weight_prob: 100.0
+query_size: ${dataset.query_size[0]}
+clip_size_fine: ${dataset.segment_size[0]}
+clip_size_coarse: ${dataset.segment_size[0]}
+clip_num_frames: ${dataset.num_frames}
+
+# positive_threshold: 0.2
+# positive_topk: 5
+# weight_bbox: 1.0
+# weight_bbox_center: 1.0
+# weight_bbox_hw: 1.0
+# weight_bbox_ratio: 1.0
+# weight_bbox_giou: 0.3
+# weight_prob: 100.0

@@ -1,8 +1,14 @@
 *.tar
 *.pt
 *.pth
-outputs/
-wandb/
-logs/
+*.zip
 *.sif
+/output
+/outputs
+/log
+/logs
+/wandb
+/visualization
+/samples
 __pycache__/
+/pyrightconfig.json
