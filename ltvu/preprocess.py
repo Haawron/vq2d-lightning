@@ -1,13 +1,23 @@
-import re
+import io
+import os
+import tarfile
 import json
+import time
 from collections import defaultdict
 from pathlib import Path
-import subprocess
 
+import torch
+import torch.utils.data
+import torch.utils.data.distributed
+
+import cv2
 import numpy as np
+from decord import VideoReader
+from PIL import Image
+from einops import rearrange
 from tqdm import tqdm
 
-from .dataset import shift_indices_to_clip_range
+from ltvu.dataset import shift_indices_to_clip_range
 
 
 REPORTED_INVALID_CLIP_UIDS = {
@@ -15,34 +25,7 @@ REPORTED_INVALID_CLIP_UIDS = {
 }
 
 
-def get_clip_fps(p_clip) -> int:
-    output = subprocess.check_output([
-        'ffprobe',
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries',
-        'stream=r_frame_rate',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(p_clip)]).decode().strip()
-    numer, denom = map(int, output.split('/'))
-    fps = np.round(numer / denom).astype(int).item()
-    return fps
-
-
-def get_frame_count(p_clip) -> int:
-    frame_count = int(subprocess.check_output([
-        'ffprobe',
-        '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries',
-        'stream=nb_frames',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(p_clip)]).decode().strip())
-    return frame_count
-
-
 def generate_flat_annotations_vq2d(all_anns):
-    P_CLIPS_DIR_FOR_CHECKING_VALIDITY = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448ss')
 
     def polish_bbox_dict(bbox: dict):
         key_map = {
@@ -61,9 +44,6 @@ def generate_flat_annotations_vq2d(all_anns):
                 continue
             clip_duration = ann_clip['video_end_sec'] - ann_clip['video_start_sec']
             clip_fps = ann_clip['clip_fps']
-            _p_clip = P_CLIPS_DIR_FOR_CHECKING_VALIDITY / f'{clip_uid}.mp4'
-            is_invalid_clip = all(not qset['is_valid'] for ann_annots in ann_clip['annotations'] for qset in ann_annots['query_sets'].values())
-            assert _p_clip.exists() or is_invalid_clip, f'Clip {clip_uid} is a valid clip but does not exist in {_p_clip.parent}.'
             for ann_annots in ann_clip['annotations']:
                 annotation_uid = ann_annots['annotation_uid']
                 for qset_id, qset in ann_annots['query_sets'].items():
@@ -91,243 +71,163 @@ def generate_flat_annotations_vq2d(all_anns):
     return flat_anns
 
 
-def extract_and_resize_frames(
-    p_clip, p_outdir_this_clip, s: int, e: int, short_side: int = 320, fps_orig: int = 5.
-) -> subprocess.Popen[bytes]:
-    """
-    Extracts frames from a video between specified indices, resizes them to a short-side of 320 pixels, 
-    and saves them in a specified directory with filenames following a zero-padded format.
+class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        short_side: int,
+        p_raw_clips_dir = Path('/data/datasets/ego4d_data/v2/clips'),
+        p_tarfiles_dir = Path('./outputs/frames'),
+    ):
+        super().__init__()
+        self.short_side = short_side
+        self.p_raw_clips_dir = p_raw_clips_dir  # FPS: any, resolution: Any
 
-    Parameters
-    ----------
-    p_clip : Path
-        Path to the input video file (e.g., MP4).
-    s : int
-        Starting frame index (0-based).
-    e : int
-        Ending frame index (0-based), inclusive.
-    p_outdir : Path
-        Directory where the output frames will be saved. The directory name must be a valid UUID.
+        p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in ['train', 'val']]
+        all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
+        clip2anns = defaultdict(list)
+        for ann in all_anns:
+            clip_uid = ann['clip_uid']
+            clip2anns[clip_uid].append(ann)
 
-    Raises
-    ------
-    AssertionError
-        If the `p_outdir` stem (basename) is not a valid UUID (length != 36).
-    CalledProcessError
-        If the `ffmpeg` subprocess fails.
-    
-    Notes
-    -----
-    The frames are extracted between indices `s` and `e` (inclusive), resized so that the shortest side
-    is 320 pixels, and saved as `frame_{index:07d}.jpg` in the specified output directory. 
-    The frame indices are adjusted to be 0-based.
+        self.all_anns = all_anns
+        self.clip_uids = sorted(clip2anns.keys())
+        self.clip2anns = clip2anns
+        self.p_tarfiles_dir = p_tarfiles_dir
+        self.p_tarfile = None  # per worker
+        # self.tar: tarfile.TarFile = None  # per worker
 
-    Examples
-    --------
-    >>> from pathlib import Path
-    >>> extract_frames(Path('input.mp4'), 100, 200, Path('/output_dir/uuid_dir'))
-    This will extract frames 100 to 200 from 'input.mp4', resize them, and save them as 'frame_0000100.jpg' to 'frame_0000200.jpg' in the output directory.
-    """
-    assert len(p_outdir_this_clip.stem) == 36, f'Output directory name must be a valid UUID: {p_outdir_this_clip}'
-    p_outdir_this_clip.mkdir(parents=True, exist_ok=True)
-    fps = get_clip_fps(p_clip)
-    frame_count = get_frame_count(p_clip)
-    stride = np.round(fps_orig / fps).astype(int).item()  # 1 or 6 in most cases
-    assert stride == 1
-    s, e = round(s / stride), round(e / stride)
-    e = np.clip(e, s + 1, frame_count - 1).item()  # ensure e > s
+    def __len__(self):
+        return len(self.clip_uids)
 
-    # N.B. don't remove existing frames here, as this function is called in parallel
+    def __getitem__(self, data_idx):
+        clip_uid = self.clip_uids[data_idx]
+        anns = self.clip2anns[clip_uid]
+        p_raw_clip = self.p_raw_clips_dir / f'{clip_uid}.mp4'
+        ss = self.short_side
 
-    command = [
-        'ffmpeg',
-        '-hide_banner', '-loglevel', 'error',  # shutup
-        '-i', str(p_clip),  # Input video file
-        '-vf', f"select='between(n\\,{s}\\,{e})',scale='if(gt(iw,ih),-1,{short_side}):if(gt(iw,ih),{short_side},-1)'",
-        '-vsync', 'vfr',  # Variable frame rate for syncing frames
-        str(p_outdir_this_clip / f'tmp_{s:07d}_%07d.jpg')  # Output frame format, idx is 1-based
-    ]
+        # get frame idxs to be extracted
+        ranges, vc_idxs, clip_len = [], [], 0
+        for ann in anns:
+            ranges.append(ann['response_track_valid_range'])  # inclusive
+            vc_idxs.append(ann['visual_crop']['fno'])
+            clip_len = max(clip_len, ann['query_frame'])
 
-    process = subprocess.Popen(command)
-    return process
+        # extend ranges as well as vc_idxs
+        ranges_extended = []
+        for s, e in ranges:  # extend 3 times
+            c, r = (s + e) // 2, (e - s + 1) // 2
+            r *= 3
+            s, e = min(c - r, s - 32), max(c + r, e + 32)  # 32: minimum clip length
+            s, e = shift_indices_to_clip_range((s, e), clip_len)  # adjust to clip range
+            ranges_extended.append((s, e))
+        for vc_idx in vc_idxs:
+            s, e = vc_idx - 6, vc_idx + 6
+            s, e = shift_indices_to_clip_range((s, e), clip_len)
+            ranges_extended.append((s, e))
 
+        # gather all frame idxs to be extracted
+        all_frame_idxs = set()
+        for s, e in ranges_extended:
+            all_frame_idxs.update(range(s, e + 1))
+        all_frame_idxs = np.array(sorted(all_frame_idxs))
 
-def process_for_single_clip(
-    p_fps5_clips_dir, p_out_frames_dir, clip_uid,
-    exts, num_clip_frames,
-    short_side=320, stride=1
-):
-    messages = []
-    p_clip = p_fps5_clips_dir / f'{clip_uid}.mp4'
-    if not p_clip.exists():
-        msg = f'Clip {clip_uid} does not exist.'
-        messages.append(msg)
-    else:
-        p_outdir_this_clip = p_out_frames_dir / clip_uid
-        p_outdir_this_clip.mkdir(parents=True, exist_ok=True)
+        # get video info
+        vr = VideoReader(str(p_raw_clip))
+        fps_raw = vr.get_avg_fps()  # might be 30
+        fps_ann = anns[0]['clip_fps']  # might be 5
+        stride = round(fps_raw / fps_ann)  # 6
 
-        for p_exist in p_outdir_this_clip.glob('*.jpg'):
-            p_exist.unlink()
-        assert len(list(p_outdir_this_clip.glob('*.jpg'))) == 0
+        # extract frames and resize!
+        raw_idxs = stride * all_frame_idxs
+        chunk_size = 128
+        tar = tarfile.open(self.p_tarfile, 'a')
+        for chidx in range(0, len(raw_idxs), chunk_size):
+            frame_idxs = all_frame_idxs[chidx: chidx + chunk_size]
+            frames: torch.Tensor = vr.get_batch(raw_idxs[chidx: chidx + chunk_size])    # [N, H, W, c]
+            frames = frames.numpy()
+            frames = self.resize(frames)  # [N, h, w, c]
+            frames = [Image.fromarray(frame) for frame in frames]
+            for frame_idx, frame in zip(frame_idxs, frames):
+                frame_io = io.BytesIO()
+                frame.save(frame_io, format='JPEG')
+                frame_io.seek(0)
+                tarinfo = tarfile.TarInfo(name=f'ego4d_data/v2/vq2d_frames/{ss}ss/{clip_uid}/frame_{1+frame_idx:07d}.jpg')  # 1-based, following ffmpeg
+                tarinfo.size = frame_io.getbuffer().nbytes
+                tar.addfile(tarinfo, fileobj=frame_io)
+        tar.close()
 
-        ps: list[subprocess.Popen[bytes]] = []
-        idxs_expected = []
-        for ext in exts:
-            if isinstance(ext, int):
-                s, e = ext - stride, ext + stride
-                # no need to shift indices here, as visual crop is out of the input extent
-            else:
-                s, e = ext
-                c, l = (s + e) // 2, e - s + 1
-                w2 = max(3 * l // 2, l // 2 + 30)  # margin 30 frames for each side to be prepared for GT extension
-                s, e = c - w2, c + w2  # 3 times the length of the GT interval
-                s, e = shift_indices_to_clip_range([s, e], num_clip_frames)
-            idxs_expected.extend(range(int(s / stride) * stride, e + 1, stride))
-            p = extract_and_resize_frames(
-                p_clip, p_outdir_this_clip=p_outdir_this_clip,
-                s=s, e=e, short_side=short_side)  # s and e are based on the annotation fps
-            ps.append(p)
+        return clip_uid, all_frame_idxs, clip_len, torch.utils.data.get_worker_info().id, self.p_tarfile
 
-        for p in ps:
-            p.wait()
+    def resize(self, frames: np.ndarray):
+        _, h, w, _ = frames.shape
+        target_size = round(self.short_side * w / h), self.short_side  # w, h (reverse to the input order)
+        frames = [cv2.resize(frame, target_size, interpolation=cv2.INTER_CUBIC) for frame in frames]
+        return frames
 
-        # rename
-        for p_tmp in p_outdir_this_clip.glob('tmp_*.jpg'):
-            _, offset, frame_idx = p_tmp.stem.split('_')
-            offset, frame_idx = int(offset), int(frame_idx)
-            frame_idx = (offset + frame_idx) * stride
-            p_frame = p_outdir_this_clip / f'frame_{frame_idx:07d}.jpg'  # 1-based, following ffmpeg-style
-            if p_frame.exists():
-                p_frame.unlink()
-            p_tmp.rename(p_frame)
-
-        # check validity of the extracted frames with the expected count
-        p_frames = sorted(list(p_outdir_this_clip.glob('frame_*.jpg')))
-        count_expected = len(set(idxs_expected))
-        count_processed = len(p_frames)
-        if count_processed != count_expected:
-            msg = f'Clip {clip_uid} has {count_processed} frames, expected {count_expected}.'
-            messages.append(msg)
-
-    return count_processed, messages
+    @staticmethod
+    def worker_init_fn(worker_id):
+        worker_info = torch.utils.data.get_worker_info()
+        dataset = worker_info.dataset
+        p_tarfiles_dir = dataset.p_tarfiles_dir
+        p_tarfile = p_tarfiles_dir / f'worker_{worker_id}.tar'
+        with tarfile.open(p_tarfile, 'w'):  # create tarfile
+            pass
+        dataset.p_tarfile = p_tarfile
 
 
-def extract_and_resize_3times_extended_positive_and_query_frames(
-    clip_uids: list[str], p_fps5_clips_dir, p_out_frames_dir,
-    short_side: int = 320,
-    f_report = None, pbar = None, msg_fmt = ''
-):
-    # load flat annotations
-    p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in ['train', 'val']]
-    all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
+def main(short_side = 520, world_size = 1, rank = 0):
+    num_workers = 36
+    print(f'{num_workers=}, {world_size=}, {rank=}')
+    ds = FrameExtractAndSaveAsTarfileDataset(short_side=short_side)
+    length = len(ds)
+    sampler = torch.utils.data.distributed.DistributedSampler(
+        list(range(length)), num_replicas=world_size, rank=rank,
+        shuffle=False, drop_last=False)
+    dl = torch.utils.data.DataLoader(
+        ds, batch_size=1, num_workers=num_workers,
+        sampler=sampler,
+        worker_init_fn=FrameExtractAndSaveAsTarfileDataset.worker_init_fn,
+        collate_fn=lambda x: x[0])
 
-    # setup clip_uid mappings
-    # TODO: Make these able to be accessed globally
-    clip2ext = defaultdict(list)
-    clip2len = {}
-    not_found_clips = set()
-    for ann in all_anns:
-        clip_uid = ann['clip_uid']
-        if not (p_fps5_clips_dir / f'{clip_uid}.mp4').exists():
-            not_found_clips.add(clip_uid)
-            continue
-        clip2ext[clip_uid].append(ann['response_track_valid_range'])
-        clip2ext[clip_uid].append(ann['visual_crop']['fno'])
-        clip2len[clip_uid] = max(ann['query_frame'], clip2len.get(clip_uid, -1)) + 1
-    assert not not_found_clips, f'{len(not_found_clips)} clips are not found: {" ".join(list(not_found_clips))}'
+    p_tarfiles_dir = Path('./outputs/frames')
+    p_tarfiles_dir.mkdir(exist_ok=True, parents=True)
 
-    # extract frames
-    processed_frame_count = 0
-    stride = 1
-    for cidx, clip_uid in enumerate(clip_uids):
-        exts = clip2ext[clip_uid]
-        num_frames = clip2len[clip_uid]
-        p_outdir_this_clip = p_out_frames_dir / clip_uid
+    pbar = tqdm(dl, total=len(ds), desc=f'Rank {rank}/{world_size}', leave=True)
+    frames_processed, total_frame_count = 0, 0
+    for bidx, (clip_uid, frame_idxs, clip_len, worker_id, p_tarfile) in enumerate(pbar):
+        frames_processed += len(frame_idxs)
+        total_frame_count += clip_len
+        ratio_extracted = frames_processed / total_frame_count
+        tqdm.write(f'Worker {worker_id}: {clip_uid} {len(frame_idxs)} frames out of {clip_len} -> {p_tarfile}')
+        pbar.set_description(f'rank={rank}/{world_size} {ratio_extracted:.1%} = {frames_processed}/{total_frame_count}')
 
-        # extract and resize frames
-        count_processed, error_messages = process_for_single_clip(
-            p_fps5_clips_dir=p_fps5_clips_dir,
-            p_out_frames_dir=p_out_frames_dir,
-            clip_uid=clip_uid, exts=exts, num_clip_frames=num_frames,
-            short_side=short_side, stride=stride)
-
-        # logging
-        for msg in error_messages:
-            f_report.write(msg + '\n')
-            tqdm.write(msg)
-        processed_frame_count += count_processed
-        pbar.set_description(f'{msg_fmt}, Frames {processed_frame_count}')
-        pbar.write(f'Clip {clip_uid} is processed. {p_outdir_this_clip}')
-        pbar.update(1)
-        f_report.flush()
-
-
-def get_all_clip_uids():
-    all_clip_uids = []
-    for split in ['train', 'val']:
-        p_ann = Path(f'./data/vq_v2_{split}_anno.json')
-        all_anns = json.load(p_ann.open())
-        clip_uids = [ann['clip_uid'] for ann in all_anns]
-        all_clip_uids.extend(clip_uids)
-    return sorted(set(all_clip_uids))
-
-
-def get_error_clip_uids():
-    pattern_clip_uid = re.compile(r'(\w{8}-\w{4}-\w{4}-\w{4}-\w{12})')
-    clip_uids = []
-    for p_report in Path('.').glob('not_extracted*.txt'):
-        for line in p_report.open():
-            match = pattern_clip_uid.findall(line)
-            if match:
-                clip_uids.extend(match)
-    return sorted(clip_uids)
-
-
-def wrapper(short_side: int = 320, world_size: int = 1, rank: int = 0, only_errors = False):
-    p_fps5_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448ss')  # fps 5
-    p_out_frames_dir = Path(f'/data/datasets/ego4d_data/v2/vq2d_frames_{short_side}ss')
-    p_report = Path(f'./not_extracted-rank{rank:02d}.txt')
-    assert p_fps5_clips_dir.exists() and p_fps5_clips_dir.is_dir()
-    print(f'Extracting frames from {p_fps5_clips_dir} to {p_out_frames_dir}.')
-    print(f'World size {world_size}, Rank {rank}.')
-    print(f'Reporting to {p_report}.')
-    print()
-
-    if only_errors:
-        print('Extracting only error clips.')
-        all_clip_uids = get_error_clip_uids()
-        print(all_clip_uids)
-    else:
-        print('Extracting all clips.')
-        all_clip_uids = get_all_clip_uids()
-        print('\n\n')
-    rank_clip_uids = all_clip_uids[rank::world_size]
-    pbar = tqdm(total=len(rank_clip_uids), leave=True, mininterval=0, maxinterval=60)
-    msg_fmt = f'World size {world_size}, Total clips {len(all_clip_uids)}'
-    f_report = p_report.open('w')
-
-    extract_and_resize_3times_extended_positive_and_query_frames(
-        clip_uids=rank_clip_uids, short_side=short_side,
-        p_fps5_clips_dir=p_fps5_clips_dir, p_out_frames_dir=p_out_frames_dir,
-        f_report=f_report, pbar=pbar, msg_fmt=msg_fmt
-    )
-
-    pbar.close()
-    f_report.close()
+    del ds, dl
+    print('Waiting for all workers to close tarfiles...')
+    time.sleep(10)  # wait for all workers to close tarfiles
 
     if rank == 0:
-        all_clip_uids = set(all_clip_uids)
-        extracted_clips = set(p.stem for p in p_out_frames_dir.iterdir())
-        not_extracted = all_clip_uids - extracted_clips
-        if not_extracted:
-            print(f'WARNING: {len(not_extracted)} clips are not extracted')
-            if not only_errors:
-                p_report = Path('./not_extracted.txt')
-                json.dump(sorted(list(not_extracted)), p_report.open('w'))
-        else:
-            print('All clips are extracted successfully.')
+        print('Rank 0: gathering tarfiles...')
+        p_tarfile_gathered = p_tarfiles_dir / f'vq2d_pos_and_query_frames_{short_side}ss.tar'
+        with tarfile.open(p_tarfile_gathered, 'w') as outtar:
+            seen_files = set()
+            for p_tarfile in tqdm(list(p_tarfiles_dir.glob('worker_*.tar'))):
+                with tarfile.open(p_tarfile, 'r') as tar:
+                    for member in tar.getmembers():
+                        if not member.isfile(): continue
+                        if member.name in seen_files: continue
+                        file = tar.extractfile(member)
+                        if file is None: continue
+                        file_io = file.read()
+                        tarinfo = tarfile.TarInfo(name=member.name)
+                        tarinfo.size = len(file_io)
+                        tarinfo.uid = 30013  # Set the user ID
+                        tarinfo.gid = 30013  # Set the group ID
+                        outtar.addfile(tarinfo, io.BytesIO(file_io))
+                        seen_files.add(member.name)
+                p_tarfile.unlink()
+        print(f'Rank 0: gathered tarfiles -> {p_tarfile_gathered}')
 
 
 if __name__ == '__main__':
     import fire
-    fire.Fire(wrapper)
+    fire.Fire(main)
