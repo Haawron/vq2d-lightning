@@ -42,7 +42,7 @@ def get_frame_count(p_clip) -> int:
 
 
 def generate_flat_annotations_vq2d(all_anns):
-    P_CLIPS_DIR_FOR_CHECKING_VALIDITY = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448')
+    P_CLIPS_DIR_FOR_CHECKING_VALIDITY = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448ss')
 
     def polish_bbox_dict(bbox: dict):
         key_map = {
@@ -179,7 +179,7 @@ def process_for_single_clip(
             else:
                 s, e = ext
                 c, l = (s + e) // 2, e - s + 1
-                w2 = max(3 * l // 2, l // 2 + 30)  # margin 30 frames to be prepared for GT extension
+                w2 = max(3 * l // 2, l // 2 + 30)  # margin 30 frames for each side to be prepared for GT extension
                 s, e = c - w2, c + w2  # 3 times the length of the GT interval
                 s, e = shift_indices_to_clip_range([s, e], num_clip_frames)
             idxs_expected.extend(range(int(s / stride) * stride, e + 1, stride))
@@ -195,9 +195,8 @@ def process_for_single_clip(
         for p_tmp in p_outdir_this_clip.glob('tmp_*.jpg'):
             _, offset, frame_idx = p_tmp.stem.split('_')
             offset, frame_idx = int(offset), int(frame_idx)
-            frame_idx -= 1
             frame_idx = (offset + frame_idx) * stride
-            p_frame = p_outdir_this_clip / f'frame_{frame_idx:07d}.jpg'
+            p_frame = p_outdir_this_clip / f'frame_{frame_idx:07d}.jpg'  # 1-based, following ffmpeg-style
             if p_frame.exists():
                 p_frame.unlink()
             p_tmp.rename(p_frame)
@@ -285,7 +284,7 @@ def get_error_clip_uids():
 
 
 def wrapper(short_side: int = 320, world_size: int = 1, rank: int = 0, only_errors = False):
-    p_fps5_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448')  # fps 5
+    p_fps5_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448ss')  # fps 5
     p_out_frames_dir = Path(f'/data/datasets/ego4d_data/v2/vq2d_frames_{short_side}ss')
     p_report = Path(f'./not_extracted-rank{rank:02d}.txt')
     assert p_fps5_clips_dir.exists() and p_fps5_clips_dir.is_dir()
