@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 import torch
 import torch.utils.data
 from torch.nn import functional as F
+import torchvision.transforms.functional as TF
 
 # lightning
 # import lightning as L
@@ -18,6 +19,7 @@ from torch.nn import functional as F
 import decord
 import numpy as np
 from einops import rearrange
+from PIL import Image
 from tqdm import tqdm
 
 # local (ours)
@@ -70,8 +72,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         clip_uid = ann['clip_uid']
         vlen = ann['query_frame']
         vc_idx = ann['visual_crop']['fno']
-        # p_clip = self.p_clips_dir / f'{clip_uid}.mp4'
-        # vr = decord.VideoReader(str(p_clip), num_threads=1)
         p_clip_dir = self.p_clips_dir / clip_uid
         idxs_avail = set(int(p.stem.split('_')[-1]) for p in p_clip_dir.glob('*.jpg'))
 
@@ -82,9 +82,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert idxs_required.issubset(idxs_avail), \
             f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
 
-        segment, frame_idxs_origin = self.get_segment_frames(ann, frame_idxs)
+        segment = self.get_segment_frames(ann, frame_idxs)
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
-        query = self.get_query(ann, vr)
+        query = self.get_query(ann)
 
         return {
             # inputs
@@ -101,7 +101,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'clip_uid': clip_uid,  # str
             'annotation_uid': ann['annotation_uid'],  # str
             'seg_idxs': frame_idxs,  # np.ndarray
-            'seg_idxs_origin': frame_idxs_origin,  # np.ndarray
             'query_set': ann['query_set'],  # str (of a single digit)
             'clip_fps': ann['clip_fps'],  # float
             'query_frame': ann['query_frame'],  # int
@@ -124,17 +123,13 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             3. pad or crop - resize
             (4. augment -> not here, GPU accelerated by kornia, done in the training loop, the lit data module)
         """
-        # sample
-        vlen = ann['query_frame']
-        origin_fps = int(vr.get_avg_fps())
-        gt_fps = int(ann['clip_fps'])
-        down_rate = origin_fps // gt_fps
-        frame_idxs_origin = np.minimum(down_rate * frame_idxs, vlen - 1)  # mp4 file's FPS considered
+        p_clip = self.p_clips_dir / ann['clip_uid']
 
         # load - normalize - permute
-        frames = vr.get_batch(frame_idxs_origin)
+        frames = [Image.open(p_clip / f'frame_{idx:07d}.jpg') for idx in frame_idxs]
+        frames = torch.stack([TF.pil_to_tensor(f) for f in frames])  # [t, c, h, w]
         frames = frames.float() / 255.
-        frames = rearrange(frames, 't h w c -> t c h w')
+        # frames = rearrange(frames, 't h w c -> t c h w')
         t, c, h, w = frames.shape
         assert h <= w  # Check: if Ego4D clips are all in landscape mode
 
@@ -146,14 +141,15 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert h_pad == w_pad, f'Padded frames should be square, got {frames.shape}'
         frames = F.interpolate(frames, size=self.segment_size, mode='bilinear', align_corners=True, antialias=True)
 
-        return frames, frame_idxs_origin
+        return frames
 
     def get_query(self, ann):
         vc = ann['visual_crop']
         ow, oh = ann['original_height'], ann['original_width']
         fno = vc['fno']
+        p_frame = self.p_clips_dir / ann['clip_uid'] / f'frame_{fno:07d}.jpg'
         x, y, w, h = vc['x'], vc['y'], vc['w'], vc['h']
-        l, s = max(w, h), min(w, h)  # large short
+        l, s = max(w, h), min(w, h)  # large, short
 
         if self.query_square:  # but don't have to be strictly square, will be resized at the end of this function
             cx, cy, s = x + w / 2, y + h / 2, np.clip(l, a_min=10, a_max=min(oh, ow)-1).item()
@@ -162,16 +158,19 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
                 f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
 
-        query: torch.Tensor = vr[fno]
+        # load
+        query = Image.open(p_frame)
 
-        ooh, oow, _ = query.shape  # might be pre-pre-processed already
+        # crop - permute - normalize
+        ooh, oow = query.size  # might be pre-pre-processed already
         rho = (oh / ooh + ow / oow) / 2
-        x, y, w, h = int(x / rho), int(y / rho), int(h / rho), int(w / rho)
-
+        x, y, w, h = x / rho, y / rho, h / rho, w / rho
+        query = query.crop((x, y, x + w, y + h)) # [y:y+h, x:x+w]  # [h, w, c]
+        query = TF.pil_to_tensor(query)  # [c, h, w]
         query = query.float() / 255.
-        query = query[y:y+h, x:x+w]  # [h, w, c]
-        query = rearrange(query, 'h w c -> c h w').contiguous()
 
+        # permute - pad - resize
+        # query = rearrange(query, 'h w c -> c h w').contiguous()
         if self.query_padding:
             pad_size = (l - s) // 2
             if h > w:
@@ -179,7 +178,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             else:
                 pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
             query = F.pad(query, pad, value=0)
-
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
 
@@ -251,7 +249,7 @@ class VQ2DTestDatasetSeparated(VQ2DFitDataset):
         p_clip = self.p_clips_dir / f'{clip_uid}.mp4'
         vr = decord.VideoReader(str(p_clip), num_threads=1)
 
-        segment, _ = self.get_segment_frames(ann, vr)
+        segment = self.get_segment_frames(ann, vr)
         query = self.get_query(ann, vr)
 
         if segment.shape[0] < self.num_frames:

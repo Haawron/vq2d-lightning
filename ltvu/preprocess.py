@@ -1,5 +1,5 @@
+import re
 import json
-import shutil
 from collections import defaultdict
 from pathlib import Path
 import subprocess
@@ -152,11 +152,10 @@ def extract_and_resize_frames(
     return process
 
 
-def extract_and_resize_for_single_clip(
+def process_for_single_clip(
     p_fps5_clips_dir, p_out_frames_dir, clip_uid,
-    exts, num_frames, p_outdir_this_clip,
-    short_side=320, stride=1,
-    f_report=None, pbar=None
+    exts, num_clip_frames,
+    short_side=320, stride=1
 ):
     messages = []
     p_clip = p_fps5_clips_dir / f'{clip_uid}.mp4'
@@ -169,17 +168,20 @@ def extract_and_resize_for_single_clip(
 
         for p_exist in p_outdir_this_clip.glob('*.jpg'):
             p_exist.unlink()
+        assert len(list(p_outdir_this_clip.glob('*.jpg'))) == 0
 
         ps: list[subprocess.Popen[bytes]] = []
         idxs_expected = []
         for ext in exts:
             if isinstance(ext, int):
                 s, e = ext - stride, ext + stride
+                # no need to shift indices here, as visual crop is out of the input extent
             else:
                 s, e = ext
                 c, l = (s + e) // 2, e - s + 1
-                s, e = c - 3 * l // 2, c + 3 * l // 2  # 3 times the length of the GT interval
-            s, e = shift_indices_to_clip_range([s, e], num_frames)
+                w2 = max(3 * l // 2, l // 2 + 30)  # margin 30 frames to be prepared for GT extension
+                s, e = c - w2, c + w2  # 3 times the length of the GT interval
+                s, e = shift_indices_to_clip_range([s, e], num_clip_frames)
             idxs_expected.extend(range(int(s / stride) * stride, e + 1, stride))
             p = extract_and_resize_frames(
                 p_clip, p_outdir_this_clip=p_outdir_this_clip,
@@ -196,42 +198,34 @@ def extract_and_resize_for_single_clip(
             frame_idx -= 1
             frame_idx = (offset + frame_idx) * stride
             p_frame = p_outdir_this_clip / f'frame_{frame_idx:07d}.jpg'
-            if not p_frame.exists():
-                p_tmp.rename(p_frame)
+            if p_frame.exists():
+                p_frame.unlink()
+            p_tmp.rename(p_frame)
 
         # check validity of the extracted frames with the expected count
-        p_frames = sorted(list(p_outdir_this_clip.glob('*.jpg')))
+        p_frames = sorted(list(p_outdir_this_clip.glob('frame_*.jpg')))
         count_expected = len(set(idxs_expected))
         count_processed = len(p_frames)
         if count_processed != count_expected:
             msg = f'Clip {clip_uid} has {count_processed} frames, expected {count_expected}.'
             messages.append(msg)
-        processed_frame_count += count_processed
 
-    return messages
+    return count_processed, messages
 
 
 def extract_and_resize_3times_extended_positive_and_query_frames(
-    short_side: int = 320, world_size: int = 1, rank: int = 0
+    clip_uids: list[str], p_fps5_clips_dir, p_out_frames_dir,
+    short_side: int = 320,
+    f_report = None, pbar = None, msg_fmt = ''
 ):
-    p_fps5_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448')  # fps 5
-    p_out_frames_dir = Path(f'/data/datasets/ego4d_data/v2/vq2d_frames_{short_side}ss')
-    p_report = Path(f'./not_extracted-rank{rank:02d}.txt')
-    f_report = p_report.open('w')
-    assert p_fps5_clips_dir.exists() and p_fps5_clips_dir.is_dir()
-    print(f'Extracting frames from {p_fps5_clips_dir} to {p_out_frames_dir}.')
-    print(f'World size {world_size}, Rank {rank}.')
-    print(f'Reporting to {p_report}.')
-    print()
-
-    # get flat annotations
+    # load flat annotations
     p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in ['train', 'val']]
     all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
 
     # setup clip_uid mappings
+    # TODO: Make these able to be accessed globally
     clip2ext = defaultdict(list)
     clip2len = {}
-    # clip2fps = {}
     not_found_clips = set()
     for ann in all_anns:
         clip_uid = ann['clip_uid']
@@ -240,92 +234,101 @@ def extract_and_resize_3times_extended_positive_and_query_frames(
             continue
         clip2ext[clip_uid].append(ann['response_track_valid_range'])
         clip2ext[clip_uid].append(ann['visual_crop']['fno'])
-        clip2len[clip_uid] = ann['query_frame']
-        # clip2fps[clip_uid] = ann['clip_fps']
+        clip2len[clip_uid] = max(ann['query_frame'], clip2len.get(clip_uid, -1)) + 1
     assert not not_found_clips, f'{len(not_found_clips)} clips are not found: {" ".join(list(not_found_clips))}'
 
-    # subsample clips for distributed processing
-    all_clip_uids = sorted(clip2ext.keys())
-    rank_clip_uids = all_clip_uids[rank::world_size]
-
     # extract frames
-    pbar = tqdm(total=len(rank_clip_uids), leave=True, mininterval=0, maxinterval=60, disable=rank>0)
-    msg_fmt = f'World size {world_size}, Total clips {len(all_clip_uids)}'
     processed_frame_count = 0
     stride = 1
-
-    for cidx, clip_uid in enumerate(rank_clip_uids):
-        p_clip = p_fps5_clips_dir / f'{clip_uid}.mp4'
+    for cidx, clip_uid in enumerate(clip_uids):
         exts = clip2ext[clip_uid]
         num_frames = clip2len[clip_uid]
-        if not p_clip.exists():
-            msg = f'Clip {clip_uid} does not exist.'
-            f_report.write(msg + '\n')
-            tqdm.write(msg)
         p_outdir_this_clip = p_out_frames_dir / clip_uid
 
-        for p_exist in p_outdir_this_clip.glob('*.jpg'):
-            p_exist.unlink()
+        # extract and resize frames
+        count_processed, error_messages = process_for_single_clip(
+            p_fps5_clips_dir=p_fps5_clips_dir,
+            p_out_frames_dir=p_out_frames_dir,
+            clip_uid=clip_uid, exts=exts, num_clip_frames=num_frames,
+            short_side=short_side, stride=stride)
 
-        ps: list[subprocess.Popen[bytes]] = []
-        idxs_expected = []
-        for ext in exts:
-            if isinstance(ext, int):
-                s, e = ext - stride, ext + stride
-            else:
-                s, e = ext
-                c, l = (s + e) // 2, e - s + 1
-                s, e = c - 3 * l // 2, c + 3 * l // 2  # 3 times the length of the GT interval
-            s, e = shift_indices_to_clip_range([s, e], num_frames)
-            idxs_expected.extend(range(int(s / stride) * stride, e + 1, stride))
-            p = extract_and_resize_frames(
-                p_clip, p_outdir_this_clip=p_outdir_this_clip,
-                s=s, e=e, short_side=short_side)  # s and e are based on the annotation fps
-            ps.append(p)
-
-        for p in ps:
-            p.wait()
-
-        # rename
-        for p_tmp in p_outdir_this_clip.glob('tmp_*.jpg'):
-            _, offset, frame_idx = p_tmp.stem.split('_')
-            offset, frame_idx = int(offset), int(frame_idx)
-            frame_idx -= 1
-            frame_idx = (offset + frame_idx) * stride
-            p_frame = p_outdir_this_clip / f'frame_{frame_idx:07d}.jpg'
-            if not p_frame.exists():
-                p_tmp.rename(p_frame)
-
-        # check validity of the extracted frames with the expected count
-        p_frames = sorted(list(p_outdir_this_clip.glob('*.jpg')))
-        count_expected = len(set(idxs_expected))
-        count_processed = len(p_frames)
-        if count_processed != count_expected:
-            msg = f'Clip {clip_uid} has {count_processed} frames, expected {count_expected}.'
+        # logging
+        for msg in error_messages:
             f_report.write(msg + '\n')
             tqdm.write(msg)
         processed_frame_count += count_processed
-
-        # logging
         pbar.set_description(f'{msg_fmt}, Frames {processed_frame_count}')
         pbar.write(f'Clip {clip_uid} is processed. {p_outdir_this_clip}')
         pbar.update(1)
         f_report.flush()
+
+
+def get_all_clip_uids():
+    all_clip_uids = []
+    for split in ['train', 'val']:
+        p_ann = Path(f'./data/vq_v2_{split}_anno.json')
+        all_anns = json.load(p_ann.open())
+        clip_uids = [ann['clip_uid'] for ann in all_anns]
+        all_clip_uids.extend(clip_uids)
+    return sorted(set(all_clip_uids))
+
+
+def get_error_clip_uids():
+    pattern_clip_uid = re.compile(r'(\w{8}-\w{4}-\w{4}-\w{4}-\w{12})')
+    clip_uids = []
+    for p_report in Path('.').glob('not_extracted*.txt'):
+        for line in p_report.open():
+            match = pattern_clip_uid.findall(line)
+            if match:
+                clip_uids.extend(match)
+    return sorted(clip_uids)
+
+
+def wrapper(short_side: int = 320, world_size: int = 1, rank: int = 0, only_errors = False):
+    p_fps5_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448')  # fps 5
+    p_out_frames_dir = Path(f'/data/datasets/ego4d_data/v2/vq2d_frames_{short_side}ss')
+    p_report = Path(f'./not_extracted-rank{rank:02d}.txt')
+    assert p_fps5_clips_dir.exists() and p_fps5_clips_dir.is_dir()
+    print(f'Extracting frames from {p_fps5_clips_dir} to {p_out_frames_dir}.')
+    print(f'World size {world_size}, Rank {rank}.')
+    print(f'Reporting to {p_report}.')
+    print()
+
+    if only_errors:
+        print('Extracting only error clips.')
+        all_clip_uids = get_error_clip_uids()
+        print(all_clip_uids)
+    else:
+        print('Extracting all clips.')
+        all_clip_uids = get_all_clip_uids()
+        print('\n\n')
+    rank_clip_uids = all_clip_uids[rank::world_size]
+    pbar = tqdm(total=len(rank_clip_uids), leave=True, mininterval=0, maxinterval=60)
+    msg_fmt = f'World size {world_size}, Total clips {len(all_clip_uids)}'
+    f_report = p_report.open('w')
+
+    extract_and_resize_3times_extended_positive_and_query_frames(
+        clip_uids=rank_clip_uids, short_side=short_side,
+        p_fps5_clips_dir=p_fps5_clips_dir, p_out_frames_dir=p_out_frames_dir,
+        f_report=f_report, pbar=pbar, msg_fmt=msg_fmt
+    )
+
     pbar.close()
     f_report.close()
 
     if rank == 0:
         all_clip_uids = set(all_clip_uids)
-        extracted_clips = set(p_out_frames_dir.iterdir())
+        extracted_clips = set(p.stem for p in p_out_frames_dir.iterdir())
         not_extracted = all_clip_uids - extracted_clips
         if not_extracted:
-            p_report = Path('./not_extracted.txt')
-            json.dump(sorted(list(not_extracted)), p_report.open('w'))
-            print(f'WARNING: {len(not_extracted)} clips are not extracted: {p_report}')
+            print(f'WARNING: {len(not_extracted)} clips are not extracted')
+            if not only_errors:
+                p_report = Path('./not_extracted.txt')
+                json.dump(sorted(list(not_extracted)), p_report.open('w'))
         else:
             print('All clips are extracted successfully.')
 
 
 if __name__ == '__main__':
     import fire
-    fire.Fire(extract_and_resize_3times_extended_positive_and_query_frames)
+    fire.Fire(wrapper)
