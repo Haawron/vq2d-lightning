@@ -5,7 +5,11 @@ class TemporalExtent:
         self._length = t_end - t_start + 1
 
     def __and__(self, other):
-        inter_ext = max(self._t_start, other._t_start), min(self._t_end, other._t_end)
+        s, e = max(self._t_start, other._t_start), min(self._t_end, other._t_end)
+        if s > e:
+            inter_ext = (0, -1)
+        else:
+            inter_ext = (s, e)
         return TemporalExtent(*inter_ext)
 
     def __or__(self, other):
