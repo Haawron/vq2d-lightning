@@ -123,6 +123,16 @@ class LitVQ2DDataModule(L.LightningDataModule):
             segment_aug, bboxes_aug = self.transform_clip(segment[i], bboxes_px[i, :, None])
             bboxes_aug = bboxes_aug / bbox_scale  # [t,4]
             bboxes_aug = bboxes_aug.squeeze(1)  # [t,4]
+            # imgs = []
+            # for t in range(segment_aug.shape[0]):
+            #     img = Image.fromarray(segment_aug[t].permute(1, 2, 0).mul(255).byte().cpu().numpy())
+            #     draw = ImageDraw.Draw(img)
+            #     bbox = bboxes_aug[t].mul(torch.tensor([w, h, w, h], device=device))
+            #     draw.rectangle(bbox.tolist(), outline='red', width=5)
+            #     imgs.append(img)
+            # p_img = Path(f'outputs/dataset/seg-{device}-{i}.gif')
+            # imgs[0].save(p_img, save_all=True, append_images=imgs[1:], duration=100, loop=0)
+            # print(f'bbox: {p_img} {bbox}')
             seg_queue.append(segment_aug)
             bboxes_queue.append(bboxes_aug)
         segment = torch.stack(seg_queue, dim=0)
