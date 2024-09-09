@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import torch
+import torch.utils.data
 
 import lightning as L
 
@@ -9,11 +10,12 @@ import kornia
 import kornia.augmentation as K
 from kornia.constants import DataKey
 from einops import rearrange
+from PIL import Image, ImageDraw
 
 from ltvu.dataset import (
     VQ2DFitDataset, VQ2DTestDatasetSeparated,
-    generate_flat_annotations_vq2d,
 )
+from ltvu.preprocess import generate_flat_annotations_vq2d
 
 
 class LitVQ2DDataModule(L.LightningDataModule):
@@ -24,16 +26,14 @@ class LitVQ2DDataModule(L.LightningDataModule):
         super().__init__()
         self.config = config
         ds_config = self.config.dataset
+        self.p_clips_dir = Path(ds_config.clips_dir)
+        self.p_official_anns_dir = Path(ds_config.official_anns_dir)
+        self.p_anns_dir = Path(ds_config.flat_anns_dir)
         self.batch_size = ds_config.batch_size
         self.num_workers = ds_config.num_workers
         self.pin_memory = ds_config.pin_memory
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
-        self.p_official_anns_dir = Path('/data/datasets/ego4d_data/v2/annotations/')
-        self.p_anns_dir = Path('./data/')
-        self.p_clips_dir = Path('/data/datasets/ego4d_data/v2/vq2d_clips_448')
-        global P_CLIPS_DIR_FOR_CHECKING_VALIDITY
-        P_CLIPS_DIR_FOR_CHECKING_VALIDITY = self.p_clips_dir
 
         # TODO: Integrate into the ds_config
         aug_config = config.train.augments
@@ -110,7 +110,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         bsz, device = segment.shape[0], segment.device
 
         bbox_scale = torch.tensor([h, w, h, w], device=device)[None, None]  # [1,1,4]
-        bboxes_px = gt_bboxes * bbox_scale  # [b,t,4]
+        bboxes_px = gt_bboxes * bbox_scale  # [b,t,4], pixel space
         seg_queue, bboxes_queue = [], []
         # DON'T FLATTEN AND PRALLELIZE THIS LOOP
         #    AS t IS TREATED AS BATCH AXIS
@@ -177,31 +177,46 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
 
 if __name__ == '__main__':
-    from omegaconf import OmegaConf
-    from ltvu.models import VQLOC
+    import os
+    os.environ["SLURM_JOB_NAME"] = "bash"
+    from hydra import compose, initialize
+    import torch.distributed as dist
 
     L.seed_everything(42)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.set_float32_matmul_precision('high')
-    torch.set_grad_enabled(False)
+    with initialize(config_path="../../config", version_base='1.3'):
+        config = compose(config_name="base")
 
-    config = OmegaConf.load('config/base.yaml')
-    config.dataset.num_workers = 1  # for debugging
-    dm = LitVQ2DDataModule(config)
-    dm.prepare_data()
+    pdm = LitVQ2DDataModule(config)
+    dev_trainer = L.Trainer(fast_dev_run=int(1e6))
 
-    model = VQLOC()
-    model.eval()
-    model.cuda()
+    if not (dist.is_available() and dist.is_initialized()):
+        config.dataset.num_workers = 1  # for debugging
+        pdm.prepare_data()
 
-    for batch in dm.train_dataloader():
-        print(batch.keys())
-        print(batch['segment'].shape)
-        print(batch['query'].shape)
-        b, t, c, h, w = batch['segment'].shape
-        segments = rearrange(batch['segment'], 'b t c h w -> (b t) c h w')
-        segments = segments.cuda()
-        out: dict = model.forward(segments)
-        print(out)
-        break
+        print('Checking the first batch...')
+        for batch in pdm.train_dataloader():
+            print('keys: ')
+            print('\t', batch.keys())
+            print('Shape of a segment:', batch['segment'].shape)
+            print('Shape of a query:', batch['query'].shape)
+            b, t, c, h, w = batch['segment'].shape
+            segments = rearrange(batch['segment'], 'b t c h w -> (b t) c h w')
+            break
+        print('Done.')
+
+    print('Checking the first epoch...')
+    class DevModel(L.LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.x = torch.nn.Parameter(torch.randn(1))
+        def training_step(self, batch, batch_idx):
+            return self.x ** 2
+        val_step = training_step
+        def configure_optimizers(self):
+            return torch.optim.Adam(self.parameters(), lr=1e-3)
+
+    dev_plm = DevModel()
+    pdm.num_workers = 8
+    pdm.batch_size = 16  # 32 causes OOM on CPU
+    dev_trainer.fit(dev_plm, datamodule=pdm)
+    print('Done.')

@@ -105,6 +105,12 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         p_raw_clip = self.p_raw_clips_dir / f'{clip_uid}.mp4'
         ss = self.short_side
 
+        # get video info
+        vr = VideoReader(str(p_raw_clip))
+        fps_raw = vr.get_avg_fps()  # might be 30
+        fps_ann = anns[0]['clip_fps']  # might be 5
+        stride = round(fps_raw / fps_ann)  # 6
+
         # get frame idxs to be extracted
         ranges, vc_idxs, clip_len = [], [], 0
         for ann in anns:
@@ -121,24 +127,22 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
             s, e = shift_indices_to_clip_range((s, e), clip_len)  # adjust to clip range
             ranges_extended.append((s, e))
         for vc_idx in vc_idxs:
+            if vc_idx * stride == len(vr):  # last frame
+                vc_idx -= 1
             s, e = vc_idx - 6, vc_idx + 6
-            s, e = shift_indices_to_clip_range((s, e), clip_len)
+            s, e = shift_indices_to_clip_range((s, e), np.ceil(len(vr) / stride).astype(int).item())
+            assert stride * s <= stride * vc_idx <= stride * e < len(vr), f'{s=}, {vc_idx=}, {e=}, {len(vr)=}'
             ranges_extended.append((s, e))
 
         # gather all frame idxs to be extracted
         all_frame_idxs = set()
         for s, e in ranges_extended:
             all_frame_idxs.update(range(s, e + 1))
-        all_frame_idxs = np.array(sorted(all_frame_idxs))
-
-        # get video info
-        vr = VideoReader(str(p_raw_clip))
-        fps_raw = vr.get_avg_fps()  # might be 30
-        fps_ann = anns[0]['clip_fps']  # might be 5
-        stride = round(fps_raw / fps_ann)  # 6
+        all_frame_idxs = np.array(sorted(all_frame_idxs) + [np.ceil(len(vr) / stride).astype(int)])
 
         # extract frames and resize!
         raw_idxs = stride * all_frame_idxs
+        raw_idxs[-1] = len(vr) - 1
         chunk_size = 128
         tar = tarfile.open(self.p_tarfile, 'a')
         for chidx in range(0, len(raw_idxs), chunk_size):
@@ -176,7 +180,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
 
 
 def main(short_side = 520, world_size = 1, rank = 0):
-    num_workers = 36
+    num_workers = os.cpu_count() // 4
     print(f'{num_workers=}, {world_size=}, {rank=}')
     ds = FrameExtractAndSaveAsTarfileDataset(short_side=short_side)
     length = len(ds)
@@ -203,7 +207,7 @@ def main(short_side = 520, world_size = 1, rank = 0):
 
     del ds, dl
     print('Waiting for all workers to close tarfiles...')
-    time.sleep(10)  # wait for all workers to close tarfiles
+    time.sleep(10)
 
     if rank == 0:
         print('Rank 0: gathering tarfiles...')
@@ -220,8 +224,8 @@ def main(short_side = 520, world_size = 1, rank = 0):
                         file_io = file.read()
                         tarinfo = tarfile.TarInfo(name=member.name)
                         tarinfo.size = len(file_io)
-                        tarinfo.uid = 30013  # Set the user ID
-                        tarinfo.gid = 30013  # Set the group ID
+                        tarinfo.uid = 30013
+                        tarinfo.gid = 30013
                         outtar.addfile(tarinfo, io.BytesIO(file_io))
                         seen_files.add(member.name)
                 p_tarfile.unlink()

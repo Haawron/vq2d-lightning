@@ -9,11 +9,13 @@ random_seed: 42
 
 # resolvers should be evaluated only once
 jid: ${oc.env:SLURM_JOB_ID}
-runtime_outdir: ${runtime_outdir:}
 job_type: ${job_type:}  # debug or batch
 YY: ${now:%Y}
 mm: ${now:%m}  # month
 dd: ${now:%d}  # day
+runtime_outdir: ${runtime_outdir:}
+total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE}'}
+base_lr: 0.0003
 
 run_type: train  # train, val, test, predict=eval
 
@@ -21,13 +23,14 @@ run_type: train  # train, val, test, predict=eval
 trainer:
   ##### directly affects to performance #####
   devices: 'auto'  # maximum available
-  max_epochs: 100
+  max_epochs: 2
   max_steps: 60000   # minimum of those
   accumulate_grad_batches: 1
   precision: bf16-mixed
   gradient_clip_val: 20.
+  detect_anomaly: True
   benchmark: True
-  deterministic: False
+  deterministic: False  # sorry
   ##### logging or automl #####
   log_every_n_steps: 1
   logger:
@@ -39,18 +42,22 @@ trainer:
       name: hg-${jid}  # displayname
       tags: []  # for filtering
       notes: null  # real note, a log string
-      save_dir: ${runtime_outdir}/wandb
+      save_dir: ${runtime_outdir}  # logs will be saved under THIS/wandb
       log_model: False    # as we use custom checkpointing
 
 dataset:
   ###### torch #####
-  batch_size: 4
-  num_workers: 8
+  batch_size: 16
+  num_workers: 3
   prefetch_factor: 2
   pin_memory: True
-  persistent_workers: True
+  persistent_workers: False  # No, our dataset is memory-bound
   ##### project-related #####
-  clips_dir: '/data/datasets/ego4d_data/v2/vq2d_clips_448'  # clips should be located like: THISPATH/{clip_uid}.mp4
+  # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{frame_idx:07d}.jpg
+  # for frames, frame_idx should be based on fps=5
+  clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/520ss'
+  official_anns_dir: '/data/datasets/ego4d_data/v2/annotations'
+  flat_anns_dir: './data'
   num_frames: 32
   frame_interval: 1
   segment_size: [448, 448]  # height, width
@@ -62,9 +69,11 @@ dataset:
 optim:
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 0.0003
+    lr: ${eval:'${base_lr} / 24 * ${total_bsz}'}  # 0.0003 / 24 (official bsz) * (ours bsz)
     weight_decay: 0.005
   lr_scheduler:
+    # 1000(official steps) * 24(official bsz) / (ours bsz)
+    # warmup_iter: ${eval:'1000 * 24 / ${total_bsz}'}
     warmup_iter: 1000
     max_steps: ${trainer.max_steps}
 

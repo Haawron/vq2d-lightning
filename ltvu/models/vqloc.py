@@ -40,7 +40,7 @@ def build_backbone(backbone_name, backbone_type):
             backbone_dim = 768
         elif backbone_type == 'vits14':
             backbone_dim = 384
-    elif backbone_name == 'dinov2-hf':
+    elif backbone_name == 'dinov2-hf':  # why not torch.hub? => just because I prefer huggingface
         backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
         down_rate = 14
         backbone_dim = 768
@@ -185,15 +185,24 @@ class ClipMatcher(nn.Module):
             if return_h_w:
                 return out, h, w
             return out
-        elif self.backbone_name == 'dinov2':
+        elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
-            out = self.backbone.get_intermediate_layers(x, n=1)[0]
-            h, w = int(h_origin / self.backbone.patch_embed.patch_size[0]), int(w_origin / self.backbone.patch_embed.patch_size[1])
+            if 'hf' in self.backbone_name:
+                out = self.backbone.forward(x).last_hidden_state
+                out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
+                h = int(h_origin / self.down_rate)
+                w = int(w_origin / self.down_rate)
+            else:
+                out = self.backbone.get_intermediate_layers(x, n=1)[0]
+                h = int(h_origin / self.backbone.patch_embed.patch_size[0])
+                w = int(w_origin / self.backbone.patch_embed.patch_size[1])
             dim = out.shape[-1]
             out = out.reshape(b, h, w, dim).permute(0,3,1,2)
             if return_h_w:
                 return out, h, w
             return out
+        else:
+            raise NotImplementedError
 
     def get_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
@@ -328,6 +337,8 @@ class ClipMatcher(nn.Module):
             # for logging
             loss_dict = detach_dict(loss_dict)
             preds_top = detach_dict(preds_top)
+            preds_prob = preds_top['prob']
+            prob_accuracy = ((torch.sigmoid(preds_prob) > .5) == gt_probs.bool()).float().mean(dim=1)  # [b,t] -> [b]
             log_dict = {
                 'loss': total_loss.detach(),
                 'loss_bbox_center': loss_dict['loss_bbox_center'].mean(),
@@ -336,6 +347,7 @@ class ClipMatcher(nn.Module):
                 'loss_prob': loss_dict['loss_prob'].mean(),
                 'iou': loss_dict['iou'].mean(),
                 'giou': loss_dict['giou'].mean(),
+                'prob_acc': prob_accuracy.mean(),
             }
             output_dict.update({'log_dict': log_dict})
             info_dict = {

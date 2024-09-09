@@ -1,5 +1,5 @@
 _target_: ltvu.models.VQLOC
-backbone_name: 'dinov2'
+backbone_name: 'dinov2-hf'
 backbone_type: 'vitb14'
 fix_backbone: True
 window_transformer: 5

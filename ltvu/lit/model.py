@@ -4,6 +4,7 @@ from omegaconf import OmegaConf
 import torch
 
 import lightning as L
+from lightning.pytorch.utilities import grad_norm
 
 from transformers import get_linear_schedule_with_warmup
 
@@ -13,9 +14,9 @@ from ltvu.models import *
 # https://lightning.ai/docs/pytorch/stable/common/lightning_module.html#hooks
 class LitModule(L.LightningModule):
     """
+    https://lightning.ai/docs/pytorch/stable/common/trainer.html#under-the-hood
     
     # Pseudo code for training loop
-    https://lightning.ai/docs/pytorch/stable/common/trainer.html#under-the-hood
 
     ```python
     torch.set_grad_enabled(True)
@@ -63,9 +64,8 @@ class LitModule(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.save_hyperparameters()
         self.model: VQLOC = hydra.utils.instantiate(config.model)
-
+        self.save_hyperparameters()
 
     ############ major hooks ############
 
@@ -74,7 +74,11 @@ class LitModule(L.LightningModule):
         output_dict = self.model.forward(**batch, compute_loss=True)
         assert output_dict['loss'].requires_grad
         self.log_dict(set_prefix_to_keys(
-            output_dict['log_dict'], 'Train'), batch_size=bsz, rank_zero_only=True)
+            output_dict['log_dict'], 'Train'),
+            batch_size=bsz, rank_zero_only=True)
+        self.log(
+            'sample_step', (1 + self.global_step) * bsz * self.trainer.world_size,
+            on_step=True, on_epoch=False, rank_zero_only=True)
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
@@ -110,9 +114,14 @@ class LitModule(L.LightningModule):
     ############ other hooks ############
 
     def on_fit_start(self):
-        if self.trainer.global_rank == 0:
+        if self.global_rank == 0:
             print('Starting training...')
 
+    # def on_before_optimizer_step(self, optimizer):
+    #     # Compute the 2-norm for each layer
+    #     # If using mixed precision, the gradients are already unscaled here
+    #     norms = grad_norm(self.layer, norm_type=2)
+    #     self.log_dict(norms)
 
     ############ helper functions ############
 

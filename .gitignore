@@ -12,3 +12,6 @@
 /samples
 __pycache__/
 /pyrightconfig.json
+-*
+/.env
+not_extracted*

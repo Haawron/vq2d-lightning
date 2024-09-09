@@ -14,6 +14,7 @@ import torch
 # lightning
 import lightning as L
 import lightning.pytorch.utilities as L_utils
+from lightning.pytorch.loggers import WandbLogger
 
 # others (numpy, ...)
 
@@ -24,6 +25,17 @@ from ltvu.lit import *
 @L_utils.rank_zero_only
 def log_to_console(msg):
     print(msg)
+
+
+@L_utils.rank_zero_only
+def write_batch_script(jid, default_root_dir):
+    cmd = f"scontrol write batch_script {jid} {default_root_dir}/slurm-{jid}.sh"
+    os.system(cmd)
+
+
+@L_utils.rank_zero_only
+def log_dict(logger, param_dict):
+    logger.log_hyperparams(param_dict)
 
 
 def within_slurm_batch():
@@ -52,9 +64,13 @@ def main(config: DictConfig):
     pdm = LitVQ2DDataModule(config)
     trainer = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 
-    if within_slurm_batch() and trainer.global_rank == 0:
-        cmd = f"scontrol write batch_script {jid} {default_root_dir}/slurm-{jid}.sh"
-        os.system(cmd)
+    # if wandblogger is present, log the hostname to the wandb dashboard
+    for logger in trainer.loggers:
+        if isinstance(logger, WandbLogger):
+            log_dict(logger, {"hostname": os.uname().nodename})
+
+    if within_slurm_batch():
+        write_batch_script(jid, default_root_dir)
 
     trainer.fit(plm, datamodule=pdm)
 
