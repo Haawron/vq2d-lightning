@@ -2,10 +2,16 @@ import hydra.utils
 from omegaconf import OmegaConf
 
 import torch
+import torch.optim
 
 import lightning as L
+from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.utilities import grad_norm
 
+import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image, ImageDraw
+from pathlib import Path
 from transformers import get_linear_schedule_with_warmup
 
 from ltvu.models import *
@@ -64,8 +70,11 @@ class LitModule(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.model: VQLOC = hydra.utils.instantiate(config.model)
-        self.save_hyperparameters()
+        self.model: VQLoC = hydra.utils.instantiate(
+            config.model, compile_backbone=config.get('compile', True))
+        self.save_hyperparameters(ignore='config')
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
+        self.sample_step = 0
 
     ############ major hooks ############
 
@@ -73,19 +82,28 @@ class LitModule(L.LightningModule):
         bsz = batch['segment'].shape[0]
         output_dict = self.model.forward(**batch, compute_loss=True)
         assert output_dict['loss'].requires_grad
+        assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
         self.log_dict(set_prefix_to_keys(
             output_dict['log_dict'], 'Train'),
             batch_size=bsz, rank_zero_only=True)
+        self.sample_step = (1 + self.global_step) * bsz * self.trainer.world_size
         self.log(
-            'sample_step', (1 + self.global_step) * bsz * self.trainer.world_size,
-            on_step=True, on_epoch=False, rank_zero_only=True)
+            'sample_step', self.sample_step,
+            batch_size=1, on_step=True, on_epoch=False, rank_zero_only=True)
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
-        output_dict = self.model.forward(**batch, compute_loss=True)
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
         self.log_dict(set_prefix_to_keys(
-            output_dict['log_dict'], 'Val'), batch_size=bsz, sync_dist=True)
+            output_dict['log_dict'], 'Val'),
+            batch_size=bsz, on_epoch=True, sync_dist=True)
+        self.log(
+            'sample_step', self.sample_step,
+            batch_size=1, on_step=False, on_epoch=True, sync_dist=True)
+        if self.sample_step > 0:  # after sanity check done
+            if batch_idx in [1000 * idx // bsz for idx in range(5)]:
+                self.print_outputs(batch, output_dict, bidxs=[batch_idx % bsz])
         return output_dict
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
@@ -93,8 +111,8 @@ class LitModule(L.LightningModule):
 
     def configure_optimizers(self):
         optim_config = self.config.optim
-        alL_params = list(filter(lambda p: p.requires_grad, self.parameters()))
-        optimizer = hydra.utils.instantiate(optim_config.optimizer, params=alL_params)
+        all_params = list(filter(lambda p: p.requires_grad, self.parameters()))
+        optimizer: torch.optim.Optimizer = hydra.utils.instantiate(optim_config.optimizer, params=all_params)
         if sched_cfg := optim_config.lr_scheduler:
             lr_scheduler = get_linear_schedule_with_warmup(
                 optimizer,
@@ -126,7 +144,50 @@ class LitModule(L.LightningModule):
     ############ helper functions ############
 
     def get_wnb_logger(self):
-        return [l for l in self.logger if isinstance(l, L.WandbLogger)][0]
+        return [l for l in self.loggers if isinstance(l, WandbLogger)][0]
+
+    def print_outputs(self, batch, output_dict, bidxs=None):
+        clip_uids = batch['clip_uid']
+        annotation_uids = batch['annotation_uid']
+        query_sets = batch['query_set']
+        segments = batch['segment_original'].cpu().numpy()
+        gt_bboxes = batch['gt_bboxes'].cpu().numpy()
+        gt_probs = batch['gt_probs'].cpu().numpy()
+
+        prob_pred_tops = output_dict['info_dict']['preds_top']['prob'].float().sigmoid().cpu().numpy()  # [b,t]
+        prob_rts = output_dict['info_dict']['preds_top']['bbox'].float().cpu().numpy()  # [b,t,4]
+        bsz, T, _, h, w = segments.shape
+        p_preds_dir = Path(self.trainer.log_dir or 'outputs/debug') / 'preds'
+        p_preds_dir.mkdir(parents=True, exist_ok=True)
+        step = self.sample_step
+
+        for bidx in range(bsz):
+            if bidxs is not None and bidx not in bidxs:
+                continue
+            quid = f'{clip_uids[bidx]}_{annotation_uids[bidx]}_{query_sets[bidx]}'
+            p_save = p_preds_dir / f'{quid}-prob_preds_{bidx}-{step:07d}.png'
+            plt.figure(figsize=(12, 6))
+            plt.plot(gt_probs[bidx], label='gt')
+            plt.plot(prob_pred_tops[bidx], label='pred_top')
+            plt.legend()
+            plt.title(f'Probabilities: {quid}')
+            plt.savefig(p_save)
+            plt.close()
+            print(f'Saved: {p_save}')
+            frames = []
+            for tidx in range(T):
+                frame = Image.fromarray((255*segments[bidx, tidx].transpose(1, 2, 0)).astype(np.uint8))
+                draw = ImageDraw.Draw(frame)
+                if gt_probs[bidx, tidx] > 1e-3:
+                    bbox_ = (gt_bboxes[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
+                    draw.rectangle(bbox_, outline=(0, 255, 0), width=5)  # [4]
+                if prob_pred_tops[bidx, tidx] > .5:  # 0.5 following the threshold in loss.py
+                    bbox_ = (prob_rts[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
+                    draw.rectangle(bbox_, outline=(255, 50, 50), width=5)  # [4]
+                frames.append(frame)
+            p_save = p_save.with_suffix('.gif')
+            frames[0].save(p_save, save_all=True, append_images=frames[1:], duration=100, loop=0)
+            print(f'Saved: {p_save}')
 
 
 def set_prefix_to_keys(d: dict, prefix: str) -> dict:

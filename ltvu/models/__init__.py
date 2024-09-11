@@ -1,4 +1,4 @@
-from .vqloc import ClipMatcher as VQLOC
+from .vqloc import ClipMatcher as VQLoC
 
 
-__all__ = ['VQLOC']
+__all__ = ['VQLoC']

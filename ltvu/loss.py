@@ -130,6 +130,7 @@ def assign_labels(anchors, gt_boxes, iou_threshold=0.5, topk=5):
 
 def get_losses_with_anchor(
     preds, gts,
+    training = True,
     positive_threshold = .2,
     positive_topk = 5,
     weight_bbox_center = 1.,
@@ -159,13 +160,15 @@ def get_losses_with_anchor(
     gt_before_query = gts['before_query']   # [b,t]
 
     # assign labels to anchors
-    if gt_prob.bool().any():
+    if training and gt_prob.bool().any():
         assign_label = assign_labels(anchor.repeat(b,t,1,1), gt_bbox,   # anchor.repeat(b,t,1,1) / pred_bbox
                                      iou_threshold=positive_threshold,
                                      topk=positive_topk)               # [b,t,N]
         positive = torch.logical_and(gt_prob.unsqueeze(-1).repeat(1,1,N).bool(),
                                      assign_label.bool())                           # [b,t,N]
         positive = rearrange(positive, 'b t N -> (b t N)')                          # [b*t*N]
+    elif not training:
+        positive = repeat(gt_prob.bool(), 'b t -> (b t N)', N=N)
     else:
         positive = torch.zeros(b,t,N).reshape(-1).bool().to(device)
 
@@ -194,11 +197,12 @@ def get_losses_with_anchor(
         iou, giou, loss_giou = GiouLoss(pred_bbox, gt_bbox_replicate, mask=loss_mask.bool().squeeze())
     else:
         pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c')
-        loss_center = torch.tensor(0.).cuda()
-        loss_hw = torch.tensor(0.).cuda()
-        loss_giou = torch.tensor(0.).cuda()
-        iou = torch.tensor(0.).cuda()
-        giou = torch.tensor(0.).cuda()
+        req = pred_bbox.requires_grad
+        loss_center = torch.tensor(0., requires_grad=req).cuda()
+        loss_hw = torch.tensor(0., requires_grad=req).cuda()
+        loss_giou = torch.tensor(0., requires_grad=req).cuda()
+        iou = torch.tensor(0., requires_grad=req).cuda()
+        giou = torch.tensor(0., requires_grad=req).cuda()
 
     pred_prob = rearrange(pred_prob, 'b t N -> (b t N)')
     gt_before_query_replicate = rearrange(gt_before_query.unsqueeze(2).repeat(1,1,N), 'b t N -> (b t N)')
@@ -223,15 +227,15 @@ def get_losses_with_anchor(
     }
 
     # get top prediction
-    pred_prob = rearrange(pred_prob, '(B N) -> B N', N=N)                                       # [b*t,N]
-    pred_bbox = rearrange(pred_bbox, '(B N) c -> B N c', N=N)                                   # [b*t,N,4]
-    pred_prob_top, top_idx = torch.max(pred_prob, dim=-1)                                       # [b*t], [b*t]
+    pred_prob = rearrange(pred_prob, '(B N) -> B N', N=N)                     # [b*t,N]
+    pred_bbox = rearrange(pred_bbox, '(B N) c -> B N c', N=N)                 # [b*t,N,4]
+    pred_prob_top, top_idx = torch.max(pred_prob, dim=-1)                     # [b*t], [b*t]
     top_idx = repeat(top_idx, 'B -> B n c', n=1, c=4)  # DEBUG: 에휴
-    # top_idx = top_idx[..., None, None].repeat(1,1,4)
     pred_bbox_top = torch.gather(pred_bbox, dim=1, index=top_idx).squeeze()   # [b*t,4]
+
     pred_top = {
         'bbox': rearrange(pred_bbox_top, '(b t) c -> b t c', b=b, t=t),
         'prob': rearrange(pred_prob_top, '(b t) -> b t', b=b, t=t)
     }
 
-    return loss, pred_top, gts  # gts with hw, center computed
+    return loss, pred_top, gts, positive  # gts with hw, center computed

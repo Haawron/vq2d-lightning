@@ -40,10 +40,18 @@ def build_backbone(backbone_name, backbone_type):
             backbone_dim = 768
         elif backbone_type == 'vits14':
             backbone_dim = 384
+        elif backbone_type == 'vitl14':
+            backbone_dim = 1024
+        elif backbone_type == 'vitg14':
+            backbone_dim = 1536
+        else:
+            raise NotImplementedError
     elif backbone_name == 'dinov2-hf':  # why not torch.hub? => just because I prefer huggingface
         backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
         down_rate = 14
         backbone_dim = 768
+    else:
+        raise NotImplementedError
     return backbone, down_rate, backbone_dim
 
 
@@ -57,18 +65,30 @@ def BasicBlock_Conv2D(in_dim, out_dim):
 
 class ClipMatcher(nn.Module):
     def __init__(self,
+        compile_backbone = True,
+
+        # model structure
         backbone_name = 'dinov2',
         backbone_type = 'vitb14',
-        fix_backbone = True,
         window_transformer = 5,  # sec
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
+        fix_backbone = True,
 
+        # input size
         query_size = 448,
         clip_size_fine = 448,
         clip_size_coarse = 448,
         clip_num_frames = 30,
+
+        # loss weights
+        positive_threshold = .2,
+        logit_scale = 100.,
+        weight_bbox_center = 1.,
+        weight_bbox_hw = 1.,
+        weight_bbox_giou = .3,
+        weight_prob = 50.,
     ) -> None:
         super().__init__()
 
@@ -87,15 +107,24 @@ class ClipMatcher(nn.Module):
         self.resolution_transformer = resolution_transformer
         self.num_anchor_regions = num_anchor_regions
 
+        self.positive_threshold = positive_threshold
+        self.logit_scale = logit_scale
+        self.weight_bbox_center = weight_bbox_center
+        self.weight_bbox_hw = weight_bbox_hw
+        self.weight_bbox_giou = weight_bbox_giou
+        self.weight_prob = weight_prob
+
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
             num_regions=[self.num_anchor_regions, self.num_anchor_regions])
         self.anchors_xyhw = self.anchors_xyhw / self.clip_size_coarse   # [R^2*N*M,4], value range [0,1], represented by [c_x,c_y,h,w] in torch axis
-        self.anchors_xyxy = bbox_xyhwToxyxy(self.anchors_xyhw)
+        self.anchors_xyxy = bbox_xyhwToxyxy(self.anchors_xyhw)  # non-trainable, [R^2*N*M,4]
 
-        if fix_backbone:  # TODO: compile
+        if fix_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+        if compile_backbone:
+            self.backbone = torch.compile(self.backbone)
 
         # query down heads
         self.query_down_heads = []
@@ -174,7 +203,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def extract_feature(self, x, return_h_w=False):
+    def extract_feature(self, x, return_h_w=False) -> torch.Tensor | tuple[torch.Tensor, int, int]:
         if self.backbone_name == 'dino':
             b, _, h_origin, w_origin = x.shape
             out = self.backbone.get_intermediate_layers(x, n=1)[0]
@@ -182,9 +211,6 @@ class ClipMatcher(nn.Module):
             h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
             dim = out.shape[-1]
             out = out.reshape(b, h, w, dim).permute(0,3,1,2)
-            if return_h_w:
-                return out, h, w
-            return out
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
@@ -197,12 +223,15 @@ class ClipMatcher(nn.Module):
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
             dim = out.shape[-1]
-            out = out.reshape(b, h, w, dim).permute(0,3,1,2)
-            if return_h_w:
-                return out, h, w
-            return out
+            out = out.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
         else:
             raise NotImplementedError
+
+        if torch.isnan(out).any():
+            raise ValueError('nan in feature')
+        if return_h_w:
+            return out, h, w
+        return out
 
     def get_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
@@ -248,10 +277,11 @@ class ClipMatcher(nn.Module):
         self,
         segment,
         query,
-        before_query_mask: torch.Tensor = None,
-        gt_bboxes = None,
-        gt_probs = None,
         compute_loss = False,
+        training = True,
+        before_query_mask: None | torch.Tensor = None,
+        gt_probs: None | torch.Tensor = None,
+        gt_bboxes: None | torch.Tensor = None,
         use_hnm = False,
         **kwargs
     ):
@@ -263,11 +293,11 @@ class ClipMatcher(nn.Module):
         '''
         b, t = segment.shape[:2]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        device = segment.device
 
         # get backbone features
-        query_feat = self.extract_feature(query)        # [b c h w]
-        clip_feat = self.extract_feature(segment)          # (b t) c h w
-        h, w = clip_feat.shape[-2:]
+        query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
+        clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
 
         # reduce channel size
         all_feat = torch.cat([query_feat, clip_feat], dim=0)
@@ -279,8 +309,8 @@ class ClipMatcher(nn.Module):
             b **= 2
 
         # find spatial correspondence between query-frame
-        query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c] # DEBUG: same as below
-        # query_feat = rearrange(query_feat.unsqueeze(1).repeat(1,t,1,1,1), 'b t c h w -> (b t) (h w) c')# [b*t,n,c]
+        # query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c] # DEBUG: same as below
+        query_feat = rearrange(query_feat.unsqueeze(1).repeat(1,t,1,1,1), 'b t c h w -> (b t) (h w) c')# [b*t,n,c]
         clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')            # [b*t,n,c]
         for layer in self.CQ_corr_transformer:
             clip_feat = layer(clip_feat, query_feat)                        # [b*t,n,c]
@@ -298,14 +328,15 @@ class ClipMatcher(nn.Module):
                 break  # ? why break here
 
         # refine anchors
-        anchors_xyhw = self.anchors_xyhw.to(clip_feat.device)                   # [N,4]
-        anchors_xyxy = self.anchors_xyxy.to(clip_feat.device)                   # [N,4]
+        anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]
+        anchors_xyxy = self.anchors_xyxy.to(device)                             # [N,4]
         anchors_xyhw = anchors_xyhw.reshape(1,1,-1,4)                           # [1,1,N,4]
         anchors_xyxy = anchors_xyxy.reshape(1,1,-1,4)                           # [1,1,N,4]
 
-        bbox_refine, prob = self.head(clip_feat)                                # [b*t,N=h*w*n*m,c]
+        bbox_refine, prob = self.head.forward(clip_feat)                        # [b*t,N=h*w*n*m,c]
         bbox_refine = rearrange(bbox_refine, '(b t) N c -> b t N c', b=b, t=t)  # [b,t,N,4], in xyhw frormulation
-        prob = rearrange(prob, '(b t) N c -> b t N c', b=b, t=t)                # [b,t,N,1]
+        prob = self.logit_scale*rearrange(prob, '(b t) N c -> b t N c', b=b, t=t) # [b,t,N,1]
+        prob = prob.squeeze(-1)                                                 # [b,t,N]
         bbox_refine += anchors_xyhw                                             # [b,t,N,4]
 
         center, hw = bbox_refine.split([2,2], dim=-1)                           # represented by [c_x, c_y, h, w]
@@ -316,12 +347,16 @@ class ClipMatcher(nn.Module):
             'center': center,           # [b,t,N,2]
             'hw': hw,                   # [b,t,N,2]
             'bbox': bbox,               # [b,t,N,4]
-            'prob': prob.squeeze(-1),   # [b,t,N]
+            'prob': prob,               # [b,t,N], logits
             'anchor': anchors_xyxy      # [1,1,N,4]
         }
-        output_dict = {'pred_dict': pred_dict}
 
+        output_dict = {}
         if compute_loss:
+            assert before_query_mask is not None
+            assert gt_probs is not None
+            assert gt_bboxes is not None
+            # rename variables for `get_losses_with_anchor` interface
             gts = {
                 'before_query': before_query_mask,  # [b,t]
                 'clip_with_bbox': gt_probs,         # [b,t]
@@ -330,32 +365,73 @@ class ClipMatcher(nn.Module):
                 # 'center': None,                 # [b,t,2]
             }
             # acutal loss calculation
-            loss_dict, preds_top, gts = get_losses_with_anchor(pred_dict, gts)
-            total_loss = sum(loss_dict[k.replace('loss_', 'weight_')] * v for k, v in loss_dict.items() if 'loss_' in k)
-            output_dict.update({'loss': total_loss})
+            loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
+                pred_dict, gts,
+                training=training,
+                positive_threshold=self.positive_threshold,
+                weight_bbox_center=self.weight_bbox_center,
+                weight_bbox_hw=self.weight_bbox_center,
+                weight_bbox_giou=self.weight_bbox_center,
+                weight_prob=self.weight_bbox_center,
+            )
 
-            # for logging
+            loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]
+            total_loss: torch.Tensor = torch.tensor(0., dtype=torch.float32, device=device, requires_grad=True)
+            for loss_name in loss_names:
+                w, l = loss_dict[f'weight_{loss_name}'], loss_dict[f'loss_{loss_name}']
+                if training:
+                    assert l.requires_grad, f'{loss_name} should require grad'
+                total_loss = total_loss + w * l
+
+            # for logging - losses
             loss_dict = detach_dict(loss_dict)
-            preds_top = detach_dict(preds_top)
-            preds_prob = preds_top['prob']
-            prob_accuracy = ((torch.sigmoid(preds_prob) > .5) == gt_probs.bool()).float().mean(dim=1)  # [b,t] -> [b]
             log_dict = {
                 'loss': total_loss.detach(),
                 'loss_bbox_center': loss_dict['loss_bbox_center'].mean(),
                 'loss_bbox_hw': loss_dict['loss_bbox_hw'].mean(),
                 'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
                 'loss_prob': loss_dict['loss_prob'].mean(),
-                'iou': loss_dict['iou'].mean(),
-                'giou': loss_dict['giou'].mean(),
-                'prob_acc': prob_accuracy.mean(),
             }
-            output_dict.update({'log_dict': log_dict})
+
+            # for logging - metrics
+            preds_top = detach_dict(preds_top)
+            prob: torch.Tensor = prob.detach()
+            b, t, N = prob.shape
+            ious, gious = loss_dict['iou'], loss_dict['giou']  # both [b*t*N]
+            prob_theta = .5
+            if training:  # measure for all positive anchors
+                if pos_mask.sum() > 0:
+                    ious, gious = ious[pos_mask], gious[pos_mask]  # both [#pos_anchors]
+                    prob = prob.flatten()[pos_mask]  # [b*t*N] -> [#pos_anchors]
+                    prob_accuracy = (prob.float().sigmoid() > prob_theta).float().mean()
+                else:
+                    prob_accuracy = torch.tensor(0., dtype=torch.float32, device=device)
+            else:  # measure for per-frame top-1 anchors
+                top_idx = rearrange(prob.argmax(dim=-1, keepdim=True), 'b t 1 -> (b t) 1')  # [b*t, 1]
+                ious, gious = rearrange(ious, '(b t N) -> (b t) N', b=b, t=t), rearrange(ious, '(b t N) -> (b t) N', b=b, t=t)
+                ious, gious = torch.take_along_dim(ious, top_idx, dim=-1), torch.take_along_dim(gious, top_idx, dim=-1)  # [b*t]
+                prob = preds_top['prob']  # [b,t]
+                prob_accuracy = (prob.float().sigmoid() > prob_theta) == gt_probs.bool()  # [b,t]
+                prob_accuracy = prob_accuracy.float().mean()
+            ious, gious = ious.mean(), gious.mean()
+            log_dict.update({
+                'iou': ious,
+                'giou': gious,
+                'prob_acc': prob_accuracy,
+            })
+
+            # not for logging but just in case we need it
             info_dict = {
                 'loss_dict': loss_dict,     # losses starting with 'loss_', weights starting with 'weight_', iou, giou
                 'preds_top': preds_top,     # bbox: [b,t,4], prob: [b,t]
                 'gts': gts,                 # gts with hw, center computed
             }
-            output_dict.update({'info_dict': info_dict})
+
+            # gather all outputs
+            output_dict.update({'loss': total_loss})  # for backward
+            output_dict.update({'log_dict': log_dict})  # for logging
+            output_dict.update({'info_dict': info_dict})  # for debugging
+        output_dict.update({'pred_dict': detach_dict(pred_dict)})
 
         return output_dict
 

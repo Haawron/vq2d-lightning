@@ -1,4 +1,4 @@
-_target_: ltvu.models.VQLOC
+_target_: ltvu.models.VQLoC
 backbone_name: 'dinov2-hf'
 backbone_type: 'vitb14'
 fix_backbone: True
@@ -6,18 +6,15 @@ window_transformer: 5
 resolution_transformer: 8
 num_anchor_regions: 16
 num_layers_st_transformer: 3
-# pe_transformer: 'zero'
 
 query_size: ${dataset.query_size[0]}
 clip_size_fine: ${dataset.segment_size[0]}
 clip_size_coarse: ${dataset.segment_size[0]}
 clip_num_frames: ${dataset.num_frames}
 
-# positive_threshold: 0.2
-# positive_topk: 5
-# weight_bbox: 1.0
-# weight_bbox_center: 1.0
-# weight_bbox_hw: 1.0
-# weight_bbox_ratio: 1.0
-# weight_bbox_giou: 0.3
-# weight_prob: 100.0
+positive_threshold: ${loss.positive_threshold}
+logit_scale: ${loss.logit_scale}
+weight_bbox_center: ${loss.weight_bbox_center}
+weight_bbox_hw: ${loss.weight_bbox_hw}
+weight_bbox_giou: ${loss.weight_bbox_giou}
+weight_prob: ${loss.weight_prob}

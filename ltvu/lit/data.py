@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from omegaconf import OmegaConf
 
 import torch
+import torch.optim
 import torch.utils.data
 
 import lightning as L
@@ -16,6 +18,7 @@ from ltvu.dataset import (
     VQ2DFitDataset, VQ2DTestDatasetSeparated,
 )
 from ltvu.preprocess import generate_flat_annotations_vq2d
+from ltvu.bbox_ops import check_bbox
 
 
 class LitVQ2DDataModule(L.LightningDataModule):
@@ -38,19 +41,19 @@ class LitVQ2DDataModule(L.LightningDataModule):
         # TODO: Integrate into the ds_config
         aug_config = config.train.augments
         self.segment_aug: bool = aug_config.segment
-        self.segment_size: tuple[int] = tuple(aug_config.segment_size)  # h, w
+        self.segment_size: tuple[int, int] = tuple(aug_config.segment_size)  # h, w
         self.crop_ratio_min = aug_config.crop_ratio_min
         self.crop_ratio_max = aug_config.crop_ratio_max
         cr_ratio = self.crop_ratio_min, self.crop_ratio_max
 
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore='config')
 
         # GPU accelerated data preprocessing
         self.normalization = kornia.enhance.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         self.transform_clip = K.AugmentationSequential(
             K.ColorJiggle(brightness=0.4, contrast=0.4, saturation=0.3, hue=0, p=1.0),
             K.RandomHorizontalFlip(p=0.5),
-            K.RandomResizedCrop(self.segment_size, scale=(0.66, 1.0), ratio=cr_ratio, p=1.0),
+            K.RandomResizedCrop(self.segment_size, scale=(0.66, 1.0), ratio=cr_ratio, p=1.0),  # h, w
             data_keys=[DataKey.INPUT, DataKey.BBOX_XYXY],  # Just to define the future input here.
             same_on_batch=True)
 
@@ -82,12 +85,18 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
         """GPU accelerated data preprocessing"""
-        segment, query, gt_bboxes = batch['segment'], batch['query'], batch['gt_bboxes']
-        if self.trainer.training and self.segment_aug:
-            segment, gt_bboxes = self.augment(segment, gt_bboxes)
-        # TODO: augment query as well
+        segment, query, gt_bboxes, gt_probs = batch['segment'], batch['query'], batch['gt_bboxes'], batch['gt_probs']
+        if self.trainer is not None:
+            if self.trainer.training:
+                if self.segment_aug:
+                    segment, gt_bboxes, gt_probs_update = self.augment(segment, gt_bboxes)
+                    gt_probs = gt_probs.logical_and(gt_probs_update).float()
+            else:
+                batch.update({'segment_original': segment, 'query_original': query})
         segment, query = self.normalize(segment, query)
-        batch.update({'segment': segment, 'query': query, 'gt_bboxes': gt_bboxes})
+        batch.update({
+            'segment': segment, 'query': query,
+            'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
         return batch
 
     def augment(self, segment: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
@@ -111,6 +120,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
         bbox_scale = torch.tensor([h, w, h, w], device=device)[None, None]  # [1,1,4]
         bboxes_px = gt_bboxes * bbox_scale  # [b,t,4], pixel space
+        # bboxes_px = bboxes_px[..., [1, 0, 3, 2]]  # [b,t,4], yxyx format
         seg_queue, bboxes_queue = [], []
         # DON'T FLATTEN AND PRALLELIZE THIS LOOP
         #    AS t IS TREATED AS BATCH AXIS
@@ -120,9 +130,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         for i in range(bsz):  # augs are different for each sample (desired)
             # augs are consistent across t (desired)
             # [t,c,h,w] -> [c,h,w], [b,t,4] -> [t,4] -> [t,N=1,4]
-            segment_aug, bboxes_aug = self.transform_clip(segment[i], bboxes_px[i, :, None])
-            bboxes_aug = bboxes_aug / bbox_scale  # [t,4]
-            bboxes_aug = bboxes_aug.squeeze(1)  # [t,4]
+            segment_aug, bboxes_aug_px = self.transform_clip(segment[i], bboxes_px[i, :, None])
+            bboxes_aug_px = bboxes_aug_px.squeeze(1)  # [t,4]
+            # bboxes_aug = bboxes_aug[..., [1, 0, 3, 2]]  # [t,4], xyxy format
             # imgs = []
             # for t in range(segment_aug.shape[0]):
             #     img = Image.fromarray(segment_aug[t].permute(1, 2, 0).mul(255).byte().cpu().numpy())
@@ -134,12 +144,15 @@ class LitVQ2DDataModule(L.LightningDataModule):
             # imgs[0].save(p_img, save_all=True, append_images=imgs[1:], duration=100, loop=0)
             # print(f'bbox: {p_img} {bbox}')
             seg_queue.append(segment_aug)
-            bboxes_queue.append(bboxes_aug)
+            bboxes_queue.append(bboxes_aug_px)
         segment = torch.stack(seg_queue, dim=0)
-        gt_bboxes = torch.stack(bboxes_queue, dim=0)  # [b,t,4]
-        return segment, gt_bboxes
+        bboxes_aug_px = torch.stack(bboxes_queue, dim=0)  # [b,t,4]
+        bboxes_aug_px, gt_probs_update = check_bbox(bboxes_aug_px, h, w)  # [b,t,4], [b,t]
+        gt_bboxes = bboxes_aug_px / bbox_scale  # [t,4]
+        return segment, gt_bboxes, gt_probs_update
 
     def normalize(self, segment, query):  # TODO: static
+        # TODO: Is per-frame normalization valid?
         bsz = segment.shape[0]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         segment = self.normalization(segment)  # [b,t,c,h,w]
@@ -223,7 +236,7 @@ if __name__ == '__main__':
             return self.x ** 2
         val_step = training_step
         def configure_optimizers(self):
-            return torch.optim.Adam(self.parameters(), lr=1e-3)
+            return torch.optim.adam.Adam(self.parameters(), lr=1e-3)
 
     dev_plm = DevModel()
     pdm.num_workers = 8

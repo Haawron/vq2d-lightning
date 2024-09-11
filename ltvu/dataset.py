@@ -19,8 +19,7 @@ import torchvision.transforms.functional as TF
 import decord
 import numpy as np
 from einops import rearrange
-from PIL import Image
-from tqdm import tqdm
+from PIL import Image, ImageDraw
 
 # local (ours)
 
@@ -83,9 +82,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert idxs_required.issubset(idxs_avail), \
             f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
 
+        segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
-        segment = self.get_segment_frames(ann, frame_idxs)
-        segment, gt_rt = self.pad_and_resize(ann, segment, gt_rt)
+        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
 
         return {
@@ -136,12 +135,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         return frames
 
-    def pad_and_resize(self, ann: dict, frames: torch.Tensor, bboxes: np.ndarray):
+    def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
         # frames: [t, c, h, w]
         # bboxes: [t, 4], xyxy, normalized
         t, c, h, w = frames.shape
-        ow, oh = ann['original_width'], ann['original_height']
-        bboxes *= [ow, oh, ow, oh]  # de-normalize
+        bboxes *= [w, h, w, h]  # de-normalize
 
         # pad
         pad_size = (w - h) // 2
@@ -200,14 +198,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
 
-    def get_response_track(self, ann: dict, seg_idxs: np.ndarray):
+    def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_
 
         Parameters
         ----------
         ann : dict
             _description_
-        seg_idxs : np.ndarray
+        frame_idxs : np.ndarray
             Frame indices of the segment (a part of the clip).
 
         Returns
@@ -219,25 +217,24 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         ow, oh = ann['original_width'], ann['original_height']
         gt_rt = ann['response_track']
         gt_ext = ann['response_track_valid_range']
+        assert gt_ext[1] - gt_ext[0] + 1 == len(gt_rt)
 
         # initialize bboxes with default values
-        seg_with_gt = (seg_idxs <= gt_ext[1]) & (seg_idxs >= gt_ext[0])
-        default_bbox = [0, 0, 1e-6, 1e-6]  # xyxy, normalized
-        bboxes = np.array([default_bbox] * self.num_frames)  # [t, 4]
+        seg_with_gt = (frame_idxs <= gt_ext[1]) & (frame_idxs >= gt_ext[0])
 
         # update bboxes with GT values
-        valid_bboxes = []
-        for res in gt_rt:
-            if res['fno'] in seg_idxs:
-                num_repeat = (res['fno'] == seg_idxs).sum()  # segment frames have duplicates whenever clip_len < num_frames
-                x, y, w, h = res['x'], res['y'], res['w'], res['h']
-                x1, y1, x2, y2 = x, y, x + w, y + h
-                for _ in range(num_repeat):
-                    valid_bboxes.append([x1, y1, x2, y2])
+        bboxes = []
+        for frame_idx, with_gt in zip(frame_idxs, seg_with_gt):
+            if with_gt:
+                res = gt_rt[frame_idx - gt_ext[0]]
+                assert frame_idx == res['fno']
+                bbox = [res['x'], res['y'], res['x'] + res['w'], res['y'] + res['h']]
+                bboxes.append(bbox)
+            else:
+                bboxes.append([0, 0, 1e-6, 1e-6])
 
-        assert len(valid_bboxes) == seg_with_gt.sum(), f'GT bbox length mismatch: {len(valid_bboxes)=} vs {seg_with_gt.sum()=}'
-        bboxes[seg_with_gt] = np.array(valid_bboxes)
-        bboxes = np.array(bboxes) / [ow, oh, ow, oh]  # normalize
+        # normalize
+        bboxes = np.array(bboxes) / [ow, oh, ow, oh]
         bboxes = bboxes.astype(np.float32).clip(0, 1)
 
         return bboxes, seg_with_gt.astype(np.float32)
@@ -353,11 +350,11 @@ def shift_indices_to_clip_range(
         frame_idxs = np.array(frame_idxs)
     # assert len(frame_idxs) < clip_len // 2, \
     #     f'The number of frames should be less than half of the clip length. {clip_len=} {len(frame_idxs)=}'  # half: chosen arbitrarily
+    lmost = frame_idxs.min()
+    rmost = frame_idxs.max()
     if clip_len < len(frame_idxs):
         frame_idxs = np.linspace(0, clip_len - 1, len(frame_idxs)).astype(int)
     else:
-        lmost = frame_idxs.min()
-        rmost = frame_idxs.max()
         if lmost < 0:
             frame_idxs = frame_idxs - lmost
         elif rmost >= clip_len:

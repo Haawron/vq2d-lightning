@@ -5,7 +5,9 @@ load_dotenv()
 # built-in + hydra
 import os
 import subprocess
+from pathlib import Path
 import hydra
+import hydra.core.hydra_config
 from omegaconf import OmegaConf, DictConfig
 
 # torch
@@ -29,8 +31,10 @@ def log_to_console(msg):
 
 @L_utils.rank_zero_only
 def write_batch_script(jid, default_root_dir):
-    cmd = f"scontrol write batch_script {jid} {default_root_dir}/slurm-{jid}.sh"
-    os.system(cmd)
+    p_script = Path(default_root_dir) / f"slurm-{jid}.sh"
+    command = f"scontrol write batch_script {jid} {p_script}"
+    print(f'Writing batch script to {p_script}')
+    subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True)
 
 
 @L_utils.rank_zero_only
@@ -60,7 +64,6 @@ def main(config: DictConfig):
     log_to_console("="*80 + '\n')
 
     plm = LitModule(config)
-    plm.model.backbone = torch.compile(plm.model.backbone)
     pdm = LitVQ2DDataModule(config)
     trainer = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 

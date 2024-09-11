@@ -12,5 +12,15 @@
         "multirun/",
         "wandb/",
         "*.sif",
-    ]
+    ],
+    "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import
+    "reportCallIssue": "none",  // pyright doesn't consider C-based functions
+    "reportAssignmentType": "none",  // pyright doesn't consider Optional types
+    "reportArgumentType": "none",  // pyright doesn't consider Optional types
+    "reportIncompatibleMethodOverride": "none",  // pyright doesn't consider Optional types
+    "reportRedeclaration": "none",  // pyright doesn't consider Optional types
+    "reportAttributeAccessIssue": "none",  // pyright doesn't consider Optional types
+    "reportOptionalOperand": "none",  // pyright doesn't consider Optional types
+    "reportOptionalMemberAccess": "none",  // pyright doesn't consider Optional types
+    "typeCheckingMode": "off",
 }

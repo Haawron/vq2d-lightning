@@ -7,7 +7,7 @@ from ltvu.structures import ResponseTrack
 
 
 # clip level
-def compute_tious(all_preds: dict[list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
+def compute_tious(all_preds: dict[str, list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
     """
     Bboxes are in the format of xyhw, aspect to the input clip size.
 
@@ -33,7 +33,7 @@ def compute_tious(all_preds: dict[list[ResponseTrack]], all_pos: dict[str, Respo
 
 
 # clip level
-def compute_stious(all_preds: dict[list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
+def compute_stious(all_preds: dict[str, list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
     all_qset_uuids = set(all_preds.keys())
     assert all_qset_uuids == set(all_pos.keys())
     all_qset_uuids = sorted(all_qset_uuids)
@@ -50,7 +50,7 @@ def compute_stious(all_preds: dict[list[ResponseTrack]], all_pos: dict[str, Resp
 
 
 # frame level
-def compute_sious_for_positives(all_preds: dict[list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
+def compute_sious_for_positives(all_preds: dict[str, list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
     all_qset_uuids = set(all_preds.keys())
     assert all_qset_uuids == set(all_pos.keys())
     all_qset_uuids = sorted(all_qset_uuids)
@@ -76,7 +76,7 @@ def compute_sious_for_positives(all_preds: dict[list[ResponseTrack]], all_pos: d
 
 def compute_average_precision_dict(
     ious: np.ndarray,  # [N_samples]
-    thresholds: np.ndarray = np.array([.25, .5, .75, .95])
+    thresholds: np.ndarray | list[float] = np.array([.25, .5, .75, .95])
 ):
     num_samples = ious.shape[0]
     thresholds = np.array(thresholds)

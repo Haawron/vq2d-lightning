@@ -16,10 +16,10 @@ from einops import rearrange
 from transformers import Dinov2Model, BitImageProcessor
 
 from ltvu.dataset import LitVQ2DDataModule
-from ltvu.models import VQLOC
+from ltvu.models import VQLoC
 
 # type aliases
-T_MODEL = Dinov2Model | VQLOC
+T_MODEL = Dinov2Model | VQLoC
 
 
 def get_dino() -> Dinov2Model:
@@ -28,9 +28,9 @@ def get_dino() -> Dinov2Model:
     return model
 
 
-def get_vqloc() -> VQLOC:
+def get_vqloc() -> VQLoC:
     print('Loading VQLOC model...')
-    model = VQLOC(
+    model = VQLoC(
         backbone_name='dinov2-hf',
         clip_num_frames=config.dataset.num_frames
     )

@@ -5,7 +5,7 @@
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=42G
 #SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
@@ -21,4 +21,4 @@ fi
 
 tar -xf /data/datasets/tarfiles/vq2d_pos_and_query_frames_520ss.tar -C /local_datasets/
 
-python run.py
+python run.py base_lr=0.0005

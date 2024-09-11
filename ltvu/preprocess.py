@@ -148,7 +148,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         for chidx in range(0, len(raw_idxs), chunk_size):
             frame_idxs = all_frame_idxs[chidx: chidx + chunk_size]
             frames: torch.Tensor = vr.get_batch(raw_idxs[chidx: chidx + chunk_size])    # [N, H, W, c]
-            frames = frames.numpy()
+            frames: np.ndarray = frames.numpy()
             frames = self.resize(frames)  # [N, h, w, c]
             frames = [Image.fromarray(frame) for frame in frames]
             for frame_idx, frame in zip(frame_idxs, frames):
@@ -171,7 +171,8 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
     @staticmethod
     def worker_init_fn(worker_id):
         worker_info = torch.utils.data.get_worker_info()
-        dataset = worker_info.dataset
+        assert worker_info is not None
+        dataset: FrameExtractAndSaveAsTarfileDataset = worker_info.dataset
         p_tarfiles_dir = dataset.p_tarfiles_dir
         p_tarfile = p_tarfiles_dir / f'worker_{worker_id}.tar'
         with tarfile.open(p_tarfile, 'w'):  # create tarfile
