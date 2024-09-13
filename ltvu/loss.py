@@ -69,7 +69,10 @@ def GiouLoss(bbox_p, bbox_g, mask=None):
     iou = 1.0 * I / (U + 1e-6)
 
     # Giou
-    giou = iou - (area_c - U) / area_c
+    giou = iou - (area_c - U) / (area_c + 1e-6)
+    if not torch.isfinite(giou).all():
+        print('giou is not finite')
+        giou = torch.zeros_like(giou, device=device, requires_grad=True, dtype=torch.float32)
 
     if torch.is_tensor(mask):
         loss_giou = torch.mean(1.0 - giou[mask])
@@ -192,8 +195,8 @@ def get_losses_with_anchor(
         loss_hw = F.l1_loss(pred_hw_positive, gt_hw_positive)
 
         # bbox giou loss
-        pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c')
-        gt_bbox_replicate = rearrange(gt_bbox.unsqueeze(2).repeat(1,1,N,1), 'b t N c -> (b t N) c')
+        pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c').float()
+        gt_bbox_replicate = rearrange(gt_bbox.unsqueeze(2).repeat(1,1,N,1), 'b t N c -> (b t N) c').float()
         iou, giou, loss_giou = GiouLoss(pred_bbox, gt_bbox_replicate, mask=loss_mask.bool().squeeze())
     else:
         pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c')

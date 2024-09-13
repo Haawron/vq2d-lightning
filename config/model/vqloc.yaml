@@ -2,10 +2,13 @@ _target_: ltvu.models.VQLoC
 backbone_name: 'dinov2-hf'
 backbone_type: 'vitb14'
 fix_backbone: True
+backbone_precision: ${backbone_precision}
+backbone_fp32_mm_precision: ${backbone_fp32_mm_precision}
 window_transformer: 5
 resolution_transformer: 8
 num_anchor_regions: 16
 num_layers_st_transformer: 3
+transformer_dropout: 0.2
 
 query_size: ${dataset.query_size[0]}
 clip_size_fine: ${dataset.segment_size[0]}

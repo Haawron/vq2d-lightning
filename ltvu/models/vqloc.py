@@ -66,6 +66,8 @@ def BasicBlock_Conv2D(in_dim, out_dim):
 class ClipMatcher(nn.Module):
     def __init__(self,
         compile_backbone = True,
+        backbone_precision = 'bf16-mixed',
+        backbone_fp32_mm_precision = 'medium',
 
         # model structure
         backbone_name = 'dinov2',
@@ -74,6 +76,7 @@ class ClipMatcher(nn.Module):
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
+        transformer_dropout = 0.2,
         fix_backbone = True,
 
         # input size
@@ -94,6 +97,11 @@ class ClipMatcher(nn.Module):
 
         self.backbone, self.down_rate, self.backbone_dim = build_backbone(backbone_name, backbone_type)
         self.backbone_name = backbone_name
+        prec = backbone_precision.split('-')[0]
+        dtypes = {'bf16': torch.bfloat16, 'fp32': torch.float32, 'fp16': torch.float16}
+        self.backbone_dtype = dtypes[prec]
+        self.backbone_autocast = prec != 'fp32'
+        self.backbone_fp32_mm_precision = backbone_fp32_mm_precision
 
         self.query_size = query_size
         self.clip_size_fine = clip_size_fine
@@ -106,6 +114,7 @@ class ClipMatcher(nn.Module):
         self.window_transformer = window_transformer
         self.resolution_transformer = resolution_transformer
         self.num_anchor_regions = num_anchor_regions
+        self.transformer_dropout = transformer_dropout
 
         self.positive_threshold = positive_threshold
         self.logit_scale = logit_scale
@@ -123,6 +132,7 @@ class ClipMatcher(nn.Module):
         if fix_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
+            self.backbone.eval()
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
 
@@ -156,7 +166,7 @@ class ClipMatcher(nn.Module):
                     d_model=256,
                     nhead=4,
                     dim_feedforward=1024,
-                    dropout=0.0,
+                    dropout=transformer_dropout,
                     activation='gelu',
                     batch_first=True
                 )
@@ -188,7 +198,7 @@ class ClipMatcher(nn.Module):
                         d_model=256,
                         nhead=8,
                         dim_feedforward=2048,
-                        dropout=0.0,
+                        dropout=transformer_dropout,
                         activation='gelu',
                         batch_first=True))
         self.feat_corr_transformer = nn.ModuleList(self.feat_corr_transformer)
@@ -229,15 +239,17 @@ class ClipMatcher(nn.Module):
 
         if torch.isnan(out).any():
             raise ValueError('nan in feature')
+        out = out.float()
         if return_h_w:
             return out, h, w
         return out
 
     def get_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
+            device = src.device
             hw = src.shape[1] // t
             thw = src.shape[1]
-            mask = torch.ones(thw, thw).float() * float('-inf')
+            mask = torch.ones(thw, thw, device=device).float() * float('-inf')
 
             window_size = self.window_transformer // 2
 
@@ -245,7 +257,7 @@ class ClipMatcher(nn.Module):
                 min_idx = max(0, (i-window_size)*hw)
                 max_idx = min(thw, (i+window_size+1)*hw)
                 mask[i*hw: (i+1)*hw, min_idx: max_idx] = 0.0
-            mask = mask.to(src.device)
+            # mask = mask.to(src.device)
             self.temporal_mask = mask
         return self.temporal_mask
 
@@ -296,8 +308,12 @@ class ClipMatcher(nn.Module):
         device = segment.device
 
         # get backbone features
-        query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
-        clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+        prec = torch.get_float32_matmul_precision()
+        torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
+        with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
+            query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
+            clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+        torch.set_float32_matmul_precision(prec)
 
         # reduce channel size
         all_feat = torch.cat([query_feat, clip_feat], dim=0)
@@ -370,9 +386,9 @@ class ClipMatcher(nn.Module):
                 training=training,
                 positive_threshold=self.positive_threshold,
                 weight_bbox_center=self.weight_bbox_center,
-                weight_bbox_hw=self.weight_bbox_center,
-                weight_bbox_giou=self.weight_bbox_center,
-                weight_prob=self.weight_bbox_center,
+                weight_bbox_hw=self.weight_bbox_hw,
+                weight_bbox_giou=self.weight_bbox_giou,
+                weight_prob=self.weight_prob,
             )
 
             loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]
@@ -403,15 +419,17 @@ class ClipMatcher(nn.Module):
                 if pos_mask.sum() > 0:
                     ious, gious = ious[pos_mask], gious[pos_mask]  # both [#pos_anchors]
                     prob = prob.flatten()[pos_mask]  # [b*t*N] -> [#pos_anchors]
-                    prob_accuracy = (prob.float().sigmoid() > prob_theta).float().mean()
+                    prob_accuracy = (prob.sigmoid() > prob_theta).float().mean()
                 else:
                     prob_accuracy = torch.tensor(0., dtype=torch.float32, device=device)
             else:  # measure for per-frame top-1 anchors
+                pos_mask = gt_probs.bool().flatten()  # [b,t]
                 top_idx = rearrange(prob.argmax(dim=-1, keepdim=True), 'b t 1 -> (b t) 1')  # [b*t, 1]
-                ious, gious = rearrange(ious, '(b t N) -> (b t) N', b=b, t=t), rearrange(ious, '(b t N) -> (b t) N', b=b, t=t)
+                ious, gious = rearrange(ious, '(b t N) -> (b t) N', b=b, t=t), rearrange(gious, '(b t N) -> (b t) N', b=b, t=t)
                 ious, gious = torch.take_along_dim(ious, top_idx, dim=-1), torch.take_along_dim(gious, top_idx, dim=-1)  # [b*t]
+                ious, gious = ious[pos_mask], gious[pos_mask]
                 prob = preds_top['prob']  # [b,t]
-                prob_accuracy = (prob.float().sigmoid() > prob_theta) == gt_probs.bool()  # [b,t]
+                prob_accuracy = (prob.sigmoid() > prob_theta) == gt_probs.bool()  # [b,t]
                 prob_accuracy = prob_accuracy.float().mean()
             ious, gious = ious.mean(), gious.mean()
             log_dict.update({
@@ -494,8 +512,6 @@ class Head(nn.Module):
 
         feat_reg = self.regression_conv(feat_reg)        # [B,n*m*4,h,w]
         feat_cls = self.classification_conv(feat_cls)    # [B,n*m*1,h,w]
-
-        # dpout pos 2
 
         out_reg = self.regression_head(feat_reg)
         out_cls = self.classification_head(feat_cls)

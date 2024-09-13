@@ -245,21 +245,23 @@ class VQ2DTestDatasetSeparated(VQ2DFitDataset):
 
     def __init__(self, config, split = 'val'):
         super().__init__(config, split)
-        # self.all_clip_uids = sorted(set([ann['clip_uid'] for ann in self.all_anns]))
-        segment_length = (self.num_frames - 1) * self.frame_interval + 1
-        self.all_seg_uids = []
+        self.num_frames_per_segment = self.num_frames
+        self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered
+        del self.num_frames  # to avoid confusion
+
+        self.all_segments = []
         for ann in self.all_anns:
             clip_uid = ann['clip_uid']
             annotation_uid = ann['annotation_uid']
             query_set: str = ann['query_set']
             qset_uuid = f"{annotation_uid}_{query_set}"
             num_frames_clip = ann['query_frame']
-            num_segments = np.ceil(num_frames_clip / segment_length).astype(int).item()
+            num_segments = num_frames_clip // self.segment_length
             # (qset_uuid, seg_idx) tuple for indexing, clip_uid for loggging
-            self.all_seg_uids.extend([(qset_uuid, seg_idx, clip_uid) for seg_idx in range(num_segments)])
+            self.all_segments.extend([(qset_uuid, seg_idx, clip_uid, num_segments) for seg_idx in range(num_segments)])
 
     def __len__(self):
-        return len(self.all_seg_uids)
+        return len(self.all_segments)
 
     def __getitem__(self, idx):
         ann_idx, seg_idx, clip_uid = self.all_clip_uids[idx]
@@ -270,8 +272,10 @@ class VQ2DTestDatasetSeparated(VQ2DFitDataset):
         p_clip = self.p_clips_dir / f'{clip_uid}.mp4'
         vr = decord.VideoReader(str(p_clip), num_threads=1)
 
-        segment = self.get_segment_frames(ann, vr)
-        query = self.get_query(ann, vr)
+        segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
+        gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
+        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        query = self.get_query(ann)
 
         if segment.shape[0] < self.num_frames:
             pad_size = self.num_frames - segment.shape[0]

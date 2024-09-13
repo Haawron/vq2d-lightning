@@ -72,6 +72,7 @@ class LitModule(L.LightningModule):
         self.config = config
         self.model: VQLoC = hydra.utils.instantiate(
             config.model, compile_backbone=config.get('compile', True))
+        self.fix_backbone = config.model.fix_backbone
         self.save_hyperparameters(ignore='config')
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
         self.sample_step = 0
@@ -87,9 +88,7 @@ class LitModule(L.LightningModule):
             output_dict['log_dict'], 'Train'),
             batch_size=bsz, rank_zero_only=True)
         self.sample_step = (1 + self.global_step) * bsz * self.trainer.world_size
-        self.log(
-            'sample_step', self.sample_step,
-            batch_size=1, on_step=True, on_epoch=False, rank_zero_only=True)
+        self.log('sample_step', self.sample_step, batch_size=1,)
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
@@ -98,15 +97,15 @@ class LitModule(L.LightningModule):
         self.log_dict(set_prefix_to_keys(
             output_dict['log_dict'], 'Val'),
             batch_size=bsz, on_epoch=True, sync_dist=True)
-        self.log(
-            'sample_step', self.sample_step,
-            batch_size=1, on_step=False, on_epoch=True, sync_dist=True)
         if self.sample_step > 0:  # after sanity check done
             if batch_idx in [1000 * idx // bsz for idx in range(5)]:
                 self.print_outputs(batch, output_dict, bidxs=[batch_idx % bsz])
         return output_dict
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
+        pass
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
         pass
 
     def configure_optimizers(self):
@@ -134,6 +133,10 @@ class LitModule(L.LightningModule):
     def on_fit_start(self):
         if self.global_rank == 0:
             print('Starting training...')
+
+    def on_train_epoch_start(self):
+        if self.fix_backbone:
+            self.model.backbone.eval()
 
     # def on_before_optimizer_step(self, optimizer):
     #     # Compute the 2-norm for each layer

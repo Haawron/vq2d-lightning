@@ -17,6 +17,9 @@ runtime_outdir: ${runtime_outdir:}
 total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE}'}
 max_steps: ${eval:'${trainer.max_epochs} * 13607 // ${total_bsz} + 1'}
 base_lr: 0.0003
+compile: True
+backbone_precision: 'bf16-mixed'  # bf16 or fp32 + {mixed}
+backbone_fp32_mm_precision: 'medium'  # medium or high or highest
 
 run_type: train  # train, val, test, predict=eval
 
@@ -27,7 +30,7 @@ trainer:
   max_epochs: 106
   max_steps: ${max_steps}
   accumulate_grad_batches: 1
-  precision: bf16-mixed
+  precision: 32-true  # don't edit this, we autocase manually
   gradient_clip_val: 20.
   detect_anomaly: False
   benchmark: True
@@ -48,8 +51,8 @@ trainer:
 
 dataset:
   ###### torch #####
-  batch_size: 16
-  num_workers: 3
+  batch_size: 8
+  num_workers: 6
   prefetch_factor: 2
   pin_memory: True
   persistent_workers: False  # No, our dataset is memory-bound

@@ -1,8 +1,10 @@
 import io
 import os
+import pwd
 import tarfile
 import json
 import time
+from typing import override
 from collections import defaultdict
 from pathlib import Path
 
@@ -75,6 +77,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         short_side: int,
+        splits: str | list[str] = ['train', 'val'],
         p_raw_clips_dir = Path('/data/datasets/ego4d_data/v2/clips'),
         p_tarfiles_dir = Path('./outputs/frames'),
     ):
@@ -82,7 +85,8 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         self.short_side = short_side
         self.p_raw_clips_dir = p_raw_clips_dir  # FPS: any, resolution: Any
 
-        p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in ['train', 'val']]
+        splits = [splits] if isinstance(splits, str) else splits
+        p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in splits]
         all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
         clip2anns = defaultdict(list)
         for ann in all_anns:
@@ -104,6 +108,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         anns = self.clip2anns[clip_uid]
         p_raw_clip = self.p_raw_clips_dir / f'{clip_uid}.mp4'
         ss = self.short_side
+        ssdir = f'{ss}ss' if ss > 0 else 'raw'
 
         # get video info
         vr = VideoReader(str(p_raw_clip))
@@ -112,33 +117,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         stride = round(fps_raw / fps_ann)  # 6
 
         # get frame idxs to be extracted
-        ranges, vc_idxs, clip_len = [], [], 0
-        for ann in anns:
-            ranges.append(ann['response_track_valid_range'])  # inclusive
-            vc_idxs.append(ann['visual_crop']['fno'])
-            clip_len = max(clip_len, ann['query_frame'])
-
-        # extend ranges as well as vc_idxs
-        ranges_extended = []
-        for s, e in ranges:  # extend 3 times
-            c, r = (s + e) // 2, (e - s + 1) // 2
-            r *= 3
-            s, e = min(c - r, s - 32), max(c + r, e + 32)  # 32: minimum clip length
-            s, e = shift_indices_to_clip_range((s, e), clip_len)  # adjust to clip range
-            ranges_extended.append((s, e))
-        for vc_idx in vc_idxs:
-            if vc_idx * stride == len(vr):  # last frame
-                vc_idx -= 1
-            s, e = vc_idx - 6, vc_idx + 6
-            s, e = shift_indices_to_clip_range((s, e), np.ceil(len(vr) / stride).astype(int).item())
-            assert stride * s <= stride * vc_idx <= stride * e < len(vr), f'{s=}, {vc_idx=}, {e=}, {len(vr)=}'
-            ranges_extended.append((s, e))
-
-        # gather all frame idxs to be extracted
-        all_frame_idxs = set()
-        for s, e in ranges_extended:
-            all_frame_idxs.update(range(s, e + 1))
-        all_frame_idxs = np.array(sorted(all_frame_idxs) + [np.ceil(len(vr) / stride).astype(int)])
+        all_frame_idxs, clip_len = self.get_frame_idxs(anns, len(vr), stride)
 
         # extract frames and resize!
         raw_idxs = stride * all_frame_idxs
@@ -155,17 +134,50 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
                 frame_io = io.BytesIO()
                 frame.save(frame_io, format='JPEG')
                 frame_io.seek(0)
-                tarinfo = tarfile.TarInfo(name=f'ego4d_data/v2/vq2d_frames/{ss}ss/{clip_uid}/frame_{1+frame_idx:07d}.jpg')  # 1-based, following ffmpeg
+                tarinfo = tarfile.TarInfo(name=f'ego4d_data/v2/vq2d_frames/{ssdir}/{clip_uid}/frame_{1+frame_idx:07d}.jpg')  # 1-based, following ffmpeg
+                tarinfo.mtime = time.time()
                 tarinfo.size = frame_io.getbuffer().nbytes
                 tar.addfile(tarinfo, fileobj=frame_io)
         tar.close()
 
         return clip_uid, all_frame_idxs, clip_len, torch.utils.data.get_worker_info().id, self.p_tarfile
 
+    def get_frame_idxs(self, anns, clip_len_raw, frame_interval=6):
+        ranges, vc_idxs, clip_len = [], [], 0
+        for ann in anns:
+            ranges.append(ann['response_track_valid_range'])  # inclusive
+            vc_idxs.append(ann['visual_crop']['fno'])
+            clip_len = max(clip_len, ann['query_frame'])
+
+        # extend ranges as well as vc_idxs
+        ranges_extended = []
+        for s, e in ranges:  # extend 3 times
+            c, r = (s + e) // 2, (e - s + 1) // 2
+            r *= 3
+            s, e = min(c - r, s - 32), max(c + r, e + 32)  # 32: minimum clip length
+            s, e = shift_indices_to_clip_range((s, e), clip_len)  # adjust to clip range
+            ranges_extended.append((s, e))
+        for vc_idx in vc_idxs:
+            if vc_idx * frame_interval == clip_len_raw:  # last frame
+                vc_idx -= 1
+            s, e = vc_idx - 6, vc_idx + 6
+            s, e = shift_indices_to_clip_range((s, e), np.ceil(clip_len_raw / frame_interval).astype(int).item())
+            assert frame_interval * s <= frame_interval * vc_idx <= frame_interval * e < clip_len_raw, f'{s=}, {vc_idx=}, {e=}, {clip_len_raw=}'
+            ranges_extended.append((s, e))
+
+        # gather all frame idxs to be extracted
+        all_frame_idxs = set()
+        for s, e in ranges_extended:
+            all_frame_idxs.update(range(s, e + 1))
+        all_frame_idxs = np.array(sorted(all_frame_idxs) + [np.ceil(clip_len_raw / frame_interval).astype(int)])
+
+        return all_frame_idxs, clip_len
+
     def resize(self, frames: np.ndarray):
-        _, h, w, _ = frames.shape
-        target_size = round(self.short_side * w / h), self.short_side  # w, h (reverse to the input order)
-        frames = [cv2.resize(frame, target_size, interpolation=cv2.INTER_CUBIC) for frame in frames]
+        if self.short_side > 0:
+            _, h, w, _ = frames.shape
+            target_size = round(self.short_side * w / h), self.short_side  # w, h (reverse to the input order)
+            frames = [cv2.resize(frame, target_size, interpolation=cv2.INTER_CUBIC) for frame in frames]
         return frames
 
     @staticmethod
@@ -180,10 +192,18 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         dataset.p_tarfile = p_tarfile
 
 
-def main(short_side = 520, world_size = 1, rank = 0):
+class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileDataset):
+    @override
+    def get_frame_idxs(self, anns, clip_len_raw, frame_interval=6):
+        return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
+
+
+def main(short_side = 520, splits: str | list[str] = ['train', 'val'], world_size = 1, rank = 0):
+    print(f'Preprocessing VQ2D frames with short_side={short_side}, splits={splits}')
     num_workers = os.cpu_count() // 4
     print(f'{num_workers=}, {world_size=}, {rank=}')
-    ds = FrameExtractAndSaveAsTarfileDataset(short_side=short_side)
+    ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if short_side == 0 else FrameExtractAndSaveAsTarfileDataset
+    ds = ds_class(short_side=short_side, splits=splits)
     length = len(ds)
     sampler = torch.utils.data.distributed.DistributedSampler(
         list(range(length)), num_replicas=world_size, rank=rank,
@@ -212,7 +232,11 @@ def main(short_side = 520, world_size = 1, rank = 0):
 
     if rank == 0:
         print('Rank 0: gathering tarfiles...')
-        p_tarfile_gathered = p_tarfiles_dir / f'vq2d_pos_and_query_frames_{short_side}ss.tar'
+        ssdir = f'{short_side}ss' if short_side > 0 else 'raw'
+        filename = f'vq2d_pos_and_query_frames_{ssdir}'
+        if isinstance(splits, str):
+            filename += f'-{splits}'
+        p_tarfile_gathered = p_tarfiles_dir / f'{filename}.tar'
         with tarfile.open(p_tarfile_gathered, 'w') as outtar:
             seen_files = set()
             for p_tarfile in tqdm(list(p_tarfiles_dir.glob('worker_*.tar'))):
@@ -225,8 +249,9 @@ def main(short_side = 520, world_size = 1, rank = 0):
                         file_io = file.read()
                         tarinfo = tarfile.TarInfo(name=member.name)
                         tarinfo.size = len(file_io)
-                        tarinfo.uid = 30013
-                        tarinfo.gid = 30013
+                        tarinfo.uid = tarinfo.gid = os.getuid()
+                        tarinfo.uname = tarinfo.gname = pwd.getpwuid(os.getuid()).pw_name  # user name
+                        tarinfo.mtime = member.mtime
                         outtar.addfile(tarinfo, io.BytesIO(file_io))
                         seen_files.add(member.name)
                 p_tarfile.unlink()
