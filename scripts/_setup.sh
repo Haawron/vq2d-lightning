@@ -1,5 +1,3 @@
-
-
 if [ ! -d "/local_datasets/ego4d_data" ]; then
   if [ -d "/data2/local_datasets" ]; then
     mkdir -p /data2/local_datasets/ego4d_data
@@ -7,8 +5,9 @@ if [ ! -d "/local_datasets/ego4d_data" ]; then
   fi
 fi
 
+DIR=/local_datasets/ego4d_data/v2/vq2d_clips/520ss
 TARFILE=/data/datasets/tarfiles/vq2d_pos_and_query_frames_520ss.tar
-if [ "$TARFILE" -nt "$DIR" ]; then
+if [ ! -d "$DIR" ] || [ "$TARFILE" -nt "$DIR" ]; then
   echo "Tar file is newer, extracting..."
   tar -xf $TARFILE -C /local_datasets/
 else

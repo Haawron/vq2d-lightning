@@ -8,11 +8,10 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=50G
-#SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
 
 hostname
 
 source ./scripts/_setup.sh
 
 
-python run.py base_lr=0.00011
+python run.py

@@ -100,7 +100,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
         return batch
 
-    def augment(self, segment: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
+    def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
         """Augment the segment and gt_bboxes.
         Ensure both segment and gt_bboxes are normalized. And an input bbox of the augment op should be in pixel space. Be aware that `segment` don't have to be in pixel space, only its shape matters. `kornia.augmentation.AugmentationSequential` takes `[B, C, H, W]` for segments and `[B, N, 4]` for bboxes as input. Each augmentation is applied to both segment and gt_bboxes simultaneously. So, the bounding boxes are consistent with the augmented segment.
 
@@ -109,7 +109,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         segment : torch.Tensor
             Normalized segment of shape `[b, t, c, h, w]`.
         gt_bboxes : torch.Tensor
-            Normalized bounding boxes of shape `[b, t, 4]`, format xyxy.
+            Normalized bounding boxes of shape `[b, t, 4]`, format yxyx.
 
         Returns
         -------
@@ -117,10 +117,10 @@ class LitVQ2DDataModule(L.LightningDataModule):
             Augmented segment and gt_bboxes.
         """
         h, w = self.segment_size
-        bsz, device = segment.shape[0], segment.device
+        bsz, device = segments.shape[0], segments.device
 
-        bbox_scale = torch.tensor([h, w, h, w], device=device)[None, None]  # [1,1,4]
-        bboxes_px = gt_bboxes * bbox_scale  # [b,t,4], pixel space
+        bbox_scale = torch.tensor([h, w, h, w], dtype=gt_bboxes.dtype, device=device)  # [4]
+        bboxes_px = gt_bboxes * bbox_scale[None, None]  # [b,t,4], pixel space
         seg_queue, bboxes_queue = [], []
         # DON'T FLATTEN AND PRALLELIZE THIS LOOP
         #    AS t IS TREATED AS BATCH AXIS
@@ -128,17 +128,20 @@ class LitVQ2DDataModule(L.LightningDataModule):
         #    `same_on_batch=True` IS SET BUT THIS LOOP MAKES AUGS FOR EACH SAMPLE DIFFERENT WHICH IS DESIRED.
         # FLATTENING WILL MAKE AUGMENTATIONS FOR THIS BATCH ALL THE SAME.
         for i in range(bsz):  # augs are different for each sample (desired)
-            # augs are consistent across t (desired)
-            # [t,c,h,w] -> [c,h,w], [b,t,4] -> [t,4] -> [t,N=1,4]
-            segment_aug, bboxes_aug_px = self.transform_clip(segment[i], bboxes_px[i, :, None])
+            # augs have to be consistent across t (desired)
+            segment = segments[i]  # [t,c,h,w]
+            bbox_px = bboxes_px[i].unsqueeze_(1)  # [b,t,4] -> [t,4] -> [t,N=1,4]
+            bbox_px = bbox_px[..., [1, 0, 3, 2]]  # [t,1,4], yxyx -> xyxy
+            segment_aug, bboxes_aug_px = self.transform_clip(segment, bbox_px)
+            bboxes_aug_px = bboxes_aug_px[..., [1, 0, 3, 2]]  # [b,t,4], xyxy -> yxyx
             bboxes_aug_px = bboxes_aug_px.squeeze(1)  # [t,4]
             seg_queue.append(segment_aug)
             bboxes_queue.append(bboxes_aug_px)
-        segment = torch.stack(seg_queue, dim=0)
+        segments = torch.stack(seg_queue, dim=0)
         bboxes_aug_px = torch.stack(bboxes_queue, dim=0)  # [b,t,4]
         bboxes_aug_px, gt_probs_update = check_bbox(bboxes_aug_px, h, w)  # [b,t,4], [b,t]
-        gt_bboxes = bboxes_aug_px / bbox_scale  # [t,4]
-        return segment, gt_bboxes, gt_probs_update
+        gt_bboxes = bboxes_aug_px / bbox_scale[None, None]  # [b,t,4]
+        return segments, gt_bboxes, gt_probs_update
 
     def normalize(self, segment, query):  # TODO: static
         # TODO: Is per-frame normalization valid?

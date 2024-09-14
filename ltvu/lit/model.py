@@ -1,12 +1,13 @@
+import time
 import hydra.utils
 from omegaconf import OmegaConf
 
 import torch
+import torch.distributed as dist
 import torch.optim
 
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.utilities import grad_norm
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,7 +22,7 @@ from ltvu.models import *
 class LitModule(L.LightningModule):
     """
     https://lightning.ai/docs/pytorch/stable/common/trainer.html#under-the-hood
-    
+
     # Pseudo code for training loop
 
     ```python
@@ -38,9 +39,9 @@ class LitModule(L.LightningModule):
     ```
 
     ---
-    
+
     # Pseudo code for validation loop
-    
+
     ```python
     for batch_idx, batch in enumerate(train_dataloader):
         # ... model train loop
@@ -52,7 +53,7 @@ class LitModule(L.LightningModule):
             torch.set_grad_enabled(True)  # enable grads + batchnorm + dropout
             model.train()
     ```
-    
+
     ---
 
     # Pseudo code for prediction loop
@@ -88,7 +89,7 @@ class LitModule(L.LightningModule):
             output_dict['log_dict'], 'Train'),
             batch_size=bsz, rank_zero_only=True)
         self.sample_step = (1 + self.global_step) * bsz * self.trainer.world_size
-        self.log('sample_step', self.sample_step, batch_size=1,)
+        self.log('sample_step', self.sample_step, batch_size=1, rank_zero_only=True)
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
@@ -98,9 +99,9 @@ class LitModule(L.LightningModule):
             output_dict['log_dict'], 'Val'),
             batch_size=bsz, on_epoch=True, sync_dist=True)
         if self.sample_step > 0:  # after sanity check done
-            if batch_idx in [1000 * idx // bsz for idx in range(5)]:
-                self.print_outputs(batch, output_dict, bidxs=[batch_idx % bsz])
-        return output_dict
+            if batch_idx % 50 == 0:
+                self.print_outputs(batch, output_dict, bidxs=[0])
+        self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         pass
@@ -154,6 +155,8 @@ class LitModule(L.LightningModule):
         annotation_uids = batch['annotation_uid']
         query_sets = batch['query_set']
         segments = batch['segment_original'].cpu().numpy()
+        queries = batch['query_original'].cpu().numpy()
+        vcs: dict[str, torch.Tensor] = batch['visual_crop']
         gt_bboxes = batch['gt_bboxes'].cpu().numpy()
         gt_probs = batch['gt_probs'].cpu().numpy()
 
@@ -164,33 +167,52 @@ class LitModule(L.LightningModule):
         p_preds_dir.mkdir(parents=True, exist_ok=True)
         step = self.sample_step
 
+        gt_bboxes_xyxy = gt_bboxes[..., [1, 0, 3, 2]]  # yxyx -> xyxy
+        prob_rts_xyxy = prob_rts[..., [1, 0, 3, 2]]  # yxyx -> xyxy
+
         for bidx in range(bsz):
             if bidxs is not None and bidx not in bidxs:
                 continue
-            quid = f'{clip_uids[bidx]}_{annotation_uids[bidx]}_{query_sets[bidx]}'
-            p_save = p_preds_dir / f'{quid}-prob_preds_{bidx}-{step:07d}.png'
-            plt.figure(figsize=(12, 6))
-            plt.plot(gt_probs[bidx], label='gt')
-            plt.plot(prob_pred_tops[bidx], label='pred_top')
-            plt.legend()
-            plt.title(f'Probabilities: {quid}')
-            plt.savefig(p_save)
-            plt.close()
-            print(f'Saved: {p_save}')
-            frames = []
-            for tidx in range(T):
-                frame = Image.fromarray((255*segments[bidx, tidx].transpose(1, 2, 0)).astype(np.uint8))
-                draw = ImageDraw.Draw(frame)
-                if gt_probs[bidx, tidx] > 1e-3:
-                    bbox_ = (gt_bboxes[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
-                    draw.rectangle(bbox_, outline=(0, 255, 0), width=5)  # [4]
-                if prob_pred_tops[bidx, tidx] > .5:  # 0.5 following the threshold in loss.py
-                    bbox_ = (prob_rts[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
-                    draw.rectangle(bbox_, outline=(255, 50, 50), width=5)  # [4]
-                frames.append(frame)
-            p_save = p_save.with_suffix('.gif')
-            frames[0].save(p_save, save_all=True, append_images=frames[1:], duration=100, loop=0)
-            print(f'Saved: {p_save}')
+            else:
+                quid = f'{clip_uids[bidx]}_{annotation_uids[bidx]}_{query_sets[bidx]}'
+                p_save_plot = p_preds_dir / f'{quid}-prob_preds_{bidx}-{step:07d}.png'
+                plt.figure(figsize=(12, 6))
+                plt.plot(gt_probs[bidx], label='gt')
+                plt.plot(prob_pred_tops[bidx], label='pred_top')
+                plt.legend()
+                plt.title(f'Probabilities: {quid}')
+                plt.savefig(p_save_plot)
+                plt.close()
+                print(f'Saved: {p_save_plot}')
+
+                frames = []
+                for tidx in range(T):
+                    frame = Image.fromarray((255*segments[bidx, tidx].transpose(1, 2, 0)).astype(np.uint8))
+                    draw = ImageDraw.Draw(frame)
+                    if gt_probs[bidx, tidx] > 1e-3:
+                        bbox_ = (gt_bboxes_xyxy[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
+                        draw.rectangle(bbox_, outline=(0, 255, 0), width=5)  # [4]
+                    if prob_pred_tops[bidx, tidx] > .5:  # 0.5 following the threshold in loss.py
+                        bbox_ = (prob_rts_xyxy[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
+                        draw.rectangle(bbox_, outline=(255, 50, 50), width=5)  # [4]
+                    frames.append(frame)
+                p_save_gif = p_save_plot.with_name(f'{quid}-preds_{bidx}-{step:07d}.gif')
+                frames[0].save(p_save_gif, save_all=True, append_images=frames[1:], duration=100, loop=0)
+                print(f'Saved: {p_save_gif}')
+                del frames, frame, bbox_, draw
+
+                p_save_query = p_save_plot.with_name(f'{quid}-query.png')
+                if not p_save_query.exists():
+                    qx, qy, qh, qw = vcs['x'][bidx], vcs['y'][bidx], vcs['h'][bidx], vcs['w'][bidx]
+                    query_frame = Image.fromarray((255*queries[bidx].transpose(1, 2, 0)).astype(np.uint8))
+                    draw = ImageDraw.Draw(query_frame)
+                    bbox_ = int(qx * w), int(qy * h), int((qx + qw) * w), int((qy + qh) * h)
+                    draw.rectangle(bbox_, outline=(255, 255, 0), width=5)  # [4]
+                    query_frame.save(p_save_query)
+                    print(f'Saved: {p_save_query}')
+                    del query_frame, bbox_, draw
+                break
+        return
 
 
 def set_prefix_to_keys(d: dict, prefix: str) -> dict:

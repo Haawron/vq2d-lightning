@@ -17,9 +17,9 @@ runtime_outdir: ${runtime_outdir:}
 total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE}'}
 max_steps: ${eval:'${trainer.max_epochs} * 13607 // ${total_bsz} + 1'}
 base_lr: 0.0003
-compile: True
-backbone_precision: 'bf16-mixed'  # bf16 or fp32 + {mixed}
-backbone_fp32_mm_precision: 'medium'  # medium or high or highest
+compile: false
+backbone_precision: 'fp32'  # bf16 or fp32 + {mixed}
+backbone_fp32_mm_precision: 'highest'  # medium or high or highest
 
 run_type: train  # train, val, test, predict=eval
 
@@ -30,7 +30,7 @@ trainer:
   max_epochs: 106
   max_steps: ${max_steps}
   accumulate_grad_batches: 1
-  precision: 32-true  # don't edit this, we autocase manually
+  precision: 32-true  # don't edit this, we autocast manually
   gradient_clip_val: 20.
   detect_anomaly: False
   benchmark: True
@@ -42,7 +42,7 @@ trainer:
       project: 'ltvu++'
       entity: 'team-khu'
       group: 'smoke_${YY}${mm}${dd}'  # for grouping runs (does not mean an organization)
-      job_type: ${job_type}  # train, eval, test, predict, debug, for filtering
+      job_type: ${job_type}  # debug or batch
       name: hg-${jid}  # displayname
       tags: []  # for filtering
       notes: null  # real note, a log string

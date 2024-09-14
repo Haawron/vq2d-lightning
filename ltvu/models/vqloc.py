@@ -76,7 +76,7 @@ class ClipMatcher(nn.Module):
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
-        transformer_dropout = 0.2,
+        transformer_dropout = 0.,
         fix_backbone = True,
 
         # input size
@@ -293,27 +293,28 @@ class ClipMatcher(nn.Module):
         training = True,
         before_query_mask: None | torch.Tensor = None,
         gt_probs: None | torch.Tensor = None,
-        gt_bboxes: None | torch.Tensor = None,
+        gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
         **kwargs
     ):
         '''
         clip: in shape [b,t,c,h,w]
         query: in shape [b,c,h2,w2]
-        before_query_mask: 
-        gt_bboxes: 
+        before_query_mask:
+        gt_bboxes:
         '''
         b, t = segment.shape[:2]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         device = segment.device
 
         # get backbone features
-        prec = torch.get_float32_matmul_precision()
-        torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
-        with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
-            query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
-            clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
-        torch.set_float32_matmul_precision(prec)
+        with torch.no_grad():
+            prec_prev = torch.get_float32_matmul_precision()
+            torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
+            with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
+                query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
+                clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+            torch.set_float32_matmul_precision(prec_prev)
 
         # reduce channel size
         all_feat = torch.cat([query_feat, clip_feat], dim=0)
@@ -372,6 +373,7 @@ class ClipMatcher(nn.Module):
             assert before_query_mask is not None
             assert gt_probs is not None
             assert gt_bboxes is not None
+
             # rename variables for `get_losses_with_anchor` interface
             gts = {
                 'before_query': before_query_mask,  # [b,t]

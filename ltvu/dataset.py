@@ -48,8 +48,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.p_anns_dir = Path(ds_config.flat_anns_dir)
         self.num_frames: int = ds_config.num_frames
         self.frame_interval: int = ds_config.frame_interval
-        self.segment_size: tuple[int] = tuple(ds_config.segment_size)  # H, W
-        self.query_size: tuple[int] = tuple(ds_config.query_size)  # H, W
+        self.segment_size: tuple[int] = tuple(ds_config.segment_size)  # H, W, desired
+        self.query_size: tuple[int] = tuple(ds_config.query_size)  # H, W, desired
         self.query_square: bool = ds_config.query_square
         self.query_padding: bool = ds_config.query_padding
         if ds_config.padding_value == 'mean':
@@ -70,7 +70,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         ann: dict = self.all_anns[idx]
         clip_uid = ann['clip_uid']
         clip_len = ann['query_frame']
-        vc_idx = ann['visual_crop']['fno']
+        vc = ann['visual_crop']
+        vc_idx = vc['fno']
         p_clip_dir = self.p_clips_dir / clip_uid
         idxs_avail = set(int(p.stem.split('_')[-1]) - 1 for p in p_clip_dir.glob('*.jpg'))
 
@@ -93,8 +94,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'query': query,  # [c, h, w], normalized
 
             # GT
-            'gt_bboxes': gt_rt,  # [t, 4], xyxy, normalized
-            'gt_probs': gt_prob,  # [t], GT prob
+            'gt_bboxes': gt_rt.astype(np.float32),  # [t, 4], yxyx, normalized
+            'gt_probs': gt_prob.astype(np.float32),  # [t], GT prob
             'before_query_mask': torch.tensor(frame_idxs < ann['query_frame']).bool(),  # [t], whether before the query frame, used for loss masking(?)
 
             # for logging
@@ -105,6 +106,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'query_set': ann['query_set'],  # str (of a single digit)
             'clip_fps': ann['clip_fps'],  # float
             'query_frame': ann['query_frame'],  # int
+            'visual_crop': vc,  # dict
             'object_title': ann['object_title'],  # str
         }
 
@@ -137,16 +139,17 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
         # frames: [t, c, h, w]
-        # bboxes: [t, 4], xyxy, normalized
+        # bboxes: [t, 4], yxyx, normalized
         t, c, h, w = frames.shape
-        bboxes *= [w, h, w, h]  # de-normalize
+        bboxes *= [h, w, h, w]  # de-normalize
 
         # pad
-        pad_size = (w - h) // 2
+        assert w > h, f'All the videos in Ego4D are landscape, got {frames.shape}'
+        pad_size: int = (w - h) // 2
         pad_top, pad_bot = pad_size, w - h - pad_size
         pad = (0, 0, pad_top, pad_bot)   # Left, Right, Top, Bottom
         frames = F.pad(frames, pad, value=self.padding_value)
-        bboxes[:, [1, 3]] += pad_top
+        bboxes[:, [0, 2]] += float(pad_top)
         # verify padding
         _, _, h_pad, w_pad = frames.shape
         assert h_pad == w_pad, f'Padded frames should be square, got {frames.shape}'
@@ -162,7 +165,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
     def get_query(self, ann):
         vc = ann['visual_crop']
-        ow, oh = ann['original_height'], ann['original_width']
+        oh, ow = ann['original_height'], ann['original_width']
         fno = vc['fno']
         p_frame = self.p_clips_dir / ann['clip_uid'] / f'frame_{fno+1:07d}.jpg'
         x, y, w, h = vc['x'], vc['y'], vc['w'], vc['h']
@@ -179,10 +182,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = Image.open(p_frame)
 
         # crop - permute - normalize
-        ooh, oow = query.size  # might be pre-pre-processed already
+        oow, ooh = query.size  # might be pre-pre-processed already
         rho = (oh / ooh + ow / oow) / 2
         x, y, w, h = x / rho, y / rho, h / rho, w / rho
-        query = query.crop((x, y, x + w, y + h)) # [y:y+h, x:x+w]  # [h, w, c]
+        query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
         query = TF.pil_to_tensor(query)  # [c, h, w]
         query = query.float() / 255.
 
@@ -211,10 +214,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         Returns
         -------
         Tuple[torch.Tensor, torch.Tensor]
-            bboxes: [t, 4], xyxy, normalized
-            seg_with_gt: [t], bool, whether the segment contains GT bbox
+            bboxes: [t, 4], yxyx, normalized
+            seg_with_gt: [t], np.float32, 1. if the segment contains GT bbox else 0.
         """
-        ow, oh = ann['original_width'], ann['original_height']
+        oh, ow = ann['original_height'], ann['original_width']
         gt_rt = ann['response_track']
         gt_ext = ann['response_track_valid_range']
         assert gt_ext[1] - gt_ext[0] + 1 == len(gt_rt)
@@ -228,14 +231,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             if with_gt:
                 res = gt_rt[frame_idx - gt_ext[0]]
                 assert frame_idx == res['fno']
-                bbox = [res['x'], res['y'], res['x'] + res['w'], res['y'] + res['h']]
+                bbox = [res['y'], res['x'], res['y'] + res['h'], res['x'] + res['w']]  # yxyx
                 bboxes.append(bbox)
             else:
-                bboxes.append([0, 0, 1e-6, 1e-6])
+                bboxes.append([0, 0, 1e-5, 1e-5])
 
         # normalize
-        bboxes = np.array(bboxes) / [ow, oh, ow, oh]
-        bboxes = bboxes.astype(np.float32).clip(0, 1)
+        bboxes = np.array(bboxes, dtype=np.float32) / [oh, ow, oh, ow]
+        bboxes = bboxes.clip(0, 1)
 
         return bboxes, seg_with_gt.astype(np.float32)
 

@@ -29,7 +29,7 @@ REPORTED_INVALID_CLIP_UIDS = {
 
 def generate_flat_annotations_vq2d(all_anns):
 
-    def polish_bbox_dict(bbox: dict):
+    def polish_bbox_dict_keys(bbox: dict):
         key_map = {
             'frame_number': 'fno',
             'x': 'x', 'y': 'y', 'width': 'w', 'height': 'h',
@@ -53,7 +53,7 @@ def generate_flat_annotations_vq2d(all_anns):
                         count_invalids += 1
                         continue
                     oh, ow = qset['response_track'][0]['original_height'], qset['response_track'][0]['original_width']
-                    rt = [polish_bbox_dict(bbox) for bbox in qset['response_track']]
+                    rt = [polish_bbox_dict_keys(bbox) for bbox in qset['response_track']]
                     sample = {
                         'video_uid': video_uid,
                         'clip_uid': clip_uid,
@@ -65,7 +65,7 @@ def generate_flat_annotations_vq2d(all_anns):
                         'original_height': oh,
                         'query_frame': qset['query_frame'],
                         'object_title': qset['object_title'],
-                        'visual_crop': polish_bbox_dict(qset['visual_crop']),
+                        'visual_crop': polish_bbox_dict_keys(qset['visual_crop']),
                         'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
                         'response_track': rt,
                     }
