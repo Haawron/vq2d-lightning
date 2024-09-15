@@ -138,7 +138,7 @@ def calculate_iou(boxes1, boxes2):
     return iou
 
 
-def check_bbox(bbox, h, w):   # TODO: too strict, need to relax the invalidity condition
+def check_bbox(bbox, h, w, strict=True):   # TODO: too strict, need to relax the invalidity condition
     B, T, _ = bbox.shape
     bbox = bbox.reshape(-1,4)
 
@@ -148,15 +148,19 @@ def check_bbox(bbox, h, w):   # TODO: too strict, need to relax the invalidity c
     top_invalid = y2 <= 0.0
     bottom_invalid = y1 >= h - 1
 
-    y_invalid = torch.logical_or(top_invalid, bottom_invalid)
-    x_invalid = torch.logical_or(left_invalid, right_invalid)
-    invalid = torch.logical_or(y_invalid, x_invalid)
-    valid = ~invalid
-
     y1_clip = y1.clip(min=0.0, max=h).unsqueeze(-1)
     y2_clip = y2.clip(min=0.0, max=h).unsqueeze(-1)
     x1_clip = x1.clip(min=0.0, max=w).unsqueeze(-1)
     x2_clip = x2.clip(min=0.0, max=w).unsqueeze(-1)
     bbox_clip = torch.cat([y1_clip, x1_clip, y2_clip, x2_clip], dim=-1)
+
+    if strict:
+        y_invalid = torch.logical_or(top_invalid, bottom_invalid)
+        x_invalid = torch.logical_or(left_invalid, right_invalid)
+        invalid = torch.logical_or(y_invalid, x_invalid)
+        valid = ~invalid
+    else:
+        area = (y2_clip - y1_clip) * (x2_clip - x1_clip) / (h * w)
+        valid = area > (10/448)**2
 
     return bbox_clip.reshape(B,T,4), valid.reshape(B,T)
