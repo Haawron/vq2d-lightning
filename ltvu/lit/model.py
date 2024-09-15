@@ -179,7 +179,7 @@ class LitModule(L.LightningModule):
                 plt.figure(figsize=(12, 6))
                 plt.plot(gt_probs[bidx], label='gt')
                 plt.plot(prob_pred_tops[bidx], label='pred_top')
-                plt.ylim(0, 1)
+                plt.ylim(0, 1.1)
                 plt.legend()
                 plt.title(f'Probabilities {cquid}')
                 plt.savefig(p_save_plot)

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-fast-affine
+#SBATCH --job-name=vqloc-fast-affine-erase
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -17,4 +17,4 @@ source ./scripts/_setup.sh
 
 python run.py --config-name fast \
     trainer.logger.0.group='augment' \
-    augment=affine
+    augment=affine +trainer.strategy=deepspeed_stage_3

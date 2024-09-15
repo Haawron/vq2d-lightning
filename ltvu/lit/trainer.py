@@ -50,14 +50,15 @@ def get_trainer(config, jid, enable_progress_bar=False):
         loggers.append(logger)
 
     # Note: do not let hydra instantiate the Trainer or it is highly inflexible
-    return L.Trainer(
-        **OmegaConf.to_container(trainer_config, resolve=True),
-        strategy=DDPStrategy(
+    trainer_config = OmegaConf.to_container(trainer_config, resolve=True)
+    if 'strategy' not in trainer_config:
+        trainer_config.strategy = DDPStrategy(
             timeout=datetime.timedelta(seconds=600),
-            find_unused_parameters=True),
+            find_unused_parameters=True)
+    return L.Trainer(
+        **trainer_config,
         enable_model_summary=False,
         default_root_dir=runtime_outdir,
         logger=loggers,
         callbacks=callbacks,
-        # enable_progress_bar=enable_progress_bar,
     )
