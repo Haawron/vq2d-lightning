@@ -1,22 +1,21 @@
 #!/bin/bash
 
-#SBATCH --job-name=lit-train
+#SBATCH --job-name=vqloc-448-lit
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
-#SBATCH --mem-per-gpu=50G
+#SBATCH --mem-per-gpu=42G
+#SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
 
 hostname
 
 source ./scripts/_setup.sh
 
 
-python run.py dataset.batch_size=3 compile=false \
-    backbone_precision=fp32 backbone_fp32_mm_precision=highest \
-    dataset.prefetch_factor=4 dataset.num_workers=8
+python run.py
 
-# python run.py dataset.batch_size=3 \
-    # dataset.prefetch_factor=4 dataset.num_workers=8
+# python run.py compile=true \
+#     backbone_precision=bf16 backbone_fp32_mm_precision=medium

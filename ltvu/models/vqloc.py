@@ -27,7 +27,6 @@ def detach_dict(d):
 
 
 def build_backbone(backbone_name, backbone_type):
-    # TODO: 이거 허깅페이스로 바까버려
     if backbone_name == 'dinov2':
         assert backbone_type in ['vits14', 'vitb14', 'vitl14', 'vitg14']
         import warnings

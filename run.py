@@ -83,4 +83,5 @@ if __name__ == '__main__':
     OmegaConf.register_new_resolver("job_type", lambda : 'batch' if within_slurm_batch() else 'debug')
     OmegaConf.register_new_resolver('runtime_outdir', lambda : hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     OmegaConf.register_new_resolver("eval", eval)
+    OmegaConf.register_new_resolver("tuple", lambda *args: tuple(args))
     main()

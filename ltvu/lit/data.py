@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from omegaconf import OmegaConf
+from hydra.utils import instantiate
 
 import torch
 import torch.optim
@@ -21,6 +22,10 @@ from ltvu.preprocess import generate_flat_annotations_vq2d
 from ltvu.bbox_ops import check_bbox
 
 
+MEAN = [0.485, 0.456, 0.406]
+STD = [0.229, 0.224, 0.225]
+
+
 class LitVQ2DDataModule(L.LightningDataModule):
     ALL_NUM_CLIPS = 4690  # train + val
     ALL_NUM_ANNS = [13607, 4504]  # train, val
@@ -38,24 +43,14 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
 
-        # TODO: Integrate into the ds_config
-        aug_config = config.train.augments
-        self.segment_aug: bool = aug_config.segment
-        self.segment_size: tuple[int, int] = tuple(aug_config.segment_size)  # h, w
-        self.crop_ratio_min = aug_config.crop_ratio_min
-        self.crop_ratio_max = aug_config.crop_ratio_max
-        cr_ratio = self.crop_ratio_min, self.crop_ratio_max
+        aug_config = config.augment
+        self.segment_aug: bool = aug_config.segment.apply
 
         self.save_hyperparameters(ignore='config')
 
         # GPU accelerated data preprocessing
-        self.normalization = kornia.enhance.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        self.transform_clip = K.AugmentationSequential(
-            K.ColorJiggle(brightness=0.4, contrast=0.4, saturation=0.3, hue=0, p=1.0),
-            K.RandomHorizontalFlip(p=0.5),
-            K.RandomResizedCrop(self.segment_size, scale=(0.66, 1.0), ratio=cr_ratio, p=1.0),  # h, w
-            data_keys=[DataKey.INPUT, DataKey.BBOX_XYXY],  # Just to define the future input here.
-            same_on_batch=True)
+        self.normalization = kornia.enhance.Normalize(mean=MEAN, std=STD)
+        self.transform_clip: K.AugmentationSequential = instantiate(aug_config.segment.aug_list)
 
     def prepare_data(self):
         """Calls generate_flat_annotations_vq2d to save the flat annotations.
@@ -68,6 +63,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             all_anns = json.load(p_raw_ann.open())
             flat_anns = generate_flat_annotations_vq2d(all_anns)
             assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
+            print(f'Found {len(flat_anns)} annotations in {split}.')
             p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
             if not p_ann.exists():
                 json.dump(flat_anns, p_ann.open('w'))
@@ -116,32 +112,26 @@ class LitVQ2DDataModule(L.LightningDataModule):
         Tuple[torch.Tensor, torch.Tensor]
             Augmented segment and gt_bboxes.
         """
-        h, w = self.segment_size
+        _, _, _, h, w = segments.shape
         bsz, device = segments.shape[0], segments.device
 
+        # setup
+        gt_bboxes = gt_bboxes[..., [1, 0, 3, 2]]  # [b,t,4], yxyx -> xyxy
         bbox_scale = torch.tensor([h, w, h, w], dtype=gt_bboxes.dtype, device=device)  # [4]
         bboxes_px = gt_bboxes * bbox_scale[None, None]  # [b,t,4], pixel space
-        seg_queue, bboxes_queue = [], []
-        # DON'T FLATTEN AND PRALLELIZE THIS LOOP
-        #    AS t IS TREATED AS BATCH AXIS
-        #    SO AUGMENTATIONS SHOULD BE CONSISTENT ACROSS t.
-        #    `same_on_batch=True` IS SET BUT THIS LOOP MAKES AUGS FOR EACH SAMPLE DIFFERENT WHICH IS DESIRED.
-        # FLATTENING WILL MAKE AUGMENTATIONS FOR THIS BATCH ALL THE SAME.
-        for i in range(bsz):  # augs are different for each sample (desired)
-            # augs have to be consistent across t (desired)
-            segment = segments[i]  # [t,c,h,w]
-            bbox_px = bboxes_px[i].unsqueeze_(1)  # [b,t,4] -> [t,4] -> [t,N=1,4]
-            bbox_px = bbox_px[..., [1, 0, 3, 2]]  # [t,1,4], yxyx -> xyxy
-            segment_aug, bboxes_aug_px = self.transform_clip(segment, bbox_px)
-            bboxes_aug_px = bboxes_aug_px[..., [1, 0, 3, 2]]  # [b,t,4], xyxy -> yxyx
-            bboxes_aug_px = bboxes_aug_px.squeeze(1)  # [t,4]
-            seg_queue.append(segment_aug)
-            bboxes_queue.append(bboxes_aug_px)
-        segments = torch.stack(seg_queue, dim=0)
-        bboxes_aug_px = torch.stack(bboxes_queue, dim=0)  # [b,t,4]
-        bboxes_aug_px, gt_probs_update = check_bbox(bboxes_aug_px, h, w)  # [b,t,4], [b,t]
-        gt_bboxes = bboxes_aug_px / bbox_scale[None, None]  # [b,t,4]
-        return segments, gt_bboxes, gt_probs_update
+        bboxes_px = bboxes_px.unsqueeze(2)  # [b,t,4] -> [b,t,N=1,4]
+        bboxes_px = bboxes_px[..., [[0, 1], [2, 1], [2, 3], [0, 3]]]  # [b,t,1,4,2], xyxy -> 4 points, clockwise
+
+        # augment
+        segments_aug, bboxes_px_aug = self.transform_clip(segments, bboxes_px)  # [b,t,c,h,w], [b,t,1,4]
+
+        # recover
+        bboxes_px_aug = bboxes_px_aug.squeeze(2)  # [b,t,4]
+        bboxes_px_aug = bboxes_px_aug[..., [1, 0, 3, 2]]  # [b,t,4], xyxy -> yxyx
+        bboxes_px_aug, gt_probs_update = check_bbox(bboxes_px_aug, h, w)  # [b,t,4], [b,t]
+        gt_bboxes = bboxes_px_aug / bbox_scale[None, None]  # [b,t,4]
+
+        return segments_aug, gt_bboxes, gt_probs_update
 
     def normalize(self, segment, query):  # TODO: static
         # TODO: Is per-frame normalization valid?

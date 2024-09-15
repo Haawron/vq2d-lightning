@@ -1,17 +1,20 @@
 #!/bin/bash
 
-#SBATCH --job-name=lit-train-full-bsz
+#SBATCH --job-name=vqloc-fast-affine-erase
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
-#SBATCH --mem-per-gpu=50G
+#SBATCH --mem-per-gpu=42G
+#SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
 
 hostname
 
 source ./scripts/_setup.sh
 
 
-python run.py
+python run.py --config-name fast \
+    trainer.logger.0.group='augment' \
+    augment=affine +trainer.strategy=deepspeed_stage_3

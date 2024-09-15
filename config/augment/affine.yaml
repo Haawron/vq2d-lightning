@@ -1,0 +1,45 @@
+segment:
+  apply: true
+  from_iter: -1
+  aug_list:
+    _target_: kornia.augmentation.AugmentationSequential
+    _args_:
+      - _target_: kornia.augmentation.VideoSequential
+        _args_:
+        - _target_: kornia.augmentation.RandomHorizontalFlip
+          p: 0.5
+
+        - _target_: kornia.augmentation.RandomErasing
+          p: 0.5
+          scale: ${tuple:0.02,0.2}
+          ratio: ${tuple:0.3,3.3}
+          value: 0.5
+
+        - _target_: kornia.augmentation.ColorJiggle
+          p: 1.
+          brightness: 0.4
+          contrast: 0.4
+          saturation: 0.3
+          hue: 0
+
+        - _target_: kornia.augmentation.RandomResizedCrop
+          p: 1.0
+          size: ${tuple:${dataset.segment_size[0]},${dataset.segment_size[1]}}
+          scale: ${tuple:0.66,1.0}
+          ratio: ${tuple:0.8,1.2}
+
+        - _target_: kornia.augmentation.RandomAffine
+          p: 0.5
+          degrees: 10
+          translate: null
+          scale: null
+          shear: ${tuple:-15,15,-15,15}
+          align_corners: true
+
+        data_format: 'BTCHW'
+        same_on_frame: true
+
+    data_keys: ['input', 'bbox_xyxy']
+
+query:
+  apply: false

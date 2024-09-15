@@ -85,19 +85,17 @@ class LitModule(L.LightningModule):
         output_dict = self.model.forward(**batch, compute_loss=True)
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
-        self.log_dict(set_prefix_to_keys(
-            output_dict['log_dict'], 'Train'),
-            batch_size=bsz, rank_zero_only=True)
-        self.sample_step = (1 + self.global_step) * bsz * self.trainer.world_size
-        self.log('sample_step', self.sample_step, batch_size=1, rank_zero_only=True)
+        log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Train')
+        self.sample_step = (1 + self.global_step) * bsz * self.trainer.world_size  # +1 for maintaining monotonicity
+        log_dict['sample_step'] = self.sample_step
+        self.log_dict(log_dict, batch_size=bsz, rank_zero_only=True)
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-        self.log_dict(set_prefix_to_keys(
-            output_dict['log_dict'], 'Val'),
-            batch_size=bsz, on_epoch=True, sync_dist=True)
+        log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
+        self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
         if self.sample_step > 0:  # after sanity check done
             if batch_idx % 50 == 0:
                 self.print_outputs(batch, output_dict, bidxs=[0])
@@ -174,13 +172,16 @@ class LitModule(L.LightningModule):
             if bidxs is not None and bidx not in bidxs:
                 continue
             else:
-                quid = f'{clip_uids[bidx]}_{annotation_uids[bidx]}_{query_sets[bidx]}'
-                p_save_plot = p_preds_dir / f'{quid}-prob_preds_{bidx}-{step:07d}.png'
+                cquid = f'{clip_uids[bidx]}_{annotation_uids[bidx]}_{query_sets[bidx]}'
+                p_preds_dir_cquid = p_preds_dir / cquid
+                p_preds_dir_cquid.mkdir(parents=True, exist_ok=True)
+                p_save_plot = p_preds_dir_cquid / f'prob_preds_{bidx}-{step:07d}.png'
                 plt.figure(figsize=(12, 6))
                 plt.plot(gt_probs[bidx], label='gt')
                 plt.plot(prob_pred_tops[bidx], label='pred_top')
+                plt.ylim(0, 1.1)
                 plt.legend()
-                plt.title(f'Probabilities: {quid}')
+                plt.title(f'Probabilities {cquid}')
                 plt.savefig(p_save_plot)
                 plt.close()
                 print(f'Saved: {p_save_plot}')
@@ -196,12 +197,12 @@ class LitModule(L.LightningModule):
                         bbox_ = (prob_rts_xyxy[bidx, tidx] * [w, h, w, h]).astype(int).tolist()
                         draw.rectangle(bbox_, outline=(255, 50, 50), width=5)  # [4]
                     frames.append(frame)
-                p_save_gif = p_save_plot.with_name(f'{quid}-preds_{bidx}-{step:07d}.gif')
+                p_save_gif = p_preds_dir_cquid / f'preds_{bidx}-{step:07d}.gif'
                 frames[0].save(p_save_gif, save_all=True, append_images=frames[1:], duration=100, loop=0)
                 print(f'Saved: {p_save_gif}')
                 del frames, frame, bbox_, draw
 
-                p_save_query = p_save_plot.with_name(f'{quid}-query.png')
+                p_save_query = p_preds_dir_cquid / f'query.png'
                 if not p_save_query.exists():
                     qx, qy, qh, qw = vcs['x'][bidx], vcs['y'][bidx], vcs['h'][bidx], vcs['w'][bidx]
                     query_frame = Image.fromarray((255*queries[bidx].transpose(1, 2, 0)).astype(np.uint8))
