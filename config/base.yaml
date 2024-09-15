@@ -14,7 +14,7 @@ num_workers: 6
 prefetch_factor: 4
 base_lr: 0.0003
 compile: false
-backbone_precision: 'fp32'  # bf16 or fp32 + {mixed}
+backbone_precision: 'fp32'  # bf16 or fp32 or fp16
 backbone_fp32_mm_precision: 'highest'  # medium or high or highest
 
 
