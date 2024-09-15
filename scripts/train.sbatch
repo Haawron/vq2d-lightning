@@ -7,8 +7,8 @@
 #SBATCH --partition=batch_grad
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
-#SBATCH --mem-per-gpu=50G
-#SBATCH -x aurora-g[1,7]
+#SBATCH --mem-per-gpu=42G
+#SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
 
 hostname
 
