@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=lit-train
+#SBATCH --job-name=vqloc-448-lit
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -16,7 +16,7 @@ source ./scripts/_setup.sh
 
 python run.py dataset.batch_size=3 compile=false \
     backbone_precision=fp32 backbone_fp32_mm_precision=highest \
-    dataset.prefetch_factor=4 dataset.num_workers=8
+    dataset.prefetch_factor=4 dataset.num_workers=6
 
 # python run.py dataset.batch_size=3 \
     # dataset.prefetch_factor=4 dataset.num_workers=8
