@@ -8,15 +8,14 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=50G
+#SBATCH -x aurora-g7
 
 hostname
 
 source ./scripts/_setup.sh
 
 
-python run.py dataset.batch_size=3 compile=false \
-    backbone_precision=fp32 backbone_fp32_mm_precision=highest \
-    dataset.prefetch_factor=4 dataset.num_workers=6
+python run.py
 
-# python run.py dataset.batch_size=3 \
-    # dataset.prefetch_factor=4 dataset.num_workers=8
+# python run.py compile=true \
+#     backbone_precision=bf16 backbone_fp32_mm_precision=medium

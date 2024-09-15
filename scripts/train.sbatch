@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-448-lit-fullpower
+#SBATCH --job-name=vqloc-fast-affine
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -15,4 +15,6 @@ hostname
 source ./scripts/_setup.sh
 
 
-python run.py
+python run.py --config-name fast \
+    trainer.logger.0.group='augment' \
+    augment=affine

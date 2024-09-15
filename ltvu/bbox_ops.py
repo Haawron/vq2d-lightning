@@ -138,25 +138,25 @@ def calculate_iou(boxes1, boxes2):
     return iou
 
 
-def check_bbox(bbox, h, w):
+def check_bbox(bbox, h, w):   # TODO: too strict, need to relax the invalidity condition
     B, T, _ = bbox.shape
     bbox = bbox.reshape(-1,4)
 
-    x1, y1, x2, y2 = bbox[...,0], bbox[...,1], bbox[...,2], bbox[...,3]
-    left_invalid = y2 <= 0.0
-    right_invalid = y1 >= w - 1
-    top_invalid = x2 <= 0.0
-    bottom_invalid = x1 >= h - 1
+    y1, x1, y2, x2 = bbox[...,0], bbox[...,1], bbox[...,2], bbox[...,3]
+    left_invalid = x2 <= 0.0
+    right_invalid = x1 >= w - 1
+    top_invalid = y2 <= 0.0
+    bottom_invalid = y1 >= h - 1
 
-    x_invalid = torch.logical_or(top_invalid, bottom_invalid)
-    y_invalid = torch.logical_or(left_invalid, right_invalid)
-    invalid = torch.logical_or(x_invalid, y_invalid)
+    y_invalid = torch.logical_or(top_invalid, bottom_invalid)
+    x_invalid = torch.logical_or(left_invalid, right_invalid)
+    invalid = torch.logical_or(y_invalid, x_invalid)
     valid = ~invalid
 
-    x1_clip = x1.clip(min=0.0, max=h).unsqueeze(-1)
-    x2_clip = x2.clip(min=0.0, max=h).unsqueeze(-1)
-    y1_clip = y1.clip(min=0.0, max=w).unsqueeze(-1)
-    y2_clip = y2.clip(min=0.0, max=w).unsqueeze(-1)
-    bbox_clip = torch.cat([x1_clip, y1_clip, x2_clip, y2_clip], dim=-1)
+    y1_clip = y1.clip(min=0.0, max=h).unsqueeze(-1)
+    y2_clip = y2.clip(min=0.0, max=h).unsqueeze(-1)
+    x1_clip = x1.clip(min=0.0, max=w).unsqueeze(-1)
+    x2_clip = x2.clip(min=0.0, max=w).unsqueeze(-1)
+    bbox_clip = torch.cat([y1_clip, x1_clip, y2_clip, x2_clip], dim=-1)
 
     return bbox_clip.reshape(B,T,4), valid.reshape(B,T)
