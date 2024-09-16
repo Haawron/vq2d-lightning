@@ -36,3 +36,5 @@ segment:
 
 query:
   apply: false
+
+strict_bbox_check: true
