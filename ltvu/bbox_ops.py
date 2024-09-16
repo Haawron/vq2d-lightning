@@ -138,7 +138,7 @@ def calculate_iou(boxes1, boxes2):
     return iou
 
 
-def check_bbox(bbox, h, w, strict=True):   # TODO: too strict, need to relax the invalidity condition
+def check_bbox(bbox, h, w, strict=True):
     B, T, _ = bbox.shape
     bbox = bbox.reshape(-1,4)
 
