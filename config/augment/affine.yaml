@@ -11,13 +11,13 @@ segment:
 
         - _target_: kornia.augmentation.RandomErasing
           p: 0.5
-          scale: ${tuple:0.02,0.2}
-          ratio: ${tuple:0.3,3.3}
+          scale: ${tuple:0.02,0.08}
+          ratio: ${tuple:0.5,2}
           value: 0.5
 
         - _target_: kornia.augmentation.ColorJiggle
           p: 1.
-          brightness: 0.4
+          brightness: 0.3
           contrast: 0.4
           saturation: 0.3
           hue: 0
@@ -30,10 +30,10 @@ segment:
 
         - _target_: kornia.augmentation.RandomAffine
           p: 0.5
-          degrees: 10
-          translate: null
+          degrees: 5
+          translate: .2
           scale: null
-          shear: ${tuple:-15,15,-15,15}
+          shear: ${tuple:-10,10,-10,10}
           align_corners: true
 
         data_format: 'BTCHW'
@@ -43,3 +43,5 @@ segment:
 
 query:
   apply: false
+
+strict_bbox_check: false

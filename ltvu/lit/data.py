@@ -45,6 +45,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
+        self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
         self.save_hyperparameters(ignore='config')
 
@@ -87,6 +88,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             if self.trainer.training:
                 if self.segment_aug:
                     segment, gt_bboxes, gt_probs_update = self.augment(segment, gt_bboxes)
+                    self.trainer.strategy.barrier()
                     gt_probs = gt_probs.logical_and(gt_probs_update).float()
             else:
                 batch.update({'segment_original': segment, 'query_original': query})
@@ -128,7 +130,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         # recover
         bboxes_px_aug = bboxes_px_aug.squeeze(2)  # [b,t,4]
         bboxes_px_aug = bboxes_px_aug[..., [1, 0, 3, 2]]  # [b,t,4], xyxy -> yxyx
-        bboxes_px_aug, gt_probs_update = check_bbox(bboxes_px_aug, h, w)  # [b,t,4], [b,t]
+        bboxes_px_aug, gt_probs_update = check_bbox(bboxes_px_aug, h, w, self.strict_bbox_check)  # [b,t,4], [b,t]
         gt_bboxes = bboxes_px_aug / bbox_scale[None, None]  # [b,t,4]
 
         return segments_aug, gt_bboxes, gt_probs_update

@@ -52,7 +52,7 @@ def get_trainer(config, jid, enable_progress_bar=False):
     # Note: do not let hydra instantiate the Trainer or it is highly inflexible
     trainer_config = OmegaConf.to_container(trainer_config, resolve=True)
     if 'strategy' not in trainer_config:
-        trainer_config.strategy = DDPStrategy(
+        trainer_config['strategy'] = DDPStrategy(
             timeout=datetime.timedelta(seconds=600),
             find_unused_parameters=True)
     return L.Trainer(
