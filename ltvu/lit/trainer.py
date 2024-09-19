@@ -21,7 +21,7 @@ def get_trainer(config, jid, enable_progress_bar=False):
     # callbacks
     callbacks = [
         ModelSummary(max_depth=2),
-        LearningRateMonitor(logging_interval='step'),
+        LearningRateMonitor(),
         ModelCheckpoint(
             dirpath=runtime_outdir,
             save_last=False,

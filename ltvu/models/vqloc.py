@@ -86,11 +86,11 @@ class ClipMatcher(nn.Module):
 
         # loss weights
         positive_threshold = .2,
-        logit_scale = 100.,
+        logit_scale = 1.,
         weight_bbox_center = 1.,
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
-        weight_prob = 50.,
+        weight_prob = 100.,
     ) -> None:
         super().__init__()
 

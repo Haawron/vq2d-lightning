@@ -243,61 +243,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return bboxes, seg_with_gt.astype(np.float32)
 
 
-class VQ2DTestDatasetSeparated(VQ2DFitDataset):
-    """An item is defined as a tuple `(qset_uuid, seg_idx)`."""
-
-    def __init__(self, config, split = 'val'):
-        super().__init__(config, split)
-        self.num_frames_per_segment = self.num_frames
-        self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered
-        del self.num_frames  # to avoid confusion
-
-        self.all_segments = []
-        for ann in self.all_anns:
-            clip_uid = ann['clip_uid']
-            annotation_uid = ann['annotation_uid']
-            query_set: str = ann['query_set']
-            qset_uuid = f"{annotation_uid}_{query_set}"
-            num_frames_clip = ann['query_frame']
-            num_segments = num_frames_clip // self.segment_length
-            # (qset_uuid, seg_idx) tuple for indexing, clip_uid for loggging
-            self.all_segments.extend([(qset_uuid, seg_idx, clip_uid, num_segments) for seg_idx in range(num_segments)])
-
-    def __len__(self):
-        return len(self.all_segments)
-
-    def __getitem__(self, idx):
-        ann_idx, seg_idx, clip_uid = self.all_clip_uids[idx]
-        ann = self.all_anns[ann_idx]
-        qset_uuid = f"{ann['annotation_uid']}_{ann['query_set']}"
-        frame_idxs = np.arange(seg_idx * self.num_frames, (seg_idx + 1) * self.num_frames, self.frame_interval)
-        assert frame_idxs.shape[0] == self.num_frames
-        p_clip = self.p_clips_dir / f'{clip_uid}.mp4'
-        vr = decord.VideoReader(str(p_clip), num_threads=1)
-
-        segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
-        gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
-        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
-        query = self.get_query(ann)
-
-        if segment.shape[0] < self.num_frames:
-            pad_size = self.num_frames - segment.shape[0]
-            pad = (pad_size, 0, 0, 0)
-            segment = F.pad(segment, pad, value=0)
-            assert segment.shape[0] == self.num_frames
-            seg_mask = torch.tensor([1] * segment.shape[0] + [0] * pad_size)
-        else:
-            seg_mask = torch.ones(self.num_frames)
-
-        return {
-            'segment': segment,  # [t,c,h,w], normalized
-            'query': query,  # [c,h,w], normalized
-            'qset_uuid': qset_uuid,
-            'seg_idx': seg_idx,
-            'seg_mask': seg_mask,
-        }
-
-
 def sample_nearby_gt_frames(
     gt_ext: list[int],  # both inclusive
     num_frames: int = 30,
@@ -375,3 +320,90 @@ def shift_indices_to_clip_range(
     assert (frame_idxs < clip_len).all(), f'Frame indices out of clip range: {frame_idxs}, {lmost=} {rmost=} {clip_len=}'
     # assert (0 <= frame_idxs).all() and (frame_idxs < clip_len).all()
     return frame_idxs
+
+
+class VQ2DEvalDataset(VQ2DFitDataset):
+    def __init__(self, config, split = 'val'):
+        super().__init__(config, split)
+        self.num_frames_per_segment = self.num_frames
+        self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered as occupied
+        del self.num_frames  # to avoid confusion
+
+        self.all_segments = []
+        for ann_idx, ann in enumerate(self.all_anns):
+            annotation_uid = ann['annotation_uid']
+            query_set: str = ann['query_set']
+            qset_uuid = f"{annotation_uid}_{query_set}"
+            num_frames_clip = ann['query_frame']  # exclusive
+            num_segments = np.ceil(num_frames_clip / self.segment_length).astype(int).item()
+            seg_uids = [f'{qset_uuid}_{seg_idx}' for seg_idx in range(num_segments)]
+            for seg_idx in range(num_segments):
+                self.all_segments.append({
+                    'ann_idx': ann_idx,
+                    'seg_idx': seg_idx,
+
+                    'seg_uid': seg_uids[seg_idx],
+                    'qset_uuid': qset_uuid,
+                    'num_segments': num_segments,
+                })
+
+    def __len__(self):
+        return len(self.all_segments)
+
+    def __getitem__(self, idx):
+        seg_info = self.all_segments[idx]
+        ann_idx, seg_idx = seg_info['ann_idx'], seg_info['seg_idx']
+        ann = self.all_anns[ann_idx]
+        num_frames_clip = ann['query_frame']
+        t = self.num_frames_per_segment
+        frame_idxs = np.arange(seg_idx * t, (seg_idx + 1) * t, self.frame_interval)
+        frame_idxs[frame_idxs >= num_frames_clip] = num_frames_clip - 1  # repeat
+
+        segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
+        gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
+        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        query = self.get_query(ann)
+
+        return {
+            # inputs
+            'segment': segment,  # [t, c, h, w], normalized
+            'query': query,  # [c, h, w], normalized
+
+            # GT
+            'gt_bboxes': gt_rt.astype(np.float32),  # [t, 4], yxyx, normalized
+            'gt_probs': gt_prob.astype(np.float32),  # [t], GT prob
+            'before_query_mask': torch.tensor(frame_idxs < ann['query_frame']).bool(),  # [t]
+
+            # info
+            'clip_uid': ann['clip_uid'],
+            'seg_uid': seg_info['seg_uid'],
+            'qset_uuid': seg_info['qset_uuid'],
+            'seg_idx': seg_info['seg_idx'],
+            'num_segments': seg_info['num_segments'],
+        }
+
+    @staticmethod
+    def testme():
+        from omegaconf import OmegaConf
+        config = OmegaConf.load('config/base.yaml')
+        config.dataset.clips_dir = '/local_datasets/ego4d_data/v2/vq2d_frames/raw'
+        ds = VQ2DEvalDataset(config)
+        torch.set_printoptions(linewidth=1000, precision=3, sci_mode=False)
+        np.set_printoptions(linewidth=1000, precision=3, suppress=True)
+        print(ds[0]['segment'].shape)
+        print()
+        print(ds[0]['query'].shape)
+        print()
+        print(ds[0]['gt_bboxes'].shape)
+        print(ds[0]['gt_bboxes'])
+        print()
+        print(ds[0]['gt_probs'].shape)
+        print(ds[0]['gt_probs'])
+        print()
+        print(ds[0]['before_query_mask'].shape)
+        print(ds[0]['before_query_mask'])
+        print()
+
+
+if __name__ == '__main__':
+    VQ2DEvalDataset.testme()

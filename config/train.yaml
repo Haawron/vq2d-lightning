@@ -1,9 +1,10 @@
 defaults:
   - _self_
+  - override _self_: precision/fast
   - augment: base
   - model: vqloc
-  - override hydra/job_logging: none
-  - override hydra/hydra_logging: none
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
 
 
 
@@ -46,7 +47,7 @@ trainer:
   ##### logging or automl #####
   log_every_n_steps: 1
   logger:
-    - _target_: pytorch_lightning.loggers.WandbLogger
+    - _target_: lightning.pytorch.loggers.WandbLogger
       project: 'ltvu++'
       entity: 'team-khu'
       group: 'smoke_${YY}${mm}${dd}'  # for grouping runs (does not mean an organization)
@@ -65,8 +66,8 @@ dataset:
   pin_memory: True
   persistent_workers: False  # No, our dataset is memory-bound
   ##### project-related #####
-  # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{frame_idx:07d}.jpg
-  # for frames, frame_idx should be based on fps=5
+  # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{1+frame_idx:07d}.jpg
+  # for frames, frame_idxs should be 1-based
   clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/520ss'
   official_anns_dir: '/data/datasets/ego4d_data/v2/annotations'
   flat_anns_dir: './data'

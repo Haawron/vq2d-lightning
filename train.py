@@ -52,7 +52,7 @@ def within_slurm_batch():
     return batch_flag == 1
 
 
-@hydra.main(config_path='config', config_name='base', version_base='1.3')
+@hydra.main(config_path='config', config_name='train', version_base='1.3')
 def main(config: DictConfig):
     L.seed_everything(config.random_seed, workers=True)
     torch.set_float32_matmul_precision('highest')

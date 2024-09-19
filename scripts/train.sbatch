@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-fast-affine2
+#SBATCH --job-name=vqloc-fast-affine-strong
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0

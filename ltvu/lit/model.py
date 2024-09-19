@@ -70,6 +70,8 @@ class LitModule(L.LightningModule):
     """
     def __init__(self, config):
         super().__init__()
+        if isinstance(config, dict):  # eval.py
+            config = OmegaConf.create(config)
         self.config = config
         self.model: VQLoC = hydra.utils.instantiate(
             config.model, compile_backbone=config.get('compile', True))
@@ -102,7 +104,14 @@ class LitModule(L.LightningModule):
         self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
-        pass
+        bsz = batch['segment'].shape[0]
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
+        preds_top = output_dict['info_dict']['preds_top']  # bbox: [b,t,4], prob: [b,t]
+        outputs = {}
+        for bidx in range(bsz):
+            outputs[batch['qset_uuid'][bidx]] = [None] * batch['num_segments'][bidx]
+        for bidx in range(bsz):
+            self.test_outputs[batch['seg_uid'][bidx]] = (preds_top['bbox'][bidx].cpu().numpy(), preds_top['prob'][bidx].cpu().numpy())
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         pass
