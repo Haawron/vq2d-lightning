@@ -15,6 +15,6 @@ hostname
 source ./scripts/_setup.sh
 
 
-python run.py
+python train.py
 
-# python run.py --config-name fast
+# python train.py --config-name train_fast

@@ -1,67 +1,38 @@
 defaults:
+  - base
   - _self_
-  - model: vqloc
-  - override hydra/job_logging: colorlog
-  - override hydra/hydra_logging: colorlog
 
 
 # required parameters
-ckpt: 'outputs/batch/2024-09-15/124077/epoch=37-prob_acc=0.7626.ckpt'
+ckpt: ??? # 'outputs/batch/2024-09-15/124077/epoch=37-prob_acc=0.7626.ckpt'
 
 
 # frequently overridden parameters
 random_seed: 42
-batch_size: 3
+batch_size: 16
 num_workers: 6
-prefetch_factor: 4
+prefetch_factor: 2
 base_lr: 0.0003
 compile: false
 backbone_precision: 'fp32'  # bf16 or fp32 or fp16
 backbone_fp32_mm_precision: 'highest'  # medium or high or highest
 
 
-# runtime parameters
-jid: ${oc.env:SLURM_JOB_ID}
-job_type: ${job_type:}  # debug or batch
-runtime_outdir: ${runtime_outdir:}
+# # runtime parameters
+# jid: ${oc.env:SLURM_JOB_ID}
+# job_type: ${job_type:}  # debug or batch
+# YY: ${now:%Y}
+# mm: ${now:%m}  # month
+# dd: ${now:%d}  # day
+# runtime_outdir: ${runtime_outdir:}
 
 
 run_type: eval
 
-
 trainer:
-  ##### directly affects to performance #####
-  devices: 'auto'  # maximum available
-  accumulate_grad_batches: 1
-  precision: 32-true  # don't edit this, we autocast manually
-  gradient_clip_val: 20.
-  detect_anomaly: False
-  benchmark: True
-  deterministic: False  # sorry
-  ##### logging or automl #####
-  log_every_n_steps: 1
+  logger: []
+  inference_mode: true
 
 dataset:
-  ###### torch #####
-  batch_size: ${batch_size}
-  num_workers: ${num_workers}
-  prefetch_factor: ${prefetch_factor}
-  pin_memory: True
-  persistent_workers: False  # No, our dataset is memory-bound
-  ##### project-related #####
-  # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{1+frame_idx:07d}.jpg
-  # for frames, frame_idxs should be 1-based
-  clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/520ss'
-  official_anns_dir: '/data/datasets/ego4d_data/v2/annotations'
-  flat_anns_dir: './data'
-  num_frames: 32
-  frame_interval: 1
-  segment_size: [448, 448]  # height, width
-  query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
   padding_value: 'mean'  # zero or mean
-
-hydra:
-  run:
-    dir: ./outputs/${job_type}/${YY}-${mm}-${dd}/${jid}
+  clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'

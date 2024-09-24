@@ -199,16 +199,25 @@ class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileD
 
 
 def main(short_side = 520, splits: str | list[str] = ['train', 'val'], whole = False, world_size = 1, rank = 0):
-    """Usage:
-
-    .. code-block:: bash
-    for rank in {0..3}; do
-        python -m ltvu.preprocess --world_size 4 --rank $rank &
-    done
-
-    .. code-block:: bash
-    python -m ltvu.preprocess --splits val --whole
     """
+    Usage
+    -----
+
+    Run preprocessing for training split:
+
+        python -m ltvu.preprocess  # will process both train and val splits
+
+    Run preprocessing in parallel for 4 ranks:
+
+        for rank in {0..3}; do
+            python -m ltvu.preprocess --world_size 4 --rank $rank &
+        done
+
+    Run preprocessing for validation split for evaluation:
+
+        python -m ltvu.preprocess --splits val --whole
+    """
+
     print(f'Preprocessing VQ2D frames with short_side={short_side}, splits={splits}')
     num_workers = os.cpu_count() // 4
     print(f'{num_workers=}, {world_size=}, {rank=}')

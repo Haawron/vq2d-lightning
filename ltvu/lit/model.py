@@ -70,7 +70,7 @@ class LitModule(L.LightningModule):
     """
     def __init__(self, config):
         super().__init__()
-        if isinstance(config, dict):  # eval.py
+        if isinstance(config, dict):  # eval.py, config from a checkpoint, for backward compatibility
             config = OmegaConf.create(config)
         self.config = config
         self.model: VQLoC = hydra.utils.instantiate(
@@ -78,6 +78,7 @@ class LitModule(L.LightningModule):
         self.fix_backbone = config.model.fix_backbone
         self.save_hyperparameters(ignore='config')
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
+        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
         self.sample_step = 0
 
     ############ major hooks ############
@@ -104,17 +105,39 @@ class LitModule(L.LightningModule):
         self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
-        bsz = batch['segment'].shape[0]
-        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-        preds_top = output_dict['info_dict']['preds_top']  # bbox: [b,t,4], prob: [b,t]
-        outputs = {}
-        for bidx in range(bsz):
-            outputs[batch['qset_uuid'][bidx]] = [None] * batch['num_segments'][bidx]
-        for bidx in range(bsz):
-            self.test_outputs[batch['seg_uid'][bidx]] = (preds_top['bbox'][bidx].cpu().numpy(), preds_top['prob'][bidx].cpu().numpy())
+        pass
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        pass
+        bsz = batch['segment'].shape[0]
+        device = batch['segment'].device
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
+        # bbox: [b,t,4], in pixels wrt the original, yxyx, float
+        # prob: [b,t], logits, float
+        preds_top = output_dict['info_dict']['preds_top']
+        pred_outputs = []
+        for bidx in range(bsz):
+            ow, oh = batch['original_width'][bidx], batch['original_height'][bidx]
+            bbox_yxyx = preds_top['bbox'][bidx]
+            bbox_xyxy: torch.Tensor = bbox_yxyx[..., [1, 0, 3, 2]]  # yxyx -> xyxy
+            pad_size_float = (1. - oh / ow) / 2
+            bbox_xyxy -= torch.tensor([0, pad_size_float, 0, pad_size_float], device=device)
+            bbox_xyxy *= ow  # unnormalize
+            bbox_xyxy = bbox_xyxy.clamp(torch.tensor(0, device=device), torch.tensor([ow, oh, ow, oh], device=device))
+            pred_outputs.append({
+                # crucial information for segment indexing
+                'qset_uuid': batch['qset_uuid'][bidx],
+                'seg_idx': batch['seg_idx'][bidx].item(),  # 0-based
+                'num_segments': batch['num_segments'][bidx].item(),
+
+                # predictions
+                'ret_bboxes': bbox_xyxy.cpu(),
+                'ret_scores': preds_top['prob'][bidx].cpu(),
+
+                # for debugging, visualization or analysis
+                'clip_uid': batch['clip_uid'][bidx],
+                'frame_idxs': batch['frame_idxs'][bidx].cpu(),  # check missing or duplicated frames (last frame can be duplicated)
+            })
+        return pred_outputs
 
     def configure_optimizers(self):
         optim_config = self.config.optim

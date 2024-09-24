@@ -65,7 +65,7 @@ def main(config: DictConfig):
 
     plm = LitModule(config)
     pdm = LitVQ2DDataModule(config)
-    trainer = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
+    trainer, ckpt_callback = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 
     # if wandblogger is present, log the hostname to the wandb dashboard
     for logger in trainer.loggers:
@@ -76,6 +76,12 @@ def main(config: DictConfig):
         write_batch_script(jid, default_root_dir)
 
     trainer.fit(plm, datamodule=pdm)
+
+    log_to_console('\n' + "="*80 + '\n')
+    log_to_console('Evaluating best model')
+
+    plm = LitModule.load_from_checkpoint(ckpt_callback.best_model_path)
+    trainer.predict(plm, datamodule=pdm, return_predictions=False)
 
 
 if __name__ == '__main__':

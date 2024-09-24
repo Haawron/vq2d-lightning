@@ -166,7 +166,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
     def get_query(self, ann):
         vc = ann['visual_crop']
         oh, ow = ann['original_height'], ann['original_width']
-        fno = vc['fno']
+        num_clip_frames = int(ann['clip_fps'] * ann['clip_duration'])
+        fno = min(vc['fno'], num_clip_frames - 1)
         p_frame = self.p_clips_dir / ann['clip_uid'] / f'frame_{fno+1:07d}.jpg'
         x, y, w, h = vc['x'], vc['y'], vc['w'], vc['h']
         l, s = max(w, h), min(w, h)  # large, short
@@ -336,13 +337,13 @@ class VQ2DEvalDataset(VQ2DFitDataset):
             qset_uuid = f"{annotation_uid}_{query_set}"
             num_frames_clip = ann['query_frame']  # exclusive
             num_segments = np.ceil(num_frames_clip / self.segment_length).astype(int).item()
-            seg_uids = [f'{qset_uuid}_{seg_idx}' for seg_idx in range(num_segments)]
+            seg_uuids = [f'{qset_uuid}_{seg_idx}' for seg_idx in range(num_segments)]
             for seg_idx in range(num_segments):
                 self.all_segments.append({
                     'ann_idx': ann_idx,
                     'seg_idx': seg_idx,
 
-                    'seg_uid': seg_uids[seg_idx],
+                    'seg_uuid': seg_uuids[seg_idx],
                     'qset_uuid': qset_uuid,
                     'num_segments': num_segments,
                 })
@@ -376,16 +377,19 @@ class VQ2DEvalDataset(VQ2DFitDataset):
 
             # info
             'clip_uid': ann['clip_uid'],
-            'seg_uid': seg_info['seg_uid'],
+            'seg_uuid': seg_info['seg_uuid'],
             'qset_uuid': seg_info['qset_uuid'],
             'seg_idx': seg_info['seg_idx'],
             'num_segments': seg_info['num_segments'],
+            'original_height': ann['original_height'],
+            'original_width': ann['original_width'],
+            'frame_idxs': frame_idxs,
         }
 
     @staticmethod
     def testme():
         from omegaconf import OmegaConf
-        config = OmegaConf.load('config/base.yaml')
+        config = OmegaConf.load('config/eval.yaml')
         config.dataset.clips_dir = '/local_datasets/ego4d_data/v2/vq2d_frames/raw'
         ds = VQ2DEvalDataset(config)
         torch.set_printoptions(linewidth=1000, precision=3, sci_mode=False)
@@ -406,4 +410,5 @@ class VQ2DEvalDataset(VQ2DFitDataset):
 
 
 if __name__ == '__main__':
+    # python -m ltvu.dataset
     VQ2DEvalDataset.testme()

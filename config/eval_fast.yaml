@@ -1,0 +1,13 @@
+# usage: python run.py --config-name=eval_fast
+
+defaults:
+  - eval
+  - _self_
+
+
+batch_size: 12
+num_workers: 8
+prefetch_factor: 3
+compile: true
+backbone_precision: 'bf16'  # bf16 or fp32 or fp16
+backbone_fp32_mm_precision: 'medium'  # medium or high or highest

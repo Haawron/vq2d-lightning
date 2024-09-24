@@ -30,8 +30,6 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def __init__(self, config):
         super().__init__()
-        if isinstance(config, dict):  # eval.py
-            config = OmegaConf.create(config)
         self.config = config
         ds_config = self.config.dataset
         self.p_clips_dir = Path(ds_config.clips_dir)
@@ -49,6 +47,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
         self.save_hyperparameters(ignore='config')
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
+        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
 
         # GPU accelerated data preprocessing
         self.normalization = kornia.enhance.Normalize(mean=MEAN, std=STD)

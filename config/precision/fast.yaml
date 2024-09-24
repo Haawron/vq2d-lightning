@@ -1,6 +1,0 @@
-batch_size: 8
-num_workers: 4
-prefetch_factor: 2
-compile: true
-backbone_precision: 'bf16'  # bf16 or fp32 or fp16
-backbone_fp32_mm_precision: 'medium'  # medium or high or highest
