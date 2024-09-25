@@ -45,6 +45,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.segment_aug: bool = aug_config.segment.apply
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
+        exp_config = config.get('experiment')
+        self.enable_multi_query = exp_config is not None and exp_config.get('multi_query') is not None
+
         self.save_hyperparameters(ignore='config')
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
         self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
@@ -92,10 +95,20 @@ class LitVQ2DDataModule(L.LightningDataModule):
                     gt_probs = gt_probs.logical_and(gt_probs_update).float()
             else:
                 batch.update({'segment_original': segment, 'query_original': query})
+
         segment, query = self.normalize(segment, query)
         batch.update({
             'segment': segment, 'query': query,
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
+
+        if self.enable_multi_query and self.trainer is not None and self.trainer.training:
+            extra_queries = batch['experiment']['multi_query']['extra_queries']  # [b, #Q, c, h, w]
+            bsz = extra_queries.shape[0]
+            extra_queries = rearrange(extra_queries, 'b q c h w -> (b q) c h w')
+            extra_queries = self.normalization(extra_queries)
+            extra_queries = rearrange(extra_queries, '(b q) c h w -> b q c h w', b=bsz)
+            batch['extra_queries'] = extra_queries
+
         return batch
 
     def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static

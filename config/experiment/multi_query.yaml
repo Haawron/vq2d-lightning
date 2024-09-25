@@ -1,0 +1,5 @@
+# usage: python train.py experiment=multi_query
+
+multi_query:
+  num_extra_queries: 1
+  query_crops_dir: 'outputs/crops/train'

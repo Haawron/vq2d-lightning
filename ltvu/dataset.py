@@ -57,6 +57,12 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         elif ds_config.padding_value == 'zero':
             self.padding_value = 0.
 
+        exp_config = config.get('experiment')
+        self.enable_multi_query = exp_config is not None and exp_config.get('multi_query') is not None
+        if self.enable_multi_query:
+            self.num_extra_queries: int = exp_config.multi_query.num_extra_queries
+            self.p_query_crops_dir: Path = Path(exp_config.multi_query.query_crops_dir)
+
         self.split = split
         self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
         self.all_anns = json.load(self.p_ann.open())
@@ -88,7 +94,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
 
-        return {
+        sample = {
             # inputs
             'segment': segment,  # [t, c, h, w], normalized
             'query': query,  # [c, h, w], normalized
@@ -109,6 +115,24 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'visual_crop': vc,  # dict
             'object_title': ann['object_title'],  # str
         }
+
+        if self.enable_multi_query and self.split == 'train':
+            object_title = ann['object_title']
+            # qset_uuid = f"{ann['annotation_uid']}_{ann['query_set']}"
+            # p_extra_query_crops = [p for p in (self.p_query_crops_dir / object_title).glob('*.jpg') if qset_uuid not in p.stem]
+            p_extra_query_crops = list((self.p_query_crops_dir / object_title).glob('*.jpg'))
+            assert len(p_extra_query_crops) > 0, f'No extra query crops found for {object_title}, {p_extra_query_crops}'
+            p_extra_queries = np.random.choice(p_extra_query_crops, self.num_extra_queries, replace=True)
+            extra_queries = [Image.open(p) for p in p_extra_queries]
+            for q in extra_queries:
+                assert q.size[0] > 0 and q.size[1] > 0, f'Invalid query crop: {q.size} {p_extra_queries}'
+            extra_queries = torch.stack([self.preprocess_query(img, ann, need_crop=False) for img in extra_queries])
+            (sample
+                .setdefault('experiment', {})
+                .setdefault('multi_query', {})
+                .setdefault('extra_queries', extra_queries))
+
+        return sample
 
     def subsample_anns(self, anns):  # interface
         return anns
@@ -163,6 +187,32 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         return frames, bboxes
 
+    def preprocess_query(self, query, ann, need_crop=True):
+        vc = ann['visual_crop']
+        oh, ow = ann['original_height'], ann['original_width']
+        x, y, w, h = vc['x'], vc['y'], vc['w'], vc['h']
+        l, s = max(w, h), min(w, h)  # large, short
+
+        if need_crop:
+            oow, ooh = query.size  # might be pre-pre-processed already
+            rho = (oh / ooh + ow / oow) / 2
+            x, y, w, h = x / rho, y / rho, h / rho, w / rho
+        query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
+        query = TF.pil_to_tensor(query)  # [c, h, w]
+        query = query.float() / 255.
+
+        # permute - pad - resize
+        # query = rearrange(query, 'h w c -> c h w').contiguous()
+        if self.query_padding:
+            pad_size = (l - s) // 2
+            if h > w:
+                pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
+            else:
+                pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
+            query = F.pad(query, pad, value=0)
+        query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+        return query.squeeze(0)  # [c, h, w]
+
     def get_query(self, ann):
         vc = ann['visual_crop']
         oh, ow = ann['original_height'], ann['original_width']
@@ -179,28 +229,31 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
                 f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
 
-        # load
-        query = Image.open(p_frame)
+        query_raw = Image.open(p_frame)
+        return self.preprocess_query(query_raw, ann)
 
-        # crop - permute - normalize
-        oow, ooh = query.size  # might be pre-pre-processed already
-        rho = (oh / ooh + ow / oow) / 2
-        x, y, w, h = x / rho, y / rho, h / rho, w / rho
-        query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
-        query = TF.pil_to_tensor(query)  # [c, h, w]
-        query = query.float() / 255.
+        # # load
+        # query = Image.open(p_frame)
 
-        # permute - pad - resize
-        # query = rearrange(query, 'h w c -> c h w').contiguous()
-        if self.query_padding:
-            pad_size = (l - s) // 2
-            if h > w:
-                pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
-            else:
-                pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
-            query = F.pad(query, pad, value=0)
-        query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
-        return query.squeeze(0)  # [c, h, w]
+        # # crop - permute - normalize
+        # oow, ooh = query.size  # might be pre-pre-processed already
+        # rho = (oh / ooh + ow / oow) / 2
+        # x, y, w, h = x / rho, y / rho, h / rho, w / rho
+        # query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
+        # query = TF.pil_to_tensor(query)  # [c, h, w]
+        # query = query.float() / 255.
+
+        # # permute - pad - resize
+        # # query = rearrange(query, 'h w c -> c h w').contiguous()
+        # if self.query_padding:
+        #     pad_size = (l - s) // 2
+        #     if h > w:
+        #         pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
+        #     else:
+        #         pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
+        #     query = F.pad(query, pad, value=0)
+        # query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+        # return query.squeeze(0)  # [c, h, w]
 
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_

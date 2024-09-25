@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+import numpy as np
 from einops import rearrange, repeat
 import math
 import torchvision
@@ -294,6 +295,8 @@ class ClipMatcher(nn.Module):
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
+
+        extra_queries = None,
         **kwargs
     ):
         '''
@@ -313,6 +316,12 @@ class ClipMatcher(nn.Module):
             with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
                 query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
                 clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+                if extra_queries is not None and np.random.rand() < .5:  # [b,#Q,c,h,w]
+                    extra_queries = rearrange(extra_queries, 'b q c h w -> (b q) c h w')
+                    extra_query_feat = self.extract_feature(extra_queries)
+                    extra_query_feat = rearrange(extra_query_feat, '(b q) c h w -> b q c h w', b=b)
+                    extra_query_feat = extra_query_feat.mean(dim=1)  # [b,c,h,w]
+                    query_feat = 0.5 * query_feat + 0.5 * extra_query_feat # [b,c,h,w]
             torch.set_float32_matmul_precision(prec_prev)
 
         # reduce channel size
