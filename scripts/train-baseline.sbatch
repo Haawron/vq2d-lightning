@@ -15,7 +15,6 @@ hostname
 source ./scripts/_setup.sh
 
 
-python run.py
+python train.py
 
-# python run.py compile=true \
-#     backbone_precision=bf16 backbone_fp32_mm_precision=medium
+# python train.py --config-name train_fast

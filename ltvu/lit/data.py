@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
-from omegaconf import OmegaConf
 from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 import torch
 import torch.optim
@@ -11,12 +11,10 @@ import lightning as L
 
 import kornia
 import kornia.augmentation as K
-from kornia.constants import DataKey
 from einops import rearrange
-from PIL import Image, ImageDraw
 
 from ltvu.dataset import (
-    VQ2DFitDataset, VQ2DTestDatasetSeparated,
+    VQ2DFitDataset, VQ2DEvalDataset,
 )
 from ltvu.preprocess import generate_flat_annotations_vq2d
 from ltvu.bbox_ops import check_bbox
@@ -48,6 +46,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
         self.save_hyperparameters(ignore='config')
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
+        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
 
         # GPU accelerated data preprocessing
         self.normalization = kornia.enhance.Normalize(mean=MEAN, std=STD)
@@ -115,7 +115,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             Augmented segment and gt_bboxes.
         """
         _, _, _, h, w = segments.shape
-        bsz, device = segments.shape[0], segments.device
+        device = segments.device
 
         # setup
         gt_bboxes = gt_bboxes[..., [1, 0, 3, 2]]  # [b,t,4], yxyx -> xyxy
@@ -136,7 +136,6 @@ class LitVQ2DDataModule(L.LightningDataModule):
         return segments_aug, gt_bboxes, gt_probs_update
 
     def normalize(self, segment, query):  # TODO: static
-        # TODO: Is per-frame normalization valid?
         bsz = segment.shape[0]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         segment = self.normalization(segment)  # [b,t,c,h,w]
@@ -170,7 +169,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def test_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DTestDatasetSeparated(self.config, split='val'),
+            VQ2DEvalDataset(self.config, split='val'),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,

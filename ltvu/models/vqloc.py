@@ -65,7 +65,7 @@ def BasicBlock_Conv2D(in_dim, out_dim):
 class ClipMatcher(nn.Module):
     def __init__(self,
         compile_backbone = True,
-        backbone_precision = 'bf16-mixed',
+        backbone_precision = 'bf16',
         backbone_fp32_mm_precision = 'medium',
 
         # model structure
@@ -86,17 +86,17 @@ class ClipMatcher(nn.Module):
 
         # loss weights
         positive_threshold = .2,
-        logit_scale = 100.,
+        logit_scale = 1.,
         weight_bbox_center = 1.,
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
-        weight_prob = 50.,
+        weight_prob = 100.,
     ) -> None:
         super().__init__()
 
         self.backbone, self.down_rate, self.backbone_dim = build_backbone(backbone_name, backbone_type)
         self.backbone_name = backbone_name
-        prec = backbone_precision.split('-')[0]
+        prec = backbone_precision  # alias
         dtypes = {'bf16': torch.bfloat16, 'fp32': torch.float32, 'fp16': torch.float16}
         self.backbone_dtype = dtypes[prec]
         self.backbone_autocast = prec != 'fp32'

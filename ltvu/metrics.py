@@ -93,14 +93,14 @@ def compute_average_precision_dict(
     }
 
 
-if __name__ == '__main__':
-    p_ann = Path("/data/gunsbrother/repos/vq2d-lightning/data/vq_v2_val_anno.json")
-    p_pred = Path("/data/gunsbrother/prjs/ltvu2/VQLoC/notebooks/43634_results.json.gz")
-    all_anns = json.load(p_ann.open())
+def get_metrics(p_ann_flat, p_pred):
+    p_ann_flat = Path(p_ann_flat)
+    p_pred = Path(p_pred)
+    all_anns_flat = json.load(p_ann_flat.open())
     all_preds_stratified = json.load(p_pred.open())
 
     quid2pred, quid2pos = defaultdict(list), {}
-    for ann in all_anns:
+    for ann in all_anns_flat:
         qset_uuid = f'{ann["annotation_uid"]}_{ann["query_set"]}'
         ann['bboxes'] = ResponseTrack.from_json(ann)
         quid2pos[qset_uuid] = ann['bboxes']
@@ -115,8 +115,6 @@ if __name__ == '__main__':
                     qset_uuid = f'{annotation_uid}_{qset_id}'
                     if qset_uuid in quid2pos:
                         quid2pred[qset_uuid].append(ResponseTrack.from_json(qset))
-
-    # print(len(all_anns), len(quid2pred), len(quid2pos))
 
     quid2pos = {quid: pos for quid, pos in quid2pos.items()}
     quid2pred = {quid: pred for quid, pred in quid2pred.items()}
@@ -144,7 +142,8 @@ if __name__ == '__main__':
     stious_arr = np.array([stious[quid] for quid in all_quids_in_order])
     all_sious_arr = np.array([all_sious[quid] for quid in all_quids_in_order], dtype=list)  # flattened
     all_max_areas_arr = np.array([all_max_areas[quid] for quid in all_quids_in_order], dtype=list)  # flattened
-    # subset_results = {}
+
+    subset_metrics = {}
     for subset_name, (lbd, ubd) in subset_max_bbox_area_ranges.items():
         max_area_mask = (lbd <= all_max_areas_arr) & (all_max_areas_arr < ubd)
         tap_dict = compute_average_precision_dict(tious_arr[max_area_mask])
@@ -154,24 +153,62 @@ if __name__ == '__main__':
         rec_dict = compute_average_precision_dict(tious_arr[max_area_mask], thresholds=[.3, .5])
 
         tap = tap_dict['mAP']
-        taps = tap_dict['APs'][0]["AP"]
+        tap25 = tap_dict['APs'][0]["AP"]
         stap = stap_dict['mAP']
-        staps = stap_dict['APs'][0]["AP"]
+        stap25 = stap_dict['APs'][0]["AP"]
         rec = sap_dict['recalls'][-1, -1]
         succ = succ_dict['precisions'][-1, -1]
         r1_03 = rec_dict['recalls'][0, -1]
         r1_05 = rec_dict['recalls'][1, -1]
 
-        # display
+        subset_metrics[subset_name] = {
+            'subset_info': {
+                'lbd': lbd,
+                'ubd': ubd,
+                'max_area_mask': max_area_mask,
+            },
+            'metrics': {
+                'tap': tap,
+                'taps': tap25,
+                'stap': stap,
+                'staps': stap25,
+                'rec': rec,
+                'succ': succ,
+                'r1_03': r1_03,
+                'r1_05': r1_05,
+            }
+        }
+
+    return subset_metrics
+
+
+def print_metrics(subset_metrics):
+    for subset_name, subset_info in subset_metrics.items():
+        lbd, ubd = subset_info['subset_info']['lbd'], subset_info['subset_info']['ubd']
+        max_area_mask = subset_info['subset_info']['max_area_mask']
+        metrics = subset_info['metrics']
+        tap, tap25 = metrics['tap'], metrics['taps']
+        stap, stap25 = metrics['stap'], metrics['staps']
+        rec, succ = metrics['rec'], metrics['succ']
+        r1_03, r1_05 = metrics['r1_03'], metrics['r1_05']
+
         print(f'{subset_name} ({lbd**.5:.0f}^2 - {ubd**.5:.0f}^2) ({max_area_mask.sum()} samples / {max_area_mask.mean():.1%})')
         print('VQ2D Evaluation')
         print(f'tAP             : {tap:6.3f}')
-        print(f'tAP  @ IoU=0.25 : {taps:6.3f}')
+        print(f'tAP  @ IoU=0.25 : {tap25:6.3f}')
         print(f'stAP            : {stap:6.3f}')
-        print(f'stAP @ IoU=0.25 : {staps:6.3f}')
+        print(f'stAP @ IoU=0.25 : {stap25:6.3f}')
         print(f'Recovery %      : {100*rec:6.3f}')
         print(f'Success         : {100*succ:6.3f}')
         print('EgoNLQ Evaluation')
         print(f'R1 @ IoU=.3     : {100*r1_03:6.3f}')
         print(f'R1 @ IoU=.5     : {100*r1_05:6.3f}')
         print()
+
+
+if __name__ == '__main__':
+    p_ann = Path("/data/gunsbrother/repos/vq2d-lightning/data/vq_v2_val_anno.json")
+    p_pred = Path("/data/gunsbrother/prjs/ltvu2/VQLoC/notebooks/43634_results.json.gz")
+    # p_pred = Path("outputs/debug/2024-09-25/126347/predictions.json")
+    subset_metrics = get_metrics(p_ann, p_pred)
+    print_metrics(subset_metrics)
