@@ -5,7 +5,7 @@
 
 set -e
 
-if [ ! -d /data/$USER/.aws ]; then
+if [ ! -d ~/.aws ]; then
     echo "Creating symlink to /data/$USER/.aws"
     ln -s /data/$USER/.aws ~/.aws
 fi

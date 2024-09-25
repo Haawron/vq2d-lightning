@@ -198,11 +198,30 @@ class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileD
         return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
 
 
-def main(short_side = 520, splits: str | list[str] = ['train', 'val'], world_size = 1, rank = 0):
+def main(short_side = 520, splits: str | list[str] = ['train', 'val'], whole = False, world_size = 1, rank = 0):
+    """
+    Usage
+    -----
+
+    Run preprocessing for training split:
+
+        python -m ltvu.preprocess  # will process both train and val splits
+
+    Run preprocessing in parallel for 4 ranks:
+
+        for rank in {0..3}; do
+            python -m ltvu.preprocess --world_size 4 --rank $rank &
+        done
+
+    Run preprocessing for validation split for evaluation:
+
+        python -m ltvu.preprocess --splits val --whole
+    """
+
     print(f'Preprocessing VQ2D frames with short_side={short_side}, splits={splits}')
     num_workers = os.cpu_count() // 4
     print(f'{num_workers=}, {world_size=}, {rank=}')
-    ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if short_side == 0 else FrameExtractAndSaveAsTarfileDataset
+    ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if whole else FrameExtractAndSaveAsTarfileDataset
     ds = ds_class(short_side=short_side, splits=splits)
     length = len(ds)
     sampler = torch.utils.data.distributed.DistributedSampler(

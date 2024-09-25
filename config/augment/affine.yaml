@@ -35,6 +35,7 @@ segment:
           scale: null
           shear: ${tuple:-10,10,-10,10}
           align_corners: true
+          padding_mode: 1
 
         data_format: 'BTCHW'
         same_on_frame: true
