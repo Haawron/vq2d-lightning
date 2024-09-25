@@ -1,4 +1,4 @@
-# usage: python run.py --config-name=debug
+# usage: python train.py --config-name=debug
 
 defaults:
   - base
