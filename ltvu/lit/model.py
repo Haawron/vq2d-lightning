@@ -76,9 +76,9 @@ class LitModule(L.LightningModule):
         self.model: VQLoC = hydra.utils.instantiate(
             config.model, compile_backbone=config.get('compile', True))
         self.fix_backbone = config.model.fix_backbone
-        self.save_hyperparameters(ignore='config')
-        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
-        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
+
+        self.save_hyperparameters(ignore='config')  # to avoid saving config itself as a hyperparameter
+        self.save_hyperparameters(config)  # to save the config in the checkpoint
         self.sample_step = 0
 
     ############ major hooks ############
