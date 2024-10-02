@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-fast-affine-strong
+#SBATCH --job-name=vqloc-16-64
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -15,19 +15,13 @@ hostname
 source ./scripts/_setup.sh
 
 
-# affine
+# python train.py --config-name train_fast \
+#     model.resolution_transformer=8 \
+#     model.num_anchor_regions=64 \
+#     batch_size=4 \
+
 python train.py --config-name train_fast \
-    trainer.logger.0.group='augment' \
-    augment=affine \
-    augment.segment.aug_list._args_.0._args_.1.p=0
-
-# # erase
-# python train.py --config-name train_fast \
-#     trainer.logger.0.group='augment' \
-#     augment=affine \
-#     augment.segment.aug_list._args_.0._args_.4.p=0
-
-# # both
-# python train.py --config-name train_fast \
-#     trainer.logger.0.group='augment' \
-#     augment=affine
+    model.resolution_transformer=16 \
+    model.num_anchor_regions=64 \
+    batch_size=3 \
+    trainer.logger.0.group='bbox_upscale'
