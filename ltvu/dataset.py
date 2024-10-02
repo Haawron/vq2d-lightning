@@ -1,9 +1,6 @@
 # built-in + hydra
 import json
-import shutil
-import subprocess
 from pathlib import Path
-from collections import defaultdict
 from omegaconf import DictConfig
 
 # torch
@@ -18,8 +15,7 @@ import torchvision.transforms.functional as TF
 # others
 import decord
 import numpy as np
-from einops import rearrange
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # local (ours)
 
@@ -197,12 +193,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             oow, ooh = query.size  # might be pre-pre-processed already
             rho = (oh / ooh + ow / oow) / 2
             x, y, w, h = x / rho, y / rho, h / rho, w / rho
-        query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
+            query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
         query = TF.pil_to_tensor(query)  # [c, h, w]
         query = query.float() / 255.
 
         # permute - pad - resize
-        # query = rearrange(query, 'h w c -> c h w').contiguous()
         if self.query_padding:
             pad_size = (l - s) // 2
             if h > w:
@@ -231,29 +226,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         query_raw = Image.open(p_frame)
         return self.preprocess_query(query_raw, ann)
-
-        # # load
-        # query = Image.open(p_frame)
-
-        # # crop - permute - normalize
-        # oow, ooh = query.size  # might be pre-pre-processed already
-        # rho = (oh / ooh + ow / oow) / 2
-        # x, y, w, h = x / rho, y / rho, h / rho, w / rho
-        # query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
-        # query = TF.pil_to_tensor(query)  # [c, h, w]
-        # query = query.float() / 255.
-
-        # # permute - pad - resize
-        # # query = rearrange(query, 'h w c -> c h w').contiguous()
-        # if self.query_padding:
-        #     pad_size = (l - s) // 2
-        #     if h > w:
-        #         pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
-        #     else:
-        #         pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
-        #     query = F.pad(query, pad, value=0)
-        # query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
-        # return query.squeeze(0)  # [c, h, w]
 
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_

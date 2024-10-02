@@ -208,7 +208,8 @@ def print_metrics(subset_metrics):
 
 if __name__ == '__main__':
     p_ann = Path("/data/gunsbrother/repos/vq2d-lightning/data/vq_v2_val_anno.json")
-    p_pred = Path("/data/gunsbrother/prjs/ltvu2/VQLoC/notebooks/43634_results.json.gz")
+    # p_pred = Path("/data/gunsbrother/prjs/ltvu2/VQLoC/notebooks/43634_results.json.gz")
     # p_pred = Path("outputs/debug/2024-09-25/126347/predictions.json")
+    p_pred = Path('/data/gunsbrother/repos/EgoLoc/2d_retrieval/data/vq_val_vq3d.json')
     subset_metrics = get_metrics(p_ann, p_pred)
     print_metrics(subset_metrics)

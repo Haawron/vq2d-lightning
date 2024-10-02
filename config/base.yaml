@@ -2,7 +2,6 @@ defaults:
   - _self_
   - augment: base
   - model: vqloc
-  - experiment: none
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 

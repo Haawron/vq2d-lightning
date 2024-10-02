@@ -97,12 +97,13 @@ class LitModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-        log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
-        self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
-        if self.sample_step > 0:  # after sanity check done
-            if batch_idx % 50 == 0:
-                self.print_outputs(batch, output_dict, bidxs=[0])
-        self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
+        if 'log_dict' in output_dict:
+            log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
+            self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
+            if self.sample_step > 0:  # after sanity check done
+                if batch_idx % 50 == 0:
+                    self.print_outputs(batch, output_dict, bidxs=[0])
+            self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         pass
@@ -168,12 +169,6 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
-
-    # def on_before_optimizer_step(self, optimizer):
-    #     # Compute the 2-norm for each layer
-    #     # If using mixed precision, the gradients are already unscaled here
-    #     norms = grad_norm(self.layer, norm_type=2)
-    #     self.log_dict(norms)
 
     ############ helper functions ############
 
