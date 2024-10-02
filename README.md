@@ -63,6 +63,8 @@ conda activate vq2d-lit
 
 ```bash
 # install packages
+conda install pytorch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 -c pytorch
+
 pip install -r requirements.txt
 ```
 

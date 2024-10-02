@@ -49,7 +49,7 @@ trainer:
     - _target_: lightning.pytorch.loggers.WandbLogger
       project: 'ltvu++'
       entity: 'team-khu'
-      group: 'smoke_${YY}${mm}${dd}'  # for grouping runs (does not mean an organization)
+      group: 'base'  # for grouping runs (does not mean an organization)
       job_type: ${job_type}  # debug or batch
       name: hg-${jid}  # displayname
       tags: []  # for filtering

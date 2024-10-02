@@ -10,6 +10,7 @@
         "saved*",
         "results/",
         "multirun/",
+        "outputs",
         "wandb/",
         "*.sif",
     ],
