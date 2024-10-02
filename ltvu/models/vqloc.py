@@ -91,6 +91,7 @@ class ClipMatcher(nn.Module):
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
+        **kwargs
     ) -> None:
         super().__init__()
 
