@@ -16,3 +16,5 @@ __pycache__/
 /.env
 not_extracted*
 *.gz
+notebooks/diffusion/
+.vscode/
