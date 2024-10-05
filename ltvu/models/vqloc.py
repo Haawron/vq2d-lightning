@@ -91,6 +91,9 @@ class ClipMatcher(nn.Module):
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
+
+        # experiments
+        dino_repair = False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -122,6 +125,8 @@ class ClipMatcher(nn.Module):
         self.weight_bbox_hw = weight_bbox_hw
         self.weight_bbox_giou = weight_bbox_giou
         self.weight_prob = weight_prob
+
+        self.dino_repair = dino_repair
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -315,6 +320,36 @@ class ClipMatcher(nn.Module):
                 query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
                 clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
             torch.set_float32_matmul_precision(prec_prev)
+
+        if self.dino_repair:  # repair clip feature
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> b t h w c', b=b, t=t)
+            norms = torch.norm(clip_feat, dim=-1, keepdim=True)
+            quantiles = norms.flatten().quantile(torch.linspace(.9, 1., 100, device=device))
+            quantile_diffs = quantiles.diff(1, append=quantiles[-1:])
+            threshold_diff = 0.1
+            candidate_quantiles = quantiles[quantile_diffs > threshold_diff]
+            candidate_quantile_diffs = quantile_diffs[quantile_diffs > threshold_diff]
+            threshold = candidate_quantiles[candidate_quantile_diffs.argmax()]
+
+            outliers = norms > threshold  # [b,t,h,w]
+            gaussian_kernel = torch.tensor([[1, 2, 1], [2, 0, 2], [1, 2, 1]], device=device) / 12.
+
+            mean = clip_feat.mean(dim=(1,2,3), keepdim=True)
+            clip_feat = F.pad(clip_feat, (0, 0, 1, 1, 1, 1), mode='constant', value=0)
+            pad_mask = F.pad(torch.zeros(b, t, h, w, device=device), (1, 1, 1, 1), mode='constant', value=1)
+            pad_mask = pad_mask.int()[..., None]
+            clip_feat = (1 - pad_mask) * clip_feat + pad_mask * mean
+            for bidx, tt, y, x, _ in zip(*outliers.nonzero(as_tuple=True)):
+                vs = clip_feat[bidx, tt, y:y+3, x:x+3]  # [3,3,c]
+                v_norm = vs.norm(dim=-1)  # [3,3]
+                v_norm[1, 1] = 0
+                v_norm = v_norm.sum(dim=(0, 1), keepdim=True) / 8
+                vs = vs / vs.norm(dim=-1, keepdim=True)
+                v = (vs * gaussian_kernel[..., None]).sum(dim=(0, 1))  # [c]
+                v = v / v.norm(dim=-1, keepdim=True) * v_norm
+                clip_feat[bidx, tt, y+1, x+1] = v
+            clip_feat = clip_feat[:, :, 1:-1, 1:-1]
+            clip_feat = rearrange(clip_feat, 'b t h w c -> (b t) c h w')
 
         # reduce channel size
         all_feat = torch.cat([query_feat, clip_feat], dim=0)

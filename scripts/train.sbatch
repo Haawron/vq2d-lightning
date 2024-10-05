@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-16-64
+#SBATCH --job-name=vqloc-dino_repair
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -19,9 +19,14 @@ source ./scripts/_setup.sh
 #     model.resolution_transformer=8 \
 #     model.num_anchor_regions=64 \
 #     batch_size=4 \
+#     trainer.logger.0.group='bbox_upscale'
 
-python train.py --config-name train_fast \
-    model.resolution_transformer=16 \
-    model.num_anchor_regions=64 \
-    batch_size=3 \
-    trainer.logger.0.group='bbox_upscale'
+# python train.py --config-name train_fast \
+#     model.resolution_transformer=16 \
+#     model.num_anchor_regions=64 \
+#     batch_size=2 \
+#     trainer.logger.0.group='bbox_upscale'
+
+
+python train.py --config-name train_fast +experiment=dino_repair \
+    trainer.logger.0.group='dino_repair' \
