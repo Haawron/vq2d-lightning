@@ -17,4 +17,5 @@ __pycache__/
 not_extracted*
 *.gz
 notebooks/diffusion/
+notebooks/dino_repair/
 .vscode/
