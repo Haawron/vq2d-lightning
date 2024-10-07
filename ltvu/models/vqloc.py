@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+from torch.autograd import Function
 from einops import rearrange, repeat
 import math
 import torchvision
@@ -62,6 +63,21 @@ def BasicBlock_Conv2D(in_dim, out_dim):
     return module
 
 
+class ReverseLayerF(Function):
+
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha
+
+        return output, None
+
+
 class ClipMatcher(nn.Module):
     def __init__(self,
         compile_backbone = True,
@@ -91,6 +107,8 @@ class ClipMatcher(nn.Module):
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
+
+        diffusion_data_as_query = False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -136,18 +154,6 @@ class ClipMatcher(nn.Module):
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
 
-        # query down heads
-        self.query_down_heads = []
-        for _ in range(int(math.log2(self.query_feat_size))):
-            self.query_down_heads.append(
-                nn.Sequential(
-                    nn.Conv2d(self.backbone_dim, self.backbone_dim, 3, stride=2, padding=1),
-                    nn.BatchNorm2d(self.backbone_dim),
-                    nn.LeakyReLU(inplace=True),
-                )
-            )
-        self.query_down_heads = nn.ModuleList(self.query_down_heads)
-
         # feature reduce layer
         self.reduce = nn.Sequential(
             nn.Conv2d(self.backbone_dim, 256, 3, padding=1),
@@ -157,6 +163,27 @@ class ClipMatcher(nn.Module):
             nn.BatchNorm2d(256),
             nn.LeakyReLU(inplace=True),
         )
+
+
+        self.diffusion_data_as_query = diffusion_data_as_query
+        self.query_down_heads = []
+        for _ in range(2):
+            self.query_down_heads.append(
+                nn.Sequential(
+                    nn.Conv2d(256, 256, 3, stride=2, padding=1),
+                    nn.BatchNorm2d(256),
+                    nn.LeakyReLU(inplace=True),
+                )
+            )
+        self.query_down_heads = nn.ModuleList(self.query_down_heads)
+        if diffusion_data_as_query:
+            self.domain_classifier = nn.Sequential(
+                nn.Linear(256, 128),
+                nn.ReLU(),
+                nn.Linear(128, 128),
+                nn.ReLU(),
+                nn.Linear(128, 2)
+            )
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
@@ -295,6 +322,8 @@ class ClipMatcher(nn.Module):
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
+
+        diffusion_queries = None,
         **kwargs
     ):
         '''
@@ -314,12 +343,30 @@ class ClipMatcher(nn.Module):
             with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
                 query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
                 clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+                if diffusion_queries is not None:
+                    query_feat_diffusion = torch.stack([
+                        self.extract_feature(q) for q in diffusion_queries])  # [b,#q,c,h,w]
             torch.set_float32_matmul_precision(prec_prev)
 
         # reduce channel size
-        all_feat = torch.cat([query_feat, clip_feat], dim=0)
-        all_feat = self.reduce(all_feat)
+        all_feat = torch.cat([query_feat, clip_feat], dim=0)  # [b + b*t, c_in=768, h, w]
+        all_feat = self.reduce(all_feat)  # [b + b*t, c, h, w]
         query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
+
+        if diffusion_queries is not None:
+            dom_feat_diff = rearrange(query_feat_diffusion, 'b q c h w -> (b q) c h w')
+            dom_feat_diff = self.reduce(dom_feat_diff)  # [b*q,c,h,w]
+            dom_feat_diff = self.query_down_heads[0](dom_feat_diff)  # [b*q,c,h/2,w/2]
+            dom_feat_diff = self.query_down_heads[1](dom_feat_diff)  # [b*q,c,h/4,w/4]
+            dom_feat_diff = dom_feat_diff.mean(dim=(2, 3))  # [b*q,c]
+            dom_feat_diff = ReverseLayerF.apply(dom_feat_diff, 1.0)
+            dom_feat_diff = self.domain_classifier(dom_feat_diff)  # [b*q,2]
+
+            dom_feat = self.query_down_heads[0](query_feat)  # [b,c,h/2,w/2]
+            dom_feat = self.query_down_heads[1](dom_feat)  # [b,c,h/4,w/4]
+            dom_feat = dom_feat.mean(dim=(2, 3))  # [b,c]
+            dom_feat = ReverseLayerF.apply(dom_feat, 1.0)
+            dom_feat = self.domain_classifier(dom_feat)  # [b,2]
 
         if use_hnm and compute_loss:
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
@@ -400,6 +447,15 @@ class ClipMatcher(nn.Module):
                 if training:
                     assert l.requires_grad, f'{loss_name} should require grad'
                 total_loss = total_loss + w * l
+            if self.diffusion_data_as_query:
+                bq = dom_feat_diff.shape[0]
+                loss_domain = (
+                    F.cross_entropy(
+                        dom_feat_diff, torch.zeros(bq, dtype=torch.long, device=device))
+                    + F.cross_entropy(
+                        dom_feat, torch.ones(b, dtype=torch.long, device=device))
+                )
+                total_loss = total_loss + loss_domain
 
             # for logging - losses
             loss_dict = detach_dict(loss_dict)
@@ -410,6 +466,10 @@ class ClipMatcher(nn.Module):
                 'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
                 'loss_prob': loss_dict['loss_prob'].mean(),
             }
+            if self.diffusion_data_as_query:
+                log_dict.update({
+                    'loss_domain': loss_domain,
+                })
 
             # for logging - metrics
             preds_top = detach_dict(preds_top)

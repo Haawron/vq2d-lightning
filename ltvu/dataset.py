@@ -55,8 +55,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             self.padding_value = 0.
 
         # experiment-specific configs
-        self.exp_configs = DictConfig({})
-        self.exp_configs.diffusion_data_as_query = ds_config.get('diffusion_data_as_query')
+        self.exp_config = DictConfig({})
+        self.exp_config.diffusion_data_as_query = ds_config.get('diffusion_data_as_query')
 
         self.split = split
         self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
@@ -89,7 +89,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
 
-        return {
+        sample = {
             # inputs
             'segment': segment,  # [t, c, h, w], normalized
             'query': query,  # [c, h, w], normalized
@@ -110,6 +110,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'visual_crop': vc,  # dict
             'object_title': ann['object_title'],  # str
         }
+
+        if (diff_config := self.exp_config.diffusion_data_as_query) is not None and self.split == 'train':
+            queries = self.get_query_diffusion(ann)
+            if queries is None:
+                queries = torch.zeros(diff_config.num_queries, *query.shape, dtype=query.dtype)
+            sample['diffusion_queries'] = queries  # [#Q, c, h, w]
+
+        return sample
 
     def subsample_anns(self, anns):  # interface
         return anns
@@ -165,18 +173,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return frames, bboxes
 
     def get_query(self, ann):
-        query = None
-
-        if self.exp_configs.diffusion_data_as_query is not None and self.split == 'train':
-            if np.random.random() < self.exp_configs.diffusion_data_as_query.p:
-                query = self._get_query_diffusion(ann)
-
-        if query is None:  # default
-            query = self._get_query_default(ann)
-
-        return query
-
-    def _get_query_default(self, ann):
         vc = ann['visual_crop']
         oh, ow = ann['original_height'], ann['original_width']
         num_clip_frames = int(ann['clip_fps'] * ann['clip_duration'])
@@ -215,25 +211,28 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
 
-    def _get_query_diffusion(self, ann):
-        p_diffusion_dir = Path(self.exp_configs.diffusion_data_as_query.data_dir)
-        prompt_types: list[str] = self.exp_configs.diffusion_data_as_query.prompt_types
+    def get_query_diffusion(self, ann):
+        diff_config = self.exp_config.diffusion_data_as_query
+        p_diffusion_dir = Path(diff_config.data_dir)
+        prompt_types: list[str] = diff_config.prompt_types
+        num_queries: int = diff_config.num_queries
+
         prompt_type: str = np.random.choice(prompt_types)
         object_title = postprocess_object_title(ann['object_title'])
         p_objects_dir = p_diffusion_dir / prompt_type / self.split / object_title
         p_images = list(p_objects_dir.glob('*.png'))
-        query = None
         if len(p_images) > 0:
-            p_image =  np.random.choice(p_images)
-            try:
+            queries = []
+            for p_image in np.random.choice(p_images, size=num_queries):
                 query = Image.open(p_image)
-            except Exception as e:
-                print(f'Error in opening {p_image}: {e}')
-            else:
                 query = TF.pil_to_tensor(query)  # [c, h, w]
                 query = query.float() / 255.
                 query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True).squeeze(0)
-        return query
+                queries.append(query)
+            queries = torch.stack(queries)
+            return queries
+        else:
+            return None
 
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_
