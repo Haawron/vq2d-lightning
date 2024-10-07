@@ -9,6 +9,7 @@ resolution_transformer: 8
 num_anchor_regions: 16
 num_layers_st_transformer: 3
 transformer_dropout: 0.0
+enable_cls_token_score: True
 
 query_size: ${dataset.query_size[0]}
 clip_size_fine: ${dataset.segment_size[0]}
