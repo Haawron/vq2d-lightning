@@ -136,6 +136,7 @@ class ClipMatcher(nn.Module):
         weight_bbox_giou = .3,
         weight_prob = 100.,
         reduce_ca_path=None,
+        pe3d=False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -249,8 +250,14 @@ class ClipMatcher(nn.Module):
         
 
         # spatial-temporal PE
-        self.temporal_pe = torch.zeros(1, clip_num_frames, 256)
-        self.temporal_pe = nn.parameter.Parameter(self.temporal_pe)
+        self.pe3d = pe3d
+        if pe3d is True:
+            self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, 256)
+            self.pe_3d = nn.parameter.Parameter(self.pe_3d)
+        else:
+            self.temporal_pe = torch.zeros(1, clip_num_frames, 256)
+            self.temporal_pe = nn.parameter.Parameter(self.temporal_pe)
+            
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
@@ -667,8 +674,13 @@ class ClipMatcher(nn.Module):
         # for head in self.down_heads:
         #     clip_feat = head(clip_feat)
         #     if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
-        clip_feat = rearrange(clip_feat, '(b t) left_tokens c -> b left_tokens t c', b=b) + self.temporal_pe
-        clip_feat = rearrange(clip_feat, 'b left_tokens t c -> b (t left_tokens) c')
+        if self.pe3d is True:
+            gahter_pe_3d = torch.gather(rearrange(self.pe_3d.expand(3,-1,-1), 'b (t hw) c -> (b t) hw c', t=t), dim=1, index=idx.unsqueeze(-1).expand(-1,-1,clip_feat.shape[-1]))
+            clip_feat = clip_feat + gahter_pe_3d
+            clip_feat = rearrange(clip_feat, '(b t) left_tokens c -> b (t left_tokens) c', b=b)    
+        else:
+            clip_feat = rearrange(clip_feat, '(b t) left_tokens c -> b left_tokens t c', b=b) + self.temporal_pe
+            clip_feat = rearrange(clip_feat, 'b left_tokens t c -> b (t left_tokens) c')
         mask = self.get_mask(clip_feat, t)
         for layer in self.feat_corr_transformer:
             clip_feat = layer(clip_feat, src_mask=mask)

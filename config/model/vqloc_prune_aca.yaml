@@ -10,6 +10,7 @@ num_anchor_regions: 32
 num_layers_st_transformer: 3
 transformer_dropout: 0.0
 reduce_ca_path: 'ltvu/models/selected_params.ckpt'
+pe3d: False
 
 query_size: ${dataset.query_size[0]}
 clip_size_fine: ${dataset.segment_size[0]}

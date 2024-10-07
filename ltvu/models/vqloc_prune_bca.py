@@ -135,6 +135,7 @@ class ClipMatcher(nn.Module):
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
+        pe3d = False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -244,8 +245,14 @@ class ClipMatcher(nn.Module):
         self.down_heads = nn.ModuleList(self.down_heads)
 
         # spatial-temporal PE
-        self.temporal_pe = torch.zeros(1, clip_num_frames, 256)
-        self.temporal_pe = nn.parameter.Parameter(self.temporal_pe)
+        self.pe3d = pe3d
+        if pe3d is True:
+            self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, 256)
+            self.pe_3d = nn.parameter.Parameter(self.pe_3d)
+        else:
+            self.temporal_pe = torch.zeros(1, clip_num_frames, 256)
+            self.temporal_pe = nn.parameter.Parameter(self.temporal_pe)
+            
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
@@ -360,117 +367,117 @@ class ClipMatcher(nn.Module):
         return image_features
 
 
-    def token_prune_merge_advanced_plus(self, images, if_adaptive=True, reduction_ratio = 1/8):
-        '''
-        version 24/03/2024 using the spacially smapled tokens to supplement the pruned tokens
-        '''
-        # token_indix_list = []
-        # token_indix_dict = {}
+    # def token_prune_merge_advanced_plus(self, images, if_adaptive=True, reduction_ratio = 1/8):
+    #     '''
+    #     version 24/03/2024 using the spacially smapled tokens to supplement the pruned tokens
+    #     '''
+    #     # token_indix_list = []
+    #     # token_indix_dict = {}
 
-        #set hooks for extracting desired layer's k and q
-        hook_handle_k = self.backbone.encoder.layer[-1].attention.attention.query.register_forward_hook(hook_k)
-        hook_handle_q = self.backbone.encoder.layer[-1].attention.attention.query.register_forward_hook(hook_q)
+    #     #set hooks for extracting desired layer's k and q
+    #     hook_handle_k = self.backbone.encoder.layer[-1].attention.attention.query.register_forward_hook(hook_k)
+    #     hook_handle_q = self.backbone.encoder.layer[-1].attention.attention.query.register_forward_hook(hook_q)
 
-        #forward pass
-        image_forward_outs = self.backbone.forward(images, output_hidden_states=True)
-        # image_forward_outs = self.backbone(images).last_hidden_state
-        image_features =image_forward_outs.hidden_states[self.select_layer][:, 1:] # cls none, only patch
-        # image_features = self.feature_select(image_forward_outs).to(images.dtype)
-        B, N, C = image_features.shape
+    #     #forward pass
+    #     image_forward_outs = self.backbone.forward(images, output_hidden_states=True)
+    #     # image_forward_outs = self.backbone(images).last_hidden_state
+    #     image_features =image_forward_outs.hidden_states[self.select_layer][:, 1:] # cls none, only patch
+    #     # image_features = self.feature_select(image_forward_outs).to(images.dtype)
+    #     B, N, C = image_features.shape
 
-        #extract desired layer's k and q and remove hooks; calculate attention
-        desired_layer_k = outputs["desired_k"]
-        desired_layer_q = outputs["desired_q"]
+    #     #extract desired layer's k and q and remove hooks; calculate attention
+    #     desired_layer_k = outputs["desired_k"]
+    #     desired_layer_q = outputs["desired_q"]
 
-        hook_handle_k.remove()
-        hook_handle_q.remove()
+    #     hook_handle_k.remove()
+    #     hook_handle_q.remove()
 
-        attn = (desired_layer_q @ desired_layer_k.transpose(-2, -1)) * C ** -0.5
-        attn = F.softmax(attn, dim=-1)
+    #     attn = (desired_layer_q @ desired_layer_k.transpose(-2, -1)) * C ** -0.5
+    #     attn = F.softmax(attn, dim=-1)
 
-        cls_attn = attn[:, 0, 1:]  
+    #     cls_attn = attn[:, 0, 1:]  
 
-        if if_adaptive:
-            reduction_ratio = outlier_dectection(cls_attn)#*3.5
-            self.reduction_ratio = reduction_ratio
-        _, idx = torch.topk(cls_attn, int(N*reduction_ratio), dim=1, largest=True)  # [B, left_tokens] , sorted=True
+    #     if if_adaptive:
+    #         reduction_ratio = outlier_dectection(cls_attn)#*3.5
+    #         self.reduction_ratio = reduction_ratio
+    #     _, idx = torch.topk(cls_attn, int(N*reduction_ratio), dim=1, largest=True)  # [B, left_tokens] , sorted=True
         
-        self.device = images.device
-        # # # print("idx: ", idx)
-        # if if_adaptive:
-        #     step_length = int(1/reduction_ratio)
-        #     arithmetic_sequence = torch.arange(0, 575, int(step_length/3)).to(device=self.device)
-        #     original_tensor_1d = idx.flatten().to(device=self.device)
-        #     filtered_sequence = torch.tensor([x for x in arithmetic_sequence if x not in original_tensor_1d]).to(device=self.device)
-        #     concatenated_tensor = torch.cat((idx, filtered_sequence.unsqueeze(0)), dim=1)
-        #     idx = concatenated_tensor
-        #     # # print("idx_new: ", idx)
-        # else:
-        #     # # this is for training
-        #     step_length = int(1/reduction_ratio)
-        #     new_idx = torch.zeros((idx.size(0), idx.size(1)*2), dtype=torch.long).to(device=self.device)
-        #     for i in range(idx.size(0)):
-        #         arithmetic_sequence = torch.arange(int(step_length/2), 575, int(step_length)).to(device=self.device)
-        #         original_tensor_1d = idx[i].flatten().to(device=self.device)
-        #         filtered_sequence = arithmetic_sequence
-        #         # filtered_sequence = torch.tensor([x for x in arithmetic_sequence if x not in original_tensor_1d]).to(device=self.device)
-        #         concatenated_tensor = torch.cat((original_tensor_1d, filtered_sequence), dim=0)
-        #         new_idx[i] = concatenated_tensor
-        #     idx = new_idx
+    #     self.device = images.device
+    #     # # # print("idx: ", idx)
+    #     # if if_adaptive:
+    #     #     step_length = int(1/reduction_ratio)
+    #     #     arithmetic_sequence = torch.arange(0, 575, int(step_length/3)).to(device=self.device)
+    #     #     original_tensor_1d = idx.flatten().to(device=self.device)
+    #     #     filtered_sequence = torch.tensor([x for x in arithmetic_sequence if x not in original_tensor_1d]).to(device=self.device)
+    #     #     concatenated_tensor = torch.cat((idx, filtered_sequence.unsqueeze(0)), dim=1)
+    #     #     idx = concatenated_tensor
+    #     #     # # print("idx_new: ", idx)
+    #     # else:
+    #     #     # # this is for training
+    #     #     step_length = int(1/reduction_ratio)
+    #     #     new_idx = torch.zeros((idx.size(0), idx.size(1)*2), dtype=torch.long).to(device=self.device)
+    #     #     for i in range(idx.size(0)):
+    #     #         arithmetic_sequence = torch.arange(int(step_length/2), 575, int(step_length)).to(device=self.device)
+    #     #         original_tensor_1d = idx[i].flatten().to(device=self.device)
+    #     #         filtered_sequence = arithmetic_sequence
+    #     #         # filtered_sequence = torch.tensor([x for x in arithmetic_sequence if x not in original_tensor_1d]).to(device=self.device)
+    #     #         concatenated_tensor = torch.cat((original_tensor_1d, filtered_sequence), dim=0)
+    #     #         new_idx[i] = concatenated_tensor
+    #     #     idx = new_idx
 
-        index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
+    #     index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
 
-        Key_wo_cls = desired_layer_k[:, 1:]  # [B, N-1, C]
+    #     Key_wo_cls = desired_layer_k[:, 1:]  # [B, N-1, C]
 
-        x_others = torch.gather(image_features, dim=1, index=index)  # [B, left_tokens, C]
-        x_others_attn = torch.gather(cls_attn, dim=1, index=idx)  
-        Key_others = torch.gather(Key_wo_cls, dim=1, index=index)  # [B, left_tokens, C]
-        compl = complement_idx(idx, N)  # [B, N-1-left_tokens]
-        non_topk = torch.gather(image_features, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # [B, N-1-left_tokens, C]
-        non_topk_Key = torch.gather(Key_wo_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))
-        non_topk_attn = torch.gather(cls_attn, dim=1, index=compl)  # [B, N-1-left_tokens]
+    #     x_others = torch.gather(image_features, dim=1, index=index)  # [B, left_tokens, C]
+    #     x_others_attn = torch.gather(cls_attn, dim=1, index=idx)  
+    #     Key_others = torch.gather(Key_wo_cls, dim=1, index=index)  # [B, left_tokens, C]
+    #     compl = complement_idx(idx, N)  # [B, N-1-left_tokens]
+    #     non_topk = torch.gather(image_features, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # [B, N-1-left_tokens, C]
+    #     non_topk_Key = torch.gather(Key_wo_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))
+    #     non_topk_attn = torch.gather(cls_attn, dim=1, index=compl)  # [B, N-1-left_tokens]
 
-        Key_others_norm = F.normalize(Key_others, p=2, dim=-1)
-        non_topk_Key_norm = F.normalize(non_topk_Key, p=2, dim=-1)
+    #     Key_others_norm = F.normalize(Key_others, p=2, dim=-1)
+    #     non_topk_Key_norm = F.normalize(non_topk_Key, p=2, dim=-1)
 
-        # cos_sim = torch.bmm(Key_others_norm, non_topk_Key_norm.transpose(1, 2)) # [B, left_tokens, N-1-left_tokens]
+    #     # cos_sim = torch.bmm(Key_others_norm, non_topk_Key_norm.transpose(1, 2)) # [B, left_tokens, N-1-left_tokens]
 
-        # _, cluster_indices = torch.topk(cos_sim, k=4, dim=2, largest=True)
+    #     # _, cluster_indices = torch.topk(cos_sim, k=4, dim=2, largest=True)
 
-        B, left_tokens, C = x_others.size()
-        updated_x_others = torch.zeros_like(x_others)
+    #     B, left_tokens, C = x_others.size()
+    #     updated_x_others = torch.zeros_like(x_others)
 
-        for b in range(B):
-            for i in range(left_tokens):
-                key_others_norm = Key_others_norm[b,i,:].unsqueeze(0).unsqueeze(0)
+    #     for b in range(B):
+    #         for i in range(left_tokens):
+    #             key_others_norm = Key_others_norm[b,i,:].unsqueeze(0).unsqueeze(0)
 
-                before_i_Key = Key_others_norm[b, :i, :].unsqueeze(0)  
-                after_i_Key = Key_others_norm[b, i+1:, :].unsqueeze(0) 
+    #             before_i_Key = Key_others_norm[b, :i, :].unsqueeze(0)  
+    #             after_i_Key = Key_others_norm[b, i+1:, :].unsqueeze(0) 
 
-                before_i_x_others = x_others[b, :i, :].unsqueeze(0)  
-                after_i_x_others = x_others[b, i+1:, :].unsqueeze(0)   
-                rest_x_others = torch.cat([before_i_x_others, after_i_x_others, non_topk[b,:,:].unsqueeze(0)], dim=1)   
-                before_i_x_others_attn = x_others_attn[b, :i].unsqueeze(0)  
-                after_i_x_others_attn = x_others_attn[b, i+1:].unsqueeze(0)  
-                rest_x_others_attn = torch.cat([before_i_x_others_attn, after_i_x_others_attn, non_topk_attn[b,:].unsqueeze(0)], dim=1)  
+    #             before_i_x_others = x_others[b, :i, :].unsqueeze(0)  
+    #             after_i_x_others = x_others[b, i+1:, :].unsqueeze(0)   
+    #             rest_x_others = torch.cat([before_i_x_others, after_i_x_others, non_topk[b,:,:].unsqueeze(0)], dim=1)   
+    #             before_i_x_others_attn = x_others_attn[b, :i].unsqueeze(0)  
+    #             after_i_x_others_attn = x_others_attn[b, i+1:].unsqueeze(0)  
+    #             rest_x_others_attn = torch.cat([before_i_x_others_attn, after_i_x_others_attn, non_topk_attn[b,:].unsqueeze(0)], dim=1)  
 
-                rest_Keys = torch.cat([before_i_Key, after_i_Key, non_topk_Key_norm[b,:,:].unsqueeze(0)], dim=1)
-                cos_sim_matrix = torch.bmm(key_others_norm, rest_Keys.transpose(1, 2))
+    #             rest_Keys = torch.cat([before_i_Key, after_i_Key, non_topk_Key_norm[b,:,:].unsqueeze(0)], dim=1)
+    #             cos_sim_matrix = torch.bmm(key_others_norm, rest_Keys.transpose(1, 2))
 
-                _, cluster_indices = torch.topk(cos_sim_matrix, k=int(32), dim=2, largest=True)
+    #             _, cluster_indices = torch.topk(cos_sim_matrix, k=int(32), dim=2, largest=True)
 
-                cluster_tokens = rest_x_others[:,cluster_indices.squeeze(),:]
-                weights = rest_x_others_attn[:,cluster_indices.squeeze()].unsqueeze(-1)
+    #             cluster_tokens = rest_x_others[:,cluster_indices.squeeze(),:]
+    #             weights = rest_x_others_attn[:,cluster_indices.squeeze()].unsqueeze(-1)
 
-                # update cluster centers
-                weighted_avg = torch.sum(cluster_tokens * weights, dim=1) #/ torch.sum(weights)
-                updated_center = x_others[b, i, :]  + weighted_avg 
-                updated_x_others[b, i, :] = updated_center 
+    #             # update cluster centers
+    #             weighted_avg = torch.sum(cluster_tokens * weights, dim=1) #/ torch.sum(weights)
+    #             updated_center = x_others[b, i, :]  + weighted_avg 
+    #             updated_x_others[b, i, :] = updated_center 
             
-        extra_one_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)  # [B, 1, C]
-        # updated_x_others = torch.cat([updated_x_others, extra_one_token],dim=1)
-        image_features = updated_x_others
-        return image_features, idx
+    #     extra_one_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)  # [B, 1, C]
+    #     # updated_x_others = torch.cat([updated_x_others, extra_one_token],dim=1)
+    #     image_features = updated_x_others
+    #     return image_features, idx
 
     def token_prune_merge_advanced_plus_mat(self, images, if_adaptive=True, reduction_ratio=1/8):
         '''
@@ -524,6 +531,7 @@ class ClipMatcher(nn.Module):
             self.reduction_ratio = reduction_ratio
 
         _, idx = torch.topk(cls_attn, int(N * reduction_ratio), dim=1, largest=True)  # Top-k tokens
+        
 
         # Handle batched token gathering
         index = idx.unsqueeze(-1).expand(-1, -1, C)  # [B, left_tokens, C]
@@ -533,55 +541,55 @@ class ClipMatcher(nn.Module):
         # Batch gather features and keys
         Key_wo_cls = desired_layer_k[:, 1:]  # Remove CLS token for keys
         x_others = torch.gather(image_features, dim=1, index=index)  # Top-k features
-        x_others_attn = torch.gather(cls_attn, dim=1, index=idx)  # Top-k attention
-        Key_others = torch.gather(Key_wo_cls, dim=1, index=index)  # Top-k keys
+        # x_others_attn = torch.gather(cls_attn, dim=1, index=idx)  # Top-k attention
+        # Key_others = torch.gather(Key_wo_cls, dim=1, index=index)  # Top-k keys
 
-        # Handle non-top-k tokens
-        compl = complement_idx(idx, N)  # Indices of non-top-k tokens
-        non_topk = torch.gather(image_features, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # Non-top-k features
-        non_topk_Key = torch.gather(Key_wo_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # Non-top-k keys
-        non_topk_attn = torch.gather(cls_attn, dim=1, index=compl)  # Non-top-k attention
+        # # Handle non-top-k tokens
+        # compl = complement_idx(idx, N)  # Indices of non-top-k tokens
+        # non_topk = torch.gather(image_features, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # Non-top-k features
+        # non_topk_Key = torch.gather(Key_wo_cls, dim=1, index=compl.unsqueeze(-1).expand(-1, -1, C))  # Non-top-k keys
+        # non_topk_attn = torch.gather(cls_attn, dim=1, index=compl)  # Non-top-k attention
 
-        # Normalize keys for cosine similarity calculation
-        Key_others_norm = F.normalize(Key_others, p=2, dim=-1)
-        non_topk_Key_norm = F.normalize(non_topk_Key, p=2, dim=-1)
+        # # Normalize keys for cosine similarity calculation
+        # Key_others_norm = F.normalize(Key_others, p=2, dim=-1)
+        # non_topk_Key_norm = F.normalize(non_topk_Key, p=2, dim=-1)
 
-        # Batch cosine similarity and top-k clustering
-        cos_sim_matrix = torch.bmm(Key_others_norm, non_topk_Key_norm.transpose(1, 2))  # [B, left_tokens, N-1-left_tokens]
-        _, cluster_indices = torch.topk(cos_sim_matrix, k=int(32), dim=2, largest=True)  # Top-k clusters per token
+        # # Batch cosine similarity and top-k clustering
+        # cos_sim_matrix = torch.bmm(Key_others_norm, non_topk_Key_norm.transpose(1, 2))  # [B, left_tokens, N-1-left_tokens]
+        # _, cluster_indices = torch.topk(cos_sim_matrix, k=int(32), dim=2, largest=True)  # Top-k clusters per token
 
-        # # Gather cluster tokens and calculate weighted averages in batches
-        # cluster_tokens = torch.gather(non_topk, dim=1, index=cluster_indices.unsqueeze(-1).expand(-1, -1, C))
-        # weights = torch.gather(non_topk_attn, dim=1, index=cluster_indices).unsqueeze(-1)
+        # # # Gather cluster tokens and calculate weighted averages in batches
+        # # cluster_tokens = torch.gather(non_topk, dim=1, index=cluster_indices.unsqueeze(-1).expand(-1, -1, C))
+        # # weights = torch.gather(non_topk_attn, dim=1, index=cluster_indices).unsqueeze(-1)
 
-        # weighted_avg = torch.sum(cluster_tokens * weights, dim=2)  # Batch weighted average of clusters
+        # # weighted_avg = torch.sum(cluster_tokens * weights, dim=2)  # Batch weighted average of clusters
 
-        # # Update centers in batch
-        # updated_x_others = x_others + weighted_avg
+        # # # Update centers in batch
+        # # updated_x_others = x_others + weighted_avg
         
-        B, left_tokens, cluster_size = cluster_indices.shape  # B=96, left_tokens=160, cluster_size=32
-        _, non_topk_size, C = non_topk.shape  # non_topk_size=864, C=768
+        # B, left_tokens, cluster_size = cluster_indices.shape  # B=96, left_tokens=160, cluster_size=32
+        # _, non_topk_size, C = non_topk.shape  # non_topk_size=864, C=768
 
-        # Expanding `cluster_indices` for gathering tokens in the feature dimension
-        expanded_cluster_indices = cluster_indices.unsqueeze(-1).expand(B, left_tokens, cluster_size, C)  # [96, 160, 32, 768]
-        cluster_tokens = torch.gather(non_topk.unsqueeze(1).expand(-1, left_tokens, -1, -1), dim=2, index=expanded_cluster_indices)  # [96, 160, 32, 768]
+        # # Expanding `cluster_indices` for gathering tokens in the feature dimension
+        # expanded_cluster_indices = cluster_indices.unsqueeze(-1).expand(B, left_tokens, cluster_size, C)  # [96, 160, 32, 768]
+        # cluster_tokens = torch.gather(non_topk.unsqueeze(1).expand(-1, left_tokens, -1, -1), dim=2, index=expanded_cluster_indices)  # [96, 160, 32, 768]
 
-        # Now gather attention values from `non_topk_attn`
-        expanded_attn_indices = cluster_indices  # Shape [96, 160, 32]
-        cluster_attn = torch.gather(non_topk_attn.unsqueeze(1).expand(-1, left_tokens, -1), dim=2, index=expanded_attn_indices)  # [96, 160, 32]
+        # # Now gather attention values from `non_topk_attn`
+        # expanded_attn_indices = cluster_indices  # Shape [96, 160, 32]
+        # cluster_attn = torch.gather(non_topk_attn.unsqueeze(1).expand(-1, left_tokens, -1), dim=2, index=expanded_attn_indices)  # [96, 160, 32]
 
-        # Compute weighted average of clusters
-        weights = cluster_attn.unsqueeze(-1)  # Shape [96, 160, 32, 1]
-        weighted_avg = torch.sum(cluster_tokens * weights, dim=2)  # Shape [96, 160, 768] - sum over clusters
+        # # Compute weighted average of clusters
+        # weights = cluster_attn.unsqueeze(-1)  # Shape [96, 160, 32, 1]
+        # weighted_avg = torch.sum(cluster_tokens * weights, dim=2)  # Shape [96, 160, 768] - sum over clusters
 
-        # Update top-k tokens
-        updated_x_others = x_others + weighted_avg  # Shape [96, 160, 768]
+        # # Update top-k tokens
+        # updated_x_others = x_others + weighted_avg  # Shape [96, 160, 768]
 
-        # Compute extra token for residual tokens
-        # extra_one_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)  # [B, 1, C]
+        # # Compute extra token for residual tokens
+        # # extra_one_token = torch.sum(non_topk * non_topk_attn.unsqueeze(-1), dim=1, keepdim=True)  # [B, 1, C]
 
         # Return updated features and indices
-        return updated_x_others, idx
+        return x_others, idx
 
 
     def forward(
@@ -641,8 +649,14 @@ class ClipMatcher(nn.Module):
         # for head in self.down_heads:
         #     clip_feat = head(clip_feat)
         #     if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
-        clip_feat = rearrange(clip_feat, '(b t) c left_tokens -> b left_tokens t c', b=b) + self.temporal_pe
-        clip_feat = rearrange(clip_feat, 'b left_tokens t c -> b (t left_tokens) c')
+        if self.pe3d is True:
+            gahter_pe_3d = torch.gather(rearrange(self.pe_3d.expand(3,-1,-1), 'b (t hw) c -> (b t) hw c', t=t), dim=1, index=idx.unsqueeze(-1).expand(-1,-1,clip_feat.shape[-2]))
+            clip_feat = rearrange(clip_feat, 'bt c left_tokens -> bt left_tokens c')
+            clip_feat = clip_feat + gahter_pe_3d
+            clip_feat = rearrange(clip_feat, '(b t) left_tokens c -> b (t left_tokens) c', b=b)    
+        else:
+            clip_feat = rearrange(clip_feat, '(b t) c left_tokens -> b left_tokens t c', b=b) + self.temporal_pe
+            clip_feat = rearrange(clip_feat, 'b left_tokens t c -> b (t left_tokens) c')
         mask = self.get_mask(clip_feat, t)
         for layer in self.feat_corr_transformer:
             clip_feat = layer(clip_feat, src_mask=mask)
