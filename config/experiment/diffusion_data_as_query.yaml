@@ -1,0 +1,8 @@
+# @package _global_
+
+
+dataset:
+  diffusion_data_as_query:
+    p: 0.5  # probability of using diffusion data
+    data_dir: 'outputs/diffusion'  # should contain ./{PROMPT_TYPE}/{SPLIT}/{OBJECT_TITLE}.png
+    prompt_types: ['floor']

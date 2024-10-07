@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-16-64
+#SBATCH --job-name=vqloc+diffusion
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -20,8 +20,14 @@ source ./scripts/_setup.sh
 #     model.num_anchor_regions=64 \
 #     batch_size=4 \
 
+# python train.py --config-name train_fast \
+#     model.resolution_transformer=16 \
+#     model.num_anchor_regions=64 \
+#     batch_size=3 \
+#     trainer.logger.0.group='bbox_upscale'
+
+
+
 python train.py --config-name train_fast \
-    model.resolution_transformer=16 \
-    model.num_anchor_regions=64 \
-    batch_size=3 \
-    trainer.logger.0.group='bbox_upscale'
+    +experiment=diffusion_data_as_query dataset.diffusion_data_as_query.data_dir=notebooks/diffusion \
+    trainer.logger.0.group='diffusion'
