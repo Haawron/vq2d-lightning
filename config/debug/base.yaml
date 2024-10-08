@@ -1,8 +1,7 @@
-# usage: python train.py --config-name=debug
+# @package _global_
 
-defaults:
-  - base
-  - _self_
+
+# usage: python train.py +debug=base
 
 debug: true
 compile: false
