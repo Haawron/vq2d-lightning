@@ -236,7 +236,7 @@ class ClipMatcher(nn.Module):
         return attn
     
     def extract_feature(self, x, return_h_w=False, return_cls=False, return_latent_feature=False) -> torch.Tensor | tuple[torch.Tensor, int, int]:
-        output = []
+        outs = []
         if self.backbone_name == 'dino':
             b, _, h_origin, w_origin = x.shape
             out = self.backbone.get_intermediate_layers(x, n=1)[0]
@@ -244,20 +244,20 @@ class ClipMatcher(nn.Module):
             h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
             dim = out.shape[-1]
             out = out.reshape(b, h, w, dim).permute(0,3,1,2)
-            output.append(out)
+            outs.append(out)
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
                 if return_latent_feature:
                     x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
                     out = x_forward_outs.last_hidden_state
-                    output.append(x_forward_outs.hidden_states[-2])
+                    outs.append(x_forward_outs.hidden_states[-2])
                     del x_forward_outs
                 else:
                     out = self.backbone.forward(x).last_hidden_state
                 out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 if return_cls:
-                    output = [rearrange(out[:,:1,:],'b n c -> b c n'), *output]
+                    outs = [rearrange(out[:,:1,:],'b n c -> b c n'), *outs]
                 h = int(h_origin / self.down_rate)
                 w = int(w_origin / self.down_rate)
             else:
@@ -266,16 +266,16 @@ class ClipMatcher(nn.Module):
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
             dim = out.shape[-1]
             out = out.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
-            output = [out, *output]
+            outs = [out, *outs]
         else:
             raise NotImplementedError
         if return_h_w:
-            output.extend([h,w])
+            outs.extend([h,w])
 
         if torch.isnan(out).any():
             raise ValueError('nan in feature')
-        output[0] = output[0].float()
-        return tuple(output)
+        outs[0] = outs[0].float()
+        return tuple(outs)
 
 
     def get_mask(self, src, t):
