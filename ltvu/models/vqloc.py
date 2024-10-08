@@ -447,7 +447,8 @@ class ClipMatcher(nn.Module):
                 if training:
                     assert l.requires_grad, f'{loss_name} should require grad'
                 total_loss = total_loss + w * l
-            if self.diffusion_data_as_query:
+
+            if self.diffusion_data_as_query and training:
                 bq = dom_feat_diff.shape[0]
                 loss_domain = (
                     F.cross_entropy(
@@ -466,7 +467,7 @@ class ClipMatcher(nn.Module):
                 'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
                 'loss_prob': loss_dict['loss_prob'].mean(),
             }
-            if self.diffusion_data_as_query:
+            if self.diffusion_data_as_query and training:
                 log_dict.update({
                     'loss_domain': loss_domain,
                 })
