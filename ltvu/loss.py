@@ -164,7 +164,11 @@ def get_losses_with_anchor(
 
     # assign labels to anchors
     if training and gt_prob.bool().any():
-        assign_label = assign_labels(anchor.repeat(b,t,1,1), gt_bbox,   # anchor.repeat(b,t,1,1) / pred_bbox
+        if list(anchor.shape[:2]) == [b,t]:
+            temp_anchor = anchor
+        else:
+            temp_anchor = anchor.repeat(b,t,1,1)
+        assign_label = assign_labels(temp_anchor, gt_bbox,   # anchor.repeat(b,t,1,1) / pred_bbox
                                      iou_threshold=positive_threshold,
                                      topk=positive_topk)               # [b,t,N]
         positive = torch.logical_and(gt_prob.unsqueeze(-1).repeat(1,1,N).bool(),
