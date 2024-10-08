@@ -77,8 +77,8 @@ class LitModule(L.LightningModule):
             config.model, compile_backbone=config.get('compile', True))
         self.fix_backbone = config.model.fix_backbone
 
-        self.save_hyperparameters(ignore='config')  # to avoid saving config itself as a hyperparameter
-        self.save_hyperparameters(config)  # to save the config in the checkpoint
+        self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
     ############ major hooks ############
