@@ -4,6 +4,7 @@ defaults:
   - base
   - _self_
 
+total_bsz: 3
 debug: true
 compile: false
 

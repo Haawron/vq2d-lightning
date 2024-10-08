@@ -81,11 +81,34 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(config)  # to save the config in the checkpoint
         self.sample_step = 0
 
+        
+        self.exp_config = config.get('experiment')
+        self.enable_rt_pos_query = self.exp_config is not None and self.exp_config.get('rt_pos_query') is not None
+          
+
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
+        self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
+        self.mode = self.exp_config.rt_pos_query.mode
         bsz = batch['segment'].shape[0]
-        output_dict = self.model.forward(**batch, compute_loss=True)
+        # output_dict = self.model.forward(**batch, compute_loss=True)
+        if self.mode == 'easy':
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True)
+            else:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=False)
+        if self.mode == 'hard':
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='min')
+            else:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=False)
+        elif self.mode == 'both':
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='min')
+            else:
+                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='max')
+
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
         log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Train')

@@ -51,7 +51,7 @@ trainer:
       entity: 'team-khu'
       group: 'base'  # for grouping runs (does not mean an organization)
       job_type: ${job_type}  # debug or batch
-      name: hg-${jid}  # displayname
+      name: sy-${jid}  # displayname
       tags: []  # for filtering
       notes: null  # real note, a log string
       save_dir: ${runtime_outdir}  # logs will be saved under THIS/wandb

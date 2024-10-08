@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
 import torchvision
+import random
 from transformers import Dinov2Model
 
 from ltvu.loss import get_losses_with_anchor
@@ -213,7 +214,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def extract_feature(self, x, return_h_w=False) -> torch.Tensor | tuple[torch.Tensor, int, int]:
+    def extract_feature(self, x, return_h_w=False, return_cls=False) -> torch.Tensor | tuple[torch.Tensor, int, int]:
         if self.backbone_name == 'dino':
             b, _, h_origin, w_origin = x.shape
             out = self.backbone.get_intermediate_layers(x, n=1)[0]
@@ -221,15 +222,17 @@ class ClipMatcher(nn.Module):
             h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
             dim = out.shape[-1]
             out = out.reshape(b, h, w, dim).permute(0,3,1,2)
+            cls_token = out[:, :1, :]
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
                 out = self.backbone.forward(x).last_hidden_state
+                cls_token = out[:, 0, :]
                 out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 h = int(h_origin / self.down_rate)
                 w = int(w_origin / self.down_rate)
             else:
-                out = self.backbone.get_intermediate_layers(x, n=1)[0]
+                out, cls_token = self.backbone.get_intermediate_layers(x, n=1, return_class_token=True)
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
             dim = out.shape[-1]
@@ -237,12 +240,20 @@ class ClipMatcher(nn.Module):
         else:
             raise NotImplementedError
 
-        if torch.isnan(out).any():
+        if torch.isnan(out).any() or torch.isnan(cls_token).any():
             raise ValueError('nan in feature')
-        out = out.float()
-        if return_h_w:
-            return out, h, w
-        return out
+        
+        if return_cls:
+            cls_token = cls_token.float()
+            if return_h_w:
+                return cls_token, h, w
+            else:
+                return cls_token
+        else:
+            out = out.float()
+            if return_h_w:
+                return out, h, w
+            return out
 
     def get_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
@@ -295,6 +306,10 @@ class ClipMatcher(nn.Module):
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
+        
+        rt_pos_queries = None,
+        rt_pos = False,
+        sim_mode = 'max',
         **kwargs
     ):
         '''
@@ -312,6 +327,27 @@ class ClipMatcher(nn.Module):
             prec_prev = torch.get_float32_matmul_precision()
             torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
             with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
+                clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
+                if rt_pos:
+                    
+                    if random.randint(0, 1) == 1:
+                        rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+                        rt_pos_queries_feat: torch.Tensor = self.extract_feature(rt_pos_queries, return_cls = True) # [b*t,c]
+                        rt_pos_queries_feat = rearrange(rt_pos_queries_feat, '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+                        query_feat = self.extract_feature(query, return_cls = True) # [b,c]
+                        query_feat = query_feat.unsqueeze(1).expand(-1, t, -1) # [b,t,c]
+                        
+                        sim = F.cosine_similarity(rt_pos_queries_feat, query_feat, dim=-1) # [b,t]
+                        
+                        if sim_mode == 'max':
+                            _, top_sim_idx = sim.topk(1, dim=-1) # [b,1]
+                        elif sim_mode == 'min':
+                            top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
+                        
+                        rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+                        
+                        query = rt_pos_queries[torch.arange(b), top_sim_idx.squeeze(1)] # [b,c,h2,w2]
+
                 query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
                 clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]
             torch.set_float32_matmul_precision(prec_prev)

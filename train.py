@@ -75,7 +75,11 @@ def main(config: DictConfig):
     if within_slurm_batch():
         write_batch_script(jid, default_root_dir)
 
-    trainer.fit(plm, datamodule=pdm)
+    resume_config = config.get('resume')
+    if resume_config is not None:
+        trainer.fit(plm, datamodule=pdm, ckpt_path=resume_config)
+    else:
+        trainer.fit(plm, datamodule=pdm)
 
     if not config.get('debug', False):
         log_to_console('\n' + "="*80 + '\n')
