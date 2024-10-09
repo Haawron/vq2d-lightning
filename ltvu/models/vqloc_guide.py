@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
+import random
 import torchvision
 from transformers import Dinov2Model
 
@@ -257,7 +258,7 @@ class ClipMatcher(nn.Module):
                     out = self.backbone.forward(x).last_hidden_state
                 out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 if return_cls:
-                    outs = [rearrange(out[:,:1,:],'b n c -> b c n'), *outs]
+                    outs = [rearrange(out[:,:1,:],'b 1 c -> b c 1'), *outs]
                 h = int(h_origin / self.down_rate)
                 w = int(w_origin / self.down_rate)
             else:
@@ -329,6 +330,9 @@ class ClipMatcher(nn.Module):
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
+        rt_pos_queries = None,
+        rt_pos = False,
+        sim_mode = 'max',
         **kwargs
     ):
         '''
@@ -347,8 +351,27 @@ class ClipMatcher(nn.Module):
             torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
             with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
                 # query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
-                query_feat, query_cls, *latent_query = self.extract_feature(query, return_cls=True, return_latent_feature=self.enable_cls_token_score)    # [b,c,h,w]  [b,c,1]
                 clip_feat, *latent_clip, h, w = self.extract_feature(segment, return_h_w=True, return_latent_feature=self.enable_cls_token_score)   # [b*t,c,h,w]
+                if rt_pos:
+                    if random.randint(0, 1) == 1:
+                        rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+                        _, rt_pos_queries_cls = self.extract_feature(rt_pos_queries, return_cls = True) # [b*t,c]
+                        rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+                        query_feat, query_cls, *latent_query = self.extract_feature(query, return_cls=True, return_latent_feature=self.enable_cls_token_score)    # [b,c,h,w]  [b,c,1]
+                        query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
+                        
+                        sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
+                        
+                        if sim_mode == 'max':
+                            _, top_sim_idx = sim.topk(1, dim=-1) # [b,1]
+                        elif sim_mode == 'min':
+                            top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
+                        
+                        rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+                        
+                        query = rt_pos_queries[torch.arange(b), top_sim_idx.squeeze(1)] # [b,c,h2,w2]
+                query_feat, query_cls, *latent_query = self.extract_feature(query, return_cls=True, return_latent_feature=self.enable_cls_token_score)    # [b,c,h,w]  [b,c,1]
+                
             torch.set_float32_matmul_precision(prec_prev)
 
         # reduce channel size
