@@ -310,6 +310,7 @@ class ClipMatcher(nn.Module):
         rt_pos_queries = None,
         rt_pos = False,
         sim_mode = 'max',
+        sim_thr = 0.0,
         **kwargs
     ):
         '''
@@ -339,14 +340,24 @@ class ClipMatcher(nn.Module):
                         
                         sim = F.cosine_similarity(rt_pos_queries_feat, query_feat, dim=-1) # [b,t]
                         
+                        sim_mask = sim > sim_thr # [b,t]
+                        batch_has_valid = sim_mask.any(dim=-1) # [b]
+                        
+                        rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
+                        if batch_has_valid.any():
+                            valid_sim_mask = sim_mask.float()  # [b, t]
+                            rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+                        
                         if sim_mode == 'max':
-                            _, top_sim_idx = sim.topk(1, dim=-1) # [b,1]
+                            top_sim_idx = sim.argmax(dim=-1) # [b,1]
                         elif sim_mode == 'min':
                             top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
+                            
+                        final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                         
                         rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-                        
-                        query = rt_pos_queries[torch.arange(b), top_sim_idx.squeeze(1)] # [b,c,h2,w2]
+                        query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
+
 
                 query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
                 clip_feat, h, w = self.extract_feature(segment, return_h_w=True)   # [b*t,c,h,w]

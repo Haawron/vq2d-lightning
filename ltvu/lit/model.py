@@ -77,8 +77,8 @@ class LitModule(L.LightningModule):
             config.model, compile_backbone=config.get('compile', True))
         self.fix_backbone = config.model.fix_backbone
 
-        self.save_hyperparameters(ignore='config')  # to avoid saving config itself as a hyperparameter
-        self.save_hyperparameters(config)  # to save the config in the checkpoint
+        self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
         
@@ -91,23 +91,20 @@ class LitModule(L.LightningModule):
     def training_step(self, batch, batch_idx):
         self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
         self.mode = self.exp_config.rt_pos_query.mode
+        self.sim_thr = self.exp_config.rt_pos_query.sim_thr
         bsz = batch['segment'].shape[0]
-        # output_dict = self.model.forward(**batch, compute_loss=True)
+        
+        # Determine the common flags for compute_loss and rt_pos
+        compute_loss_flag = True
+        rt_pos_flag = self.current_epoch >= self.late_epoch_rt_pos
+
+        # Handle logic based on mode
         if self.mode == 'easy':
-            if self.current_epoch >= self.late_epoch_rt_pos:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True)
-            else:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=False)
-        if self.mode == 'hard':
-            if self.current_epoch >= self.late_epoch_rt_pos:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='min')
-            else:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=False)
-        elif self.mode == 'both':
-            if self.current_epoch >= self.late_epoch_rt_pos:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='min')
-            else:
-                output_dict = self.model.forward(**batch, compute_loss=True, rt_pos=True, sim_mode='max')
+            output_dict = self.model.forward(**batch, compute_loss=compute_loss_flag, 
+                                             rt_pos=rt_pos_flag, sim_thr=self.sim_thr)
+        elif self.mode in ['hard', 'both']:
+            sim_mode = 'min' if (self.mode == 'hard' or not rt_pos_flag) else 'max'
+            output_dict = self.model.forward(**batch, compute_loss=compute_loss_flag, rt_pos=rt_pos_flag, sim_mode=sim_mode, sim_thr=self.sim_thr)
 
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'

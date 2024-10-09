@@ -16,4 +16,6 @@ __pycache__/
 /.env
 not_extracted*
 *.gz
-/.vscode
+notebooks/diffusion/
+notebooks/dino_repair/
+.vscode/

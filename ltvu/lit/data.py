@@ -48,8 +48,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         exp_config = config.get('experiment')
         self.enable_rt_pos_query = exp_config is not None and exp_config.get('rt_pos_query') is not None
 
-        self.save_hyperparameters(ignore='config')  # to avoid saving config itself as a hyperparameter
-        # self.save_hyperparameters(config)  # to save the config in the checkpoint
+        self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
 
         # GPU accelerated data preprocessing
