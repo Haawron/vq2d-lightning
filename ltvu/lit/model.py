@@ -87,16 +87,17 @@ class LitModule(L.LightningModule):
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
-        self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
-        self.mode = self.exp_config.rt_pos_query.mode
         bsz = batch['segment'].shape[0]
         extra_args = {}
-        if self.current_epoch >= self.late_epoch_rt_pos:
-            extra_args['rt_pos']=True
-        if self.mode in ['hard', 'both'] and self.current_epoch >= self.late_epoch_rt_pos:
-            extra_args['sim_mode']='min'
-        elif self.mode == 'both' and not (self.current_epoch >= self.late_epoch_rt_pos):
-            extra_args['sim_mode']='max'
+        if self.exp_config is not None:
+            self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
+            self.mode = self.exp_config.rt_pos_query.mode
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                extra_args['rt_pos']=True
+            if self.mode in ['hard', 'both'] and self.current_epoch >= self.late_epoch_rt_pos:
+                extra_args['sim_mode']='min'
+            elif self.mode == 'both' and not (self.current_epoch >= self.late_epoch_rt_pos):
+                extra_args['sim_mode']='max'
         output_dict = self.model.forward(**batch, compute_loss=True, **extra_args)
 
         assert output_dict['loss'].requires_grad

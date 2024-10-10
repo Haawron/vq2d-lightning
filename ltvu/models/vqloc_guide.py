@@ -94,6 +94,7 @@ class ClipMatcher(nn.Module):
         weight_prob = 100.,
         no_reduce = False,
         enable_cls_token_score = False,
+        num_layers_cq_corr_transformer=1,
         **kwargs
     ) -> None:
         super().__init__()
@@ -167,7 +168,8 @@ class ClipMatcher(nn.Module):
         # clip-query correspondence
         self.CQ_corr_transformer = []
         self.nhead = 4
-        for _ in range(1):
+        self.num_layers_cq_corr_transformer=num_layers_cq_corr_transformer
+        for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
                 torch.nn.TransformerDecoderLayer(
                     d_model=self.internal_dim,
@@ -398,7 +400,6 @@ class ClipMatcher(nn.Module):
 
         # down-size features and find spatial-temporal correspondence
         for head in self.down_heads:
-            clip_feat = head(clip_feat)
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
                 clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
                 mask = self.get_mask(clip_feat, t)
@@ -406,6 +407,7 @@ class ClipMatcher(nn.Module):
                     clip_feat = layer(clip_feat, src_mask=mask)
                 clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) c h w', b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
                 break  # ? why break here
+            clip_feat = head(clip_feat)
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]
