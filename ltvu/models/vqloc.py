@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
+
 import random
 from transformers import Dinov2Model
 
@@ -206,6 +207,7 @@ class ClipMatcher(nn.Module):
         self.CQ_corr_transformer = []
         self.nhead = 4
         stx_in_dim = self.backbone_dim if self.late_reduce else 256
+
         for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
                 torch.nn.TransformerDecoderLayer(
@@ -416,6 +418,7 @@ class ClipMatcher(nn.Module):
             query_feat_dict = self.extract_feature(query)
                 
                 
+
 
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
