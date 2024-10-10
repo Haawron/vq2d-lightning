@@ -45,9 +45,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.segment_aug: bool = aug_config.segment.apply
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
-        self.save_hyperparameters(ignore='config')
-        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
-        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
+        self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
 
         # GPU accelerated data preprocessing
         self.normalization = kornia.enhance.Normalize(mean=MEAN, std=STD)

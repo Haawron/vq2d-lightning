@@ -10,8 +10,11 @@
         "saved*",
         "results/",
         "multirun/",
+        "outputs/",
         "wandb/",
         "*.sif",
+        "notebooks/diffusion/",
+        "notebooks/dino_repair/",
     ],
     "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import
     "reportCallIssue": "none",  // pyright doesn't consider C-based functions

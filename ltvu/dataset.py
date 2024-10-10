@@ -1,9 +1,6 @@
 # built-in + hydra
 import json
-import shutil
-import subprocess
 from pathlib import Path
-from collections import defaultdict
 from omegaconf import DictConfig
 
 # torch
@@ -18,8 +15,7 @@ import torchvision.transforms.functional as TF
 # others
 import decord
 import numpy as np
-from einops import rearrange
-from PIL import Image, ImageDraw
+from PIL import Image
 
 # local (ours)
 
@@ -191,7 +187,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = query.float() / 255.
 
         # permute - pad - resize
-        # query = rearrange(query, 'h w c -> c h w').contiguous()
         if self.query_padding:
             pad_size = (l - s) // 2
             if h > w:

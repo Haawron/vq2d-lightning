@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-448-lit
+#SBATCH --job-name=ours
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0

@@ -1,0 +1,9 @@
+# @package _global_
+
+# usage: python train.py +experiment=cls_token_score
+
+model:
+  enable_cls_token_score: true
+  # late_reduce: true
+
+# batch_size: 4

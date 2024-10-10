@@ -15,7 +15,7 @@ from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
 from ltvu.utils.compute_results import get_final_preds
-from ltvu.metrics import get_metrics, print_metrics
+from ltvu.metrics import get_metrics, format_metrics
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -29,6 +29,7 @@ class PerSegmentWriter(BasePredictionWriter):
         self.p_int_pred = Path(output_dir) / 'intermediate_predictions.pt'
         self.p_pred = Path(output_dir) / 'predictions.json'
         self.p_metrics = Path(output_dir) / 'metrics.json'
+        self.p_metrics_log = Path(output_dir) / 'metrics.log'
         for p_tmp in self.p_tmp_outdir.glob('*'):
             p_tmp.unlink()
         self.rank_seg_preds = []
@@ -56,6 +57,7 @@ class PerSegmentWriter(BasePredictionWriter):
 
         if trainer.is_global_zero:
             # get segmented features
+            print('Getting segmented features...')
             all_seg_preds = {}
             for p_pt in self.p_tmp_outdir.glob('*.pt'):
                 rank_seg_preds = torch.load(p_pt, weights_only=True)
@@ -65,6 +67,7 @@ class PerSegmentWriter(BasePredictionWriter):
                     all_seg_preds[qset_uuid][seg_idx] = pred_output
 
             # merge features
+            print('Merging features...')
             qset_preds = {}
             for qset_uuid, qset_seg_preds in all_seg_preds.items():
                 new_ret_bboxes, new_ret_scores, frame_idxs = [], [], []
@@ -82,6 +85,7 @@ class PerSegmentWriter(BasePredictionWriter):
                 }
 
             # save intermediate results
+            print('Saving intermediate results...')
             torch.save(qset_preds, self.p_int_pred)
 
             # TODO: Below should be handled by a separate evaluation script
@@ -94,8 +98,10 @@ class PerSegmentWriter(BasePredictionWriter):
 
             # print metrics
             subset_metrics = get_metrics(Path('data/vq_v2_val_anno.json'), self.p_pred)
-            print_metrics(subset_metrics)
-            json.dump(subset_metrics['metrics'], self.p_metrics.open('w'))
+            metrics_msg = format_metrics(subset_metrics)
+            print(metrics_msg)
+            self.p_metrics_log.write_text(metrics_msg + '\n')
+            json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
 
             # remove temporary files
             for p_tmp in self.p_tmp_outdir.glob('*'):

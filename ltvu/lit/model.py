@@ -46,12 +46,12 @@ class LitModule(L.LightningModule):
     for batch_idx, batch in enumerate(train_dataloader):
         # ... model train loop
         if validate_at_some_point:  # when meet some condition
-            torch.set_grad_enabled(False)  # disable grads + batchnorm + dropout
-            model.eval()
+            torch.set_grad_enabled(False)  # disable grads
+            model.eval()  # disable batchnorm + dropout
             for val_batch_idx, val_batch in enumerate(val_dataloader):
                 val_out = model.validation_step(val_batch, val_batch_idx)  # -> should be handled in `on_validation_epoch_end`
-            torch.set_grad_enabled(True)  # enable grads + batchnorm + dropout
-            model.train()
+            torch.set_grad_enabled(True)  # enable grads
+            model.train()  # enable batchnorm + dropout
     ```
 
     ---
@@ -76,9 +76,9 @@ class LitModule(L.LightningModule):
         self.model: VQLoC = hydra.utils.instantiate(
             config.model, compile_backbone=config.get('compile', True))
         self.fix_backbone = config.model.fix_backbone
-        self.save_hyperparameters(ignore='config')
-        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))
-        self.save_hyperparameters(config, logger=False)  # to save the config in the checkpoint
+
+        self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
+        self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
     ############ major hooks ############
@@ -97,12 +97,16 @@ class LitModule(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-        log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
-        self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
-        if self.sample_step > 0:  # after sanity check done
-            if batch_idx % 50 == 0:
-                self.print_outputs(batch, output_dict, bidxs=[0])
-        self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
+        if 'log_dict' in output_dict:
+            log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
+            self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
+            # if self.sample_step > 0:  # after sanity check done
+            #     if batch_idx % 50 == 0:
+            #       try:
+            #           self.print_outputs(batch, output_dict, bidxs=[0])
+            #       except Exception as e:
+            #           print(f"Error in {batch['clip_uid']} print_outputs: {e}")
+            self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
         pass
@@ -168,12 +172,6 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
-
-    # def on_before_optimizer_step(self, optimizer):
-    #     # Compute the 2-norm for each layer
-    #     # If using mixed precision, the gradients are already unscaled here
-    #     norms = grad_norm(self.layer, norm_type=2)
-    #     self.log_dict(norms)
 
     ############ helper functions ############
 

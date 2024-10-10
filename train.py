@@ -77,11 +77,11 @@ def main(config: DictConfig):
 
     trainer.fit(plm, datamodule=pdm)
 
-    log_to_console('\n' + "="*80 + '\n')
-    log_to_console('Evaluating best model')
-
-    plm = LitModule.load_from_checkpoint(ckpt_callback.best_model_path)
-    trainer.predict(plm, datamodule=pdm, return_predictions=False)
+    if not config.get('debug', False):
+        log_to_console('\n' + "="*80 + '\n')
+        log_to_console('Evaluating best model')
+        plm = LitModule.load_from_checkpoint(ckpt_callback.best_model_path)
+        trainer.predict(plm, datamodule=pdm, return_predictions=False)
 
 
 if __name__ == '__main__':

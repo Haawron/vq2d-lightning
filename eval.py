@@ -50,7 +50,7 @@ def main(config: DictConfig):
     pdm = LitVQ2DDataModule(config)  # eval config
 
     log_to_console('\n' + "="*80 + '\n')
-    log_to_console(OmegaConf.to_yaml(plm.config, resolve=True))
+    log_to_console(OmegaConf.to_yaml(plm.config.model))
     log_to_console("="*80 + '\n')
 
     trainer.predict(plm, datamodule=pdm, return_predictions=False)
