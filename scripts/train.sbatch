@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=vqloc-16-64
+#SBATCH --job-name=only_late
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -8,20 +8,25 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=42G
-#SBATCH -x ariel-v[3,6],ariel-k[1,2],ariel-m1
+#SBATCH -x ariel-k[1,2],ariel-m1
 
 hostname
 
 source ./scripts/_setup.sh
 
 
+
 # python train.py --config-name train_fast \
-#     model.resolution_transformer=8 \
-#     model.num_anchor_regions=64 \
-#     batch_size=4 \
+#     model.num_layers_st_transformer=0 \
+#     trainer.logger.0.group='role-of-st'
+
+# python train.py --config-name train_fast \
+#     model.num_layers_st_transformer=1 \
+#     trainer.logger.0.group='role-of-st'
+
+# python train.py --config-name train_fast \
+#     +experiment=cls_token_score \
+#     model.late_reduce=false batch_size=8
 
 python train.py --config-name train_fast \
-    model.resolution_transformer=16 \
-    model.num_anchor_regions=64 \
-    batch_size=3 \
-    trainer.logger.0.group='bbox_upscale'
+    model.late_reduce=true batch_size=4

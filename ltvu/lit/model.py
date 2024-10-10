@@ -46,12 +46,12 @@ class LitModule(L.LightningModule):
     for batch_idx, batch in enumerate(train_dataloader):
         # ... model train loop
         if validate_at_some_point:  # when meet some condition
-            torch.set_grad_enabled(False)  # disable grads + batchnorm + dropout
-            model.eval()
+            torch.set_grad_enabled(False)  # disable grads
+            model.eval()  # disable batchnorm + dropout
             for val_batch_idx, val_batch in enumerate(val_dataloader):
                 val_out = model.validation_step(val_batch, val_batch_idx)  # -> should be handled in `on_validation_epoch_end`
-            torch.set_grad_enabled(True)  # enable grads + batchnorm + dropout
-            model.train()
+            torch.set_grad_enabled(True)  # enable grads
+            model.train()  # enable batchnorm + dropout
     ```
 
     ---
@@ -100,12 +100,12 @@ class LitModule(L.LightningModule):
         if 'log_dict' in output_dict:
             log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
             self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
-            if self.sample_step > 0:  # after sanity check done
-                if batch_idx % 50 == 0:
-                  try:
-                      self.print_outputs(batch, output_dict, bidxs=[0])
-                  except Exception as e:
-                      print(f"Error in {batch['clip_uid']} print_outputs: {e}")
+            # if self.sample_step > 0:  # after sanity check done
+            #     if batch_idx % 50 == 0:
+            #       try:
+            #           self.print_outputs(batch, output_dict, bidxs=[0])
+            #       except Exception as e:
+            #           print(f"Error in {batch['clip_uid']} print_outputs: {e}")
             self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):

@@ -1,9 +1,10 @@
+from typing import Iterable, Callable
+
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
-import torchvision
 from transformers import Dinov2Model
 
 from ltvu.loss import get_losses_with_anchor
@@ -62,6 +63,46 @@ def BasicBlock_Conv2D(in_dim, out_dim):
     return module
 
 
+class IntermediateFeatureExtractor:
+    def __init__(self, model: nn.Module, layer_ids: Iterable[str]):
+        self.model = model
+        self.layer_ids = layer_ids
+        self.features = {layer: torch.empty(0) for layer in layer_ids}
+
+        for layer_id in layer_ids:
+            layer = dict([*self.model.named_modules()])[layer_id]
+            layer.register_forward_hook(self.save_outputs_hook(layer_id))
+
+    def save_outputs_hook(self, layer_id: str) -> Callable:
+        def fn(_, __, output):
+            self.features[layer_id] = output
+        return fn
+
+
+class InferenceContext:
+    def __init__(self, fp32_mm_precision, enable_autocast, autocast_dtype, enable_no_grad):
+        self.fp32_mm_precision = fp32_mm_precision
+        self.enable_no_grad = enable_no_grad
+        self.enable_autocast = enable_autocast
+        self.autocast_dtype = autocast_dtype
+        self.prec_prev = None
+
+    def __enter__(self):
+        self.prec_prev = torch.get_float32_matmul_precision()
+        torch.set_float32_matmul_precision(self.fp32_mm_precision)
+        if self.enable_no_grad:
+            self.no_grad = torch.no_grad()
+            self.no_grad.__enter__()
+        self.autocast = torch.autocast(device_type='cuda', dtype=self.autocast_dtype, enabled=self.enable_autocast)
+        self.autocast.__enter__()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.autocast.__exit__(exc_type, exc_value, traceback)
+        if self.enable_no_grad:
+            self.no_grad.__exit__(exc_type, exc_value, traceback)
+        torch.set_float32_matmul_precision(self.prec_prev)
+
+
 class ClipMatcher(nn.Module):
     def __init__(self,
         compile_backbone = True,
@@ -91,7 +132,9 @@ class ClipMatcher(nn.Module):
         weight_bbox_hw = 1.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
-        no_reduce = False,
+        late_reduce = False,
+
+        # experiment-specific
         enable_cls_token_score = False,
         **kwargs
     ) -> None:
@@ -117,6 +160,7 @@ class ClipMatcher(nn.Module):
         self.resolution_transformer = resolution_transformer
         self.num_anchor_regions = num_anchor_regions
         self.transformer_dropout = transformer_dropout
+        self.fix_backbone = fix_backbone
 
         self.positive_threshold = positive_threshold
         self.logit_scale = logit_scale
@@ -125,8 +169,7 @@ class ClipMatcher(nn.Module):
         self.weight_bbox_giou = weight_bbox_giou
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
-        self.no_reduce = True if self.enable_cls_token_score else no_reduce
-        self.internal_dim = 256 if not self.no_reduce else self.backbone_dim
+        self.late_reduce = late_reduce
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -137,21 +180,15 @@ class ClipMatcher(nn.Module):
         if fix_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
-            self.backbone.eval()
+            self.backbone.eval()  # also done in the trainer
+        layer_ids = []
+        if enable_cls_token_score:
+            # check layer names by printing `list(dict([*backbone.named_modules()]).keys())`
+            layer_ids.append('encoder.layer.10.layer_scale2')
+        self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
-
-        # query down heads
-        self.query_down_heads = []
-        for _ in range(int(math.log2(self.query_feat_size))):
-            self.query_down_heads.append(
-                nn.Sequential(
-                    nn.Conv2d(self.backbone_dim, self.backbone_dim, 3, stride=2, padding=1),
-                    nn.BatchNorm2d(self.backbone_dim),
-                    nn.LeakyReLU(inplace=True),
-                )
-            )
-        self.query_down_heads = nn.ModuleList(self.query_down_heads)
+            self.get_cross_cls_attn_score = torch.compile(self.get_cross_cls_attn_score)
 
         # feature reduce layer
         self.reduce = nn.Sequential(
@@ -166,12 +203,13 @@ class ClipMatcher(nn.Module):
         # clip-query correspondence
         self.CQ_corr_transformer = []
         self.nhead = 4
+        stx_in_dim = self.backbone_dim if self.late_reduce else 256
         for _ in range(1):
             self.CQ_corr_transformer.append(
                 torch.nn.TransformerDecoderLayer(
-                    d_model=self.internal_dim,
+                    d_model=stx_in_dim,
                     nhead=self.nhead,
-                    dim_feedforward=self.internal_dim*4,
+                    dim_feedforward=stx_in_dim*4,
                     dropout=transformer_dropout,
                     activation='gelu',
                     batch_first=True
@@ -182,7 +220,6 @@ class ClipMatcher(nn.Module):
         # feature downsample layers
         self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
         for i in range(self.num_head_layers-1):
-            self.in_channel = 256 if i != 0 else self.backbone_dim
             self.down_heads.append(
                 nn.Sequential(
                 nn.Conv2d(256, 256, 3, stride=2, padding=1),
@@ -219,63 +256,66 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def get_cls_mask(self,latent_query, latent_clip):
-        last_layer = self.backbone.encoder.layer[-1]
-        desired_layer_q = last_layer.attention.attention.query(latent_query)   # Query
-        desired_layer_k = last_layer.attention.attention.key(latent_clip)    # Key
-        BT, N, C, B = *latent_clip.shape, latent_query.shape[0]
+    def get_cross_cls_attn_score(self,latent_query, latent_clip):
+        """
+        latent_query: [b,1,c]
+        latent_clip: [b*t,n,c]
+        """
+        BT, N, C = latent_clip.shape
+        B = latent_query.shape[0]
         T = BT // B
 
-        desired_layer_q = rearrange(desired_layer_q.unsqueeze(1).expand(-1,T,-1,-1), 'b t n c -> (b t) n c')
-        attn = (desired_layer_q @ desired_layer_k.transpose(-2, -1)) * C ** -0.5
-        attn = F.softmax(attn, dim=-1)
-        attn = rearrange(attn, '(b t) n c -> b t n c',t=T).unsqueeze(2).expand(-1,-1,self.nhead,N,-1)
-        attn = rearrange(attn, 'b t h n c -> (b t h) n c')
-        # attn = attn.expand(-1,N,-1)
-        
+        last_layer = self.backbone.encoder.layer[-1]
+        Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
+        K_clip = last_layer.attention.attention.key(latent_clip)  # [b*t,n,c]
+
+        Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
+        attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
+        attn = F.softmax(attn, dim=-1)  # [b*t,1,n]
+        attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
+
         return attn
-    
-    def extract_feature(self, x, return_h_w=False, return_cls=False, return_latent_feature=False) -> torch.Tensor | tuple[torch.Tensor, int, int]:
-        output = []
+
+    def extract_feature(self, x) -> dict:
+        hidden_states = {}
+
         if self.backbone_name == 'dino':
             b, _, h_origin, w_origin = x.shape
-            out = self.backbone.get_intermediate_layers(x, n=1)[0]
-            out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
+            feat = self.backbone.get_intermediate_layers(x, n=1)[0]
+            cls_token = feat[:, :1, :]  # [b,1,c]
+            feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
             h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
-            dim = out.shape[-1]
-            out = out.reshape(b, h, w, dim).permute(0,3,1,2)
-            output.append(out)
+            dim = feat.shape[-1]
+            feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)
+
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
-                if return_latent_feature:
-                    x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
-                    out = x_forward_outs.last_hidden_state
-                    output.append(x_forward_outs.hidden_states[-2])
-                    del x_forward_outs
-                else:
-                    out = self.backbone.forward(x).last_hidden_state
-                out = out[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
-                if return_cls:
-                    output = [rearrange(out[:,:1,:],'b n c -> b c n'), *output]
+                feat = self.backbone.forward(x).last_hidden_state
+                hidden_states = self.hidden_state_extractor.features
+                cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
+                feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 h = int(h_origin / self.down_rate)
                 w = int(w_origin / self.down_rate)
             else:
-                out = self.backbone.get_intermediate_layers(x, n=1)[0]
+                feat = self.backbone.get_intermediate_layers(x, n=1)[0]
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
-            dim = out.shape[-1]
-            out = out.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
-            output = [out, *output]
+            dim = feat.shape[-1]
+            feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
+
         else:
             raise NotImplementedError
-        if return_h_w:
-            output.extend([h,w])
 
-        if torch.isnan(out).any():
+        if torch.isnan(feat).any():
             raise ValueError('nan in feature')
-        output[0] = output[0].float()
-        return tuple(output)
+
+        return {
+            'feat': feat,
+            'cls': cls_token,
+            'h': h, 'w': w,
+            'hidden_states': hidden_states
+        }
 
 
     def get_mask(self, src, t):
@@ -318,6 +358,13 @@ class ClipMatcher(nn.Module):
         new_clip_feat = rearrange(new_clip_feat, 'b t c h w -> (b t) c h w')
         return new_clip_feat, new_query_feat
 
+    def backbone_context(self):
+        return InferenceContext(
+            self.backbone_fp32_mm_precision,
+            self.backbone_autocast,
+            self.backbone_dtype,
+            self.fix_backbone)
+
 
     def forward(
         self,
@@ -338,40 +385,47 @@ class ClipMatcher(nn.Module):
         gt_bboxes:
         '''
         b, t = segment.shape[:2]
-        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         device = segment.device
 
-        # get backbone features
-        with torch.no_grad():
-            prec_prev = torch.get_float32_matmul_precision()
-            torch.set_float32_matmul_precision(self.backbone_fp32_mm_precision)
-            with torch.autocast(device_type="cuda", dtype=self.backbone_dtype, enabled=self.backbone_autocast):
-                # query_feat: torch.Tensor = self.extract_feature(query)        # [b,c,h,w]
-                query_feat, query_cls, *latent_query = self.extract_feature(query, return_cls=True, return_latent_feature=self.enable_cls_token_score)    # [b,c,h,w]  [b,c,1]
-                clip_feat, *latent_clip, h, w = self.extract_feature(segment, return_h_w=True, return_latent_feature=self.enable_cls_token_score)   # [b*t,c,h,w]
-            torch.set_float32_matmul_precision(prec_prev)
+        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        with self.backbone_context():
+            query_feat_dict = self.extract_feature(query)
+            clip_feat_dict = self.extract_feature(segment)
+
+        query_feat = query_feat_dict['feat']
+        clip_feat = clip_feat_dict['feat']
+        h, w = clip_feat_dict['h'], clip_feat_dict['w']
 
         # reduce channel size
-        all_feat = torch.cat([query_feat, clip_feat], dim=0)
-        all_feat = self.reduce(all_feat) if not self.no_reduce else all_feat
-        query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
+        if not self.late_reduce:
+            all_feat = torch.cat([query_feat, clip_feat], dim=0)
+            all_feat = self.reduce(all_feat)
+            query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
 
         if use_hnm and compute_loss:
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
             b **= 2
 
         # cls_mask
-        cls_mask = self.get_cls_mask(latent_query[0][:,:1,:],latent_clip[0][:,1:,:]) if self.enable_cls_token_score else None
-        
+        cls_mask = None
+        if self.enable_cls_token_score:
+            layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
+            latent_query = query_feat_dict.setdefault('hidden_states', {}).get(layer_id)
+            latent_clip = clip_feat_dict.setdefault('hidden_states', {}).get(layer_id)
+            latent_query_cls = latent_query[:, :1]  # [b,1,c]
+            latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
+            with self.backbone_context():
+                cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls)
+
         # find spatial correspondence between query-frame
-        # query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c] # DEBUG: same as below
-        query_feat = rearrange(query_feat.unsqueeze(1).repeat(1,t,1,1,1), 'b t c h w -> (b t) (h w) c')# [b*t,n,c]
+        query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')            # [b*t,n,c]
         for layer in self.CQ_corr_transformer:
             clip_feat = layer(clip_feat, query_feat, tgt_mask=cls_mask)                        # [b*t,n,c]
         clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
-        
-        clip_feat = self.reduce(clip_feat) if self.no_reduce else clip_feat
+
+        if self.late_reduce:
+            clip_feat = self.reduce(clip_feat)
 
         # down-size features and find spatial-temporal correspondence
         for head in self.down_heads:

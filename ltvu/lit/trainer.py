@@ -15,7 +15,7 @@ from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
 from ltvu.utils.compute_results import get_final_preds
-from ltvu.metrics import get_metrics, print_metrics
+from ltvu.metrics import get_metrics, format_metrics
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -29,6 +29,7 @@ class PerSegmentWriter(BasePredictionWriter):
         self.p_int_pred = Path(output_dir) / 'intermediate_predictions.pt'
         self.p_pred = Path(output_dir) / 'predictions.json'
         self.p_metrics = Path(output_dir) / 'metrics.json'
+        self.p_metrics_log = Path(output_dir) / 'metrics.log'
         for p_tmp in self.p_tmp_outdir.glob('*'):
             p_tmp.unlink()
         self.rank_seg_preds = []
@@ -97,7 +98,9 @@ class PerSegmentWriter(BasePredictionWriter):
 
             # print metrics
             subset_metrics = get_metrics(Path('data/vq_v2_val_anno.json'), self.p_pred)
-            print_metrics(subset_metrics)
+            metrics_msg = format_metrics(subset_metrics)
+            print(metrics_msg)
+            self.p_metrics_log.write_text(metrics_msg + '\n')
             json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
 
             # remove temporary files
