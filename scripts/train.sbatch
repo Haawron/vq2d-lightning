@@ -30,3 +30,4 @@ source ./scripts/_setup.sh
 
 python train.py --config-name train_fast \
     model.late_reduce=true batch_size=4
+    # "+experiment=[cls_token_score,rt_pos_query]" \

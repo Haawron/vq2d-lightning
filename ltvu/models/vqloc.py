@@ -173,6 +173,7 @@ class ClipMatcher(nn.Module):
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
         self.late_reduce = late_reduce
+        self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -188,7 +189,7 @@ class ClipMatcher(nn.Module):
         if enable_cls_token_score:
             # check layer names by printing `list(dict([*backbone.named_modules()]).keys())`
             layer_ids.append('encoder.layer.10.layer_scale2')
-        self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
+        # self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
             self.get_cross_cls_attn_score = torch.compile(self.get_cross_cls_attn_score)
@@ -295,8 +296,9 @@ class ClipMatcher(nn.Module):
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
-                feat = self.backbone.forward(x).last_hidden_state
-                hidden_states = self.hidden_state_extractor.features
+                x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
+                feat = x_forward_outs.last_hidden_state
+                hidden_states = x_forward_outs.hidden_states[-2]
                 cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
                 feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 h = int(h_origin / self.down_rate)
@@ -395,6 +397,7 @@ class ClipMatcher(nn.Module):
         device = segment.device
 
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
             if rt_pos and random.randint(0, 1) == 1:
@@ -437,9 +440,8 @@ class ClipMatcher(nn.Module):
         # cls_mask
         cls_mask = None
         if self.enable_cls_token_score:
-            layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
-            latent_query = query_feat_dict.setdefault('hidden_states', {}).get(layer_id)
-            latent_clip = clip_feat_dict.setdefault('hidden_states', {}).get(layer_id)
+            latent_query = query_feat_dict['hidden_states']
+            latent_clip = clip_feat_dict['hidden_states']
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
             with self.backbone_context():
