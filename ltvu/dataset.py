@@ -52,7 +52,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             self.padding_value = .5
         elif ds_config.padding_value == 'zero':
             self.padding_value = 0.
-
+            
+        exp_config = config.get('experiment')
+        self.enable_rt_pos_query = exp_config is not None and exp_config.get('rt_pos_query') is not None
+        if self.enable_rt_pos_query:
+            self.p_rt_pos_query = Path(exp_config.rt_pos_query.rt_pos_query_dir)
         self.split = split
         self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
         self.all_anns = json.load(self.p_ann.open())
@@ -81,10 +85,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
+        
+        if self.enable_rt_pos_query and self.split == 'train':
+            rt_pos_queries = self.get_rt_pos_query(ann, frame_idxs)
+            
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
-
-        return {
+        
+        sample = {
             # inputs
             'segment': segment,  # [t, c, h, w], normalized
             'query': query,  # [c, h, w], normalized
@@ -105,6 +113,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'visual_crop': vc,  # dict
             'object_title': ann['object_title'],  # str
         }
+        
+        if self.enable_rt_pos_query and self.split == 'train':
+            (sample
+                .setdefault('experiment', {})
+                .setdefault('multi_query', {})
+                .setdefault('rt_pos_queries', rt_pos_queries))
+
+        return sample
 
     def subsample_anns(self, anns):  # interface
         return anns
@@ -197,6 +213,44 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
 
+    def get_rt_pos_query(self, ann, frame_idxs): 
+        clip_uid = ann['clip_uid']
+        query_set = ann['query_set']
+        annotation_uid = ann['annotation_uid']
+
+        rt_ann = {}
+        for rt in ann['response_track']:
+            rt_ann[rt['fno']] = {
+                'w': rt['w'],
+                'h': rt['h'],
+            }
+        
+        rt_pos_queries = []
+        
+        for frame_idx in frame_idxs:
+            if frame_idx in list(rt_ann.keys()):
+                frame = Image.open(self.p_rt_pos_query / clip_uid / f'{clip_uid}_{frame_idx}_{annotation_uid}_{query_set}.jpg')
+                frame = TF.pil_to_tensor(frame)
+                frame = frame.float() / 255.
+                if self.query_padding:
+                    bbox_h, bbox_w = rt_ann[frame_idx]['h'], rt_ann[frame_idx]['w']
+                    l, s = max(bbox_h, bbox_w), min(bbox_h, bbox_w)
+                    pad_size = (l - s) // 2
+                    if bbox_h > bbox_w:
+                        pad = (pad_size, l - s - pad_size, 0, 0)
+                    else:
+                        pad = (0, 0, pad_size, l - s - pad_size)
+                    frame = F.pad(frame, pad, value=0)
+                frame = F.interpolate(frame[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+            else:
+                frame = torch.zeros(3, self.query_size[0], self.query_size[1])
+                
+            rt_pos_queries.append(frame.squeeze(0))
+        
+        rt_pos_queries = torch.stack(rt_pos_queries)
+        
+        return rt_pos_queries
+    
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_
 

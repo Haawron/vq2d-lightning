@@ -5,6 +5,8 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
+
+import random
 from transformers import Dinov2Model
 
 from ltvu.loss import get_losses_with_anchor
@@ -136,6 +138,7 @@ class ClipMatcher(nn.Module):
 
         # experiment-specific
         enable_cls_token_score = False,
+        num_layers_cq_corr_transformer=1,
         **kwargs
     ) -> None:
         super().__init__()
@@ -170,6 +173,7 @@ class ClipMatcher(nn.Module):
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
         self.late_reduce = late_reduce
+        self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -185,7 +189,7 @@ class ClipMatcher(nn.Module):
         if enable_cls_token_score:
             # check layer names by printing `list(dict([*backbone.named_modules()]).keys())`
             layer_ids.append('encoder.layer.10.layer_scale2')
-        self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
+        # self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
             self.get_cross_cls_attn_score = torch.compile(self.get_cross_cls_attn_score)
@@ -204,7 +208,8 @@ class ClipMatcher(nn.Module):
         self.CQ_corr_transformer = []
         self.nhead = 4
         stx_in_dim = self.backbone_dim if self.late_reduce else 256
-        for _ in range(1):
+
+        for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
                 torch.nn.TransformerDecoderLayer(
                     d_model=stx_in_dim,
@@ -291,8 +296,9 @@ class ClipMatcher(nn.Module):
         elif self.backbone_name in ['dinov2', 'dinov2-hf']:
             b, _, h_origin, w_origin = x.shape
             if 'hf' in self.backbone_name:
-                feat = self.backbone.forward(x).last_hidden_state
-                hidden_states = self.hidden_state_extractor.features
+                x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
+                feat = x_forward_outs.last_hidden_state
+                hidden_states = x_forward_outs.hidden_states[-2]
                 cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
                 feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
                 h = int(h_origin / self.down_rate)
@@ -376,6 +382,9 @@ class ClipMatcher(nn.Module):
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
+        rt_pos_queries = None,
+        rt_pos = False,
+        sim_mode = 'max',
         **kwargs
     ):
         '''
@@ -388,9 +397,31 @@ class ClipMatcher(nn.Module):
         device = segment.device
 
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
         with self.backbone_context():
-            query_feat_dict = self.extract_feature(query)
             clip_feat_dict = self.extract_feature(segment)
+            if rt_pos and random.randint(0, 1) == 1:
+                rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+                rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+                query_feat_dict = self.extract_feature(query)
+                rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
+                query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
+                
+                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
+                
+                if sim_mode == 'max':
+                    _, top_sim_idx = sim.topk(1, dim=-1) # [b,1]
+                elif sim_mode == 'min':
+                    top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
+                
+                rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+                
+                query = rt_pos_queries[torch.arange(b), top_sim_idx.squeeze(1)] # [b,c,h2,w2]
+            query_feat_dict = self.extract_feature(query)
+                
+                
+
 
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
@@ -409,9 +440,8 @@ class ClipMatcher(nn.Module):
         # cls_mask
         cls_mask = None
         if self.enable_cls_token_score:
-            layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
-            latent_query = query_feat_dict.setdefault('hidden_states', {}).get(layer_id)
-            latent_clip = clip_feat_dict.setdefault('hidden_states', {}).get(layer_id)
+            latent_query = query_feat_dict['hidden_states']
+            latent_clip = clip_feat_dict['hidden_states']
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
             with self.backbone_context():
@@ -429,7 +459,6 @@ class ClipMatcher(nn.Module):
 
         # down-size features and find spatial-temporal correspondence
         for head in self.down_heads:
-            clip_feat = head(clip_feat)
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
                 clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
                 mask = self.get_mask(clip_feat, t)
@@ -437,6 +466,7 @@ class ClipMatcher(nn.Module):
                     clip_feat = layer(clip_feat, src_mask=mask)
                 clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) c h w', b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
                 break  # ? why break here
+            clip_feat = head(clip_feat)
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]

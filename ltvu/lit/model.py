@@ -81,11 +81,28 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
+        self.exp_config = config.get('experiment')
+        self.enable_rt_pos_query = self.exp_config is not None and self.exp_config.get('rt_pos_query') is not None
+          
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
-        output_dict = self.model.forward(**batch, compute_loss=True)
+        extra_args = {}
+        if self.exp_config is not None:
+            self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
+            self.mode = self.exp_config.rt_pos_query.mode
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                extra_args['rt_pos']=True
+            if self.mode == 'hard' and self.current_epoch >= self.late_epoch_rt_pos:
+                extra_args['sim_mode']='min'
+            elif self.mode == 'both':
+                if self.current_epoch >= self.late_epoch_rt_pos:
+                    extra_args['sim_mode']='min'
+                else:
+                    extra_args['sim_mode']='max'
+        output_dict = self.model.forward(**batch, compute_loss=True, **extra_args)
+
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
         log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Train')
