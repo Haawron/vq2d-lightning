@@ -1,0 +1,8 @@
+# @package _global_
+
+# usage: python train.py +experiment=pca_guide
+
+model:
+  enable_pca_guide: true
+  pca_guide_version: 1
+  weight_pca: 1e-2

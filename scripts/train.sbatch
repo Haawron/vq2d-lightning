@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=only_late
+#SBATCH --job-name=pca-1
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -28,5 +28,9 @@ source ./scripts/_setup.sh
 #     +experiment=cls_token_score \
 #     model.late_reduce=false batch_size=8
 
+# python train.py --config-name train_fast \
+#     model.late_reduce=true batch_size=4
+
 python train.py --config-name train_fast \
-    model.late_reduce=true batch_size=4
+    +experiment=pca_guide \
+    trainer.logger.0.group='pca' \

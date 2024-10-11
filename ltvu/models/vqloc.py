@@ -136,6 +136,9 @@ class ClipMatcher(nn.Module):
 
         # experiment-specific
         enable_cls_token_score = False,
+        enable_pca_guide = False,
+        pca_guide_version = 1,
+        weight_pca = 1e-2,
         **kwargs
     ) -> None:
         super().__init__()
@@ -170,6 +173,10 @@ class ClipMatcher(nn.Module):
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
         self.late_reduce = late_reduce
+
+        self.enable_pca_guide = enable_pca_guide
+        self.pca_guide_version = pca_guide_version
+        self.weight_pca = weight_pca
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -406,6 +413,7 @@ class ClipMatcher(nn.Module):
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
             b **= 2
 
+
         # cls_mask
         cls_mask = None
         if self.enable_cls_token_score:
@@ -495,6 +503,40 @@ class ClipMatcher(nn.Module):
                     assert l.requires_grad, f'{loss_name} should require grad'
                 total_loss = total_loss + w * l
 
+
+            if self.enable_pca_guide:
+                if self.pca_guide_version == 1:
+                    query_feat_ = rearrange(query_feat, '(b t) (h w) c -> (b t h w) c', b=b, t=t, h=h)
+                    U, S, V = torch.pca_lowrank(query_feat_, q=4)
+                    query_feat_proj = torch.matmul(query_feat_, V)  # [b*t*h*w,4]
+                    query_feat_proj = rearrange(query_feat_proj, '(b t h w) q -> b t h w q', b=b, t=t, h=h)
+                    loss_pca = torch.mean(torch.sum(query_feat_proj[..., 1:4] ** 2, dim=-1))
+                    loss_pca = self.weight_pca * loss_pca
+
+                # from io import BytesIO
+                # from PIL import Image
+                # from imgcat import imgcat
+                # import seaborn as sns
+                # import matplotlib.pyplot as plt
+                # from diffusers.utils import make_image_grid
+                # images = []
+                # plot_io = BytesIO()
+                # sns.heatmap((s:=query_feat_proj[0, 0, ..., 0].cpu().detach()).numpy(), square=True, cbar=True, cmap='PiYG', vmax=s.abs().max(), vmin=-s.abs().max())
+                # plt.savefig(plot_io, format='png')
+                # plt.close()
+                # image = Image.open(plot_io)
+                # images.append(image)
+                # query_ = rearrange(query, 'b c h w -> b h w c')
+                # query_ = (query_ - query_.min()) / (query_.max() - query_.min()) * 255
+                # image = Image.fromarray(query_[0].cpu().detach().numpy().astype('uint8'))
+                # print('hi')
+                # images.append(image)
+                # image = make_image_grid(images, rows=1, cols=len(images), resize=448)
+                # imgcat(image)
+
+                total_loss = total_loss + loss_pca
+
+
             # for logging - losses
             loss_dict = detach_dict(loss_dict)
             log_dict = {
@@ -504,6 +546,10 @@ class ClipMatcher(nn.Module):
                 'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
                 'loss_prob': loss_dict['loss_prob'].mean(),
             }
+
+            if self.enable_pca_guide:
+                log_dict.update({'loss_pca': loss_pca.detach()})
+
 
             # for logging - metrics
             preds_top = detach_dict(preds_top)
