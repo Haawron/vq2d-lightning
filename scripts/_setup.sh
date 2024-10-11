@@ -27,7 +27,7 @@ for TARFILE in "${TARFILES[@]}"; do
       echo "Failed to create directory, exiting..."
       exit 1
     fi
-    tar -xf $TARFILE -C /local_datasets/ --overwrite
+    tar -xf $TARFILE -C /local_datasets/ --skip-old-files
     find "$DIR" -maxdepth 1 -type d -exec chmod 1777 {} \;
   else
     echo "Directory is up-to-date, skipping extraction."

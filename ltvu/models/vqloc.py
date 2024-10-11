@@ -138,7 +138,7 @@ class ClipMatcher(nn.Module):
         enable_cls_token_score = False,
         enable_pca_guide = False,
         pca_guide_version = 1,
-        weight_pca = 1e-2,
+        weight_pca = 1e-6,
         **kwargs
     ) -> None:
         super().__init__()
@@ -505,13 +505,22 @@ class ClipMatcher(nn.Module):
 
 
             if self.enable_pca_guide:
-                if self.pca_guide_version == 1:
-                    query_feat_ = rearrange(query_feat, '(b t) (h w) c -> (b t h w) c', b=b, t=t, h=h)
-                    U, S, V = torch.pca_lowrank(query_feat_, q=4)
-                    query_feat_proj = torch.matmul(query_feat_, V)  # [b*t*h*w,4]
-                    query_feat_proj = rearrange(query_feat_proj, '(b t h w) q -> b t h w q', b=b, t=t, h=h)
-                    loss_pca = torch.mean(torch.sum(query_feat_proj[..., 1:4] ** 2, dim=-1))
-                    loss_pca = self.weight_pca * loss_pca
+                query_feat_ = rearrange(query_feat, '(b t) (h w) c -> (b t h w) c', b=b, t=t, h=h)
+                U, S, V = torch.pca_lowrank(query_feat_, q=4)
+                query_feat_proj = torch.matmul(query_feat_, V)  # [b*t*h*w,4]
+                query_feat_proj = rearrange(query_feat_proj, '(b t h w) q -> b t h w q', b=b, t=t, h=h)
+                if self.pca_guide_version == 1:  # simply penalize useless features by maximizing 2 ~ 4th eigenvalues
+                    max_lambda = torch.tensor(1000., dtype=S.dtype, device=device)
+                    loss_pca = -torch.minimum(S, max_lambda)[..., 1:4].sum(dim=-1)
+                    loss_pca = loss_pca.mean()
+
+                elif self.pca_guide_version == 2:  # DINO score map reconstruction
+                    layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
+                    latent_query = query_feat_dict.setdefault('hidden_states', {}).get(layer_id)
+                    latent_query = latent_query[:, 1:]  # [b,n,c]
+                    U_z, S_z, V_z = torch.pca_lowrank(latent_query, q=4)
+                    latent_query_proj = torch.matmul(latent_query, V_z)
+                    loss_pca = (latent_query_proj[..., 1:4] - query_feat_proj[..., 1:4]).pow(2).mean(dim=-1).sqrt().mean()
 
                 # from io import BytesIO
                 # from PIL import Image
@@ -534,6 +543,8 @@ class ClipMatcher(nn.Module):
                 # image = make_image_grid(images, rows=1, cols=len(images), resize=448)
                 # imgcat(image)
 
+                loss_pca = self.weight_pca * loss_pca
+                print(loss_pca)
                 total_loss = total_loss + loss_pca
 
 

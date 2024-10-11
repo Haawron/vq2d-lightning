@@ -5,4 +5,4 @@
 model:
   enable_pca_guide: true
   pca_guide_version: 1
-  weight_pca: 1e-2
+  weight_pca: 1e-6
