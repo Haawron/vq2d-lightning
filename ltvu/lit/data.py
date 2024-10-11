@@ -45,8 +45,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.segment_aug: bool = aug_config.segment.apply
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
         
-        exp_config = config.get('experiment')
-        self.enable_rt_pos_query = exp_config is not None and exp_config.get('rt_pos_query') is not None
+        self.rt_pos_query = config.get('rt_pos_query')
 
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
@@ -99,7 +98,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             'segment': segment, 'query': query,
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
         
-        if self.enable_rt_pos_query and self.trainer is not None and self.trainer.training:
+        if self.rt_pos_query is not None and self.trainer is not None and self.trainer.training:
             rt_pos_queries = batch['experiment']['multi_query']['rt_pos_queries']  # [b, #Q, c, h, w]
             bsz = rt_pos_queries.shape[0]
             rt_pos_queries = rearrange(rt_pos_queries, 'b q c h w -> (b q) c h w')

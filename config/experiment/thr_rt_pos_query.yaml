@@ -6,5 +6,5 @@ rt_pos_query:
   rt_pos_query_dir: 'outputs/rt_pos_queries/train'
   late_epoch_rt_pos: 0
   mode: 'easy'
-  enable_rt_pq_threshold: False
+  enable_rt_pq_threshold: True
   sim_thr: 0.0
