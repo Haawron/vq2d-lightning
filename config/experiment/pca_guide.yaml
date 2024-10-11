@@ -5,4 +5,7 @@
 model:
   enable_pca_guide: true
   pca_guide_version: 1
-  weight_pca: 1e-6
+
+  weight_singular: 1e-6
+  weight_pca_recon: .1
+  weight_entropy: 1e-2

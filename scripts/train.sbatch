@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=pca-1
+#SBATCH --job-name=pca-2
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -31,6 +31,12 @@ source ./scripts/_setup.sh
 # python train.py --config-name train_fast \
 #     model.late_reduce=true batch_size=4
 
+# python train.py --config-name train_fast \
+#     +experiment=pca_guide \
+#     trainer.logger.0.group='pca' \
+
 python train.py --config-name train_fast \
     +experiment=pca_guide \
     trainer.logger.0.group='pca' \
+    model.pca_guide_version=2 \
+    model.weight_pca=.1 \
