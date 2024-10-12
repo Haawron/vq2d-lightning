@@ -534,7 +534,6 @@ class ClipMatcher(nn.Module):
                         query_feat, '(b t) (h w) c -> t b (h w) c', b=b, t=t, h=h)[0]  # collapse t dimension
                     _feat = self.st_decoder.forward(
                         clip_feat[cidx], _query_dino_feat, memory_mask=memory_mask_ca)
-                    import pdb; pdb.set_trace()
                     _feats.append(_feat)
                 clip_feat = torch.stack(_feats)  # [nc,b,ts*h*w,c]
                 clip_feat = rearrange(
@@ -626,7 +625,7 @@ class ClipMatcher(nn.Module):
                     loss_singular = -torch.minimum(S, max_sigma)[..., 1:].sum(dim=-1)
                     loss_singular = loss_singular.mean()
                     total_loss = total_loss + self.weight_singular * loss_singular
-                    print(loss_singular, loss_dict['loss_prob'])
+                    # print(loss_singular, loss_dict['loss_prob'])
 
                 elif self.pca_guide_version == 2:
                     # forcing to reconstruct the DINO features by PCA
@@ -666,7 +665,7 @@ class ClipMatcher(nn.Module):
                     loss_singular = loss_singular / b
                     loss_entropy = loss_entropy / b
                     total_loss = total_loss + self.weight_singular * loss_singular + self.weight_entropy * loss_entropy
-                    print(loss_singular, loss_entropy, loss_dict['loss_prob'])
+                    # print(loss_singular, loss_entropy, loss_dict['loss_prob'])
 
                 elif self.pca_guide_version == 4:
                     # hungarian-matches between query and GT crops
@@ -674,7 +673,7 @@ class ClipMatcher(nn.Module):
 
                 elif self.pca_guide_version == 5:  # checked
                     # DINO PCA score map as a spatial attention guide
-                    print(loss_dict['loss_prob'])
+                    # print(loss_dict['loss_prob'])
                     pass
 
                 elif self.pca_guide_version == 6:  # checked
