@@ -81,20 +81,25 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
-        self.exp_config = config.get('experiment')
-        self.enable_rt_pos_query = self.exp_config is not None and self.exp_config.get('rt_pos_query') is not None
+        self.rt_pos_query = config.get('rt_pos_query')
           
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
         extra_args = {}
-        if self.exp_config is not None:
-            self.late_epoch_rt_pos = self.exp_config.rt_pos_query.late_epoch_rt_pos
-            self.mode = self.exp_config.rt_pos_query.mode
+        if self.rt_pos_query is not None:
+            self.late_epoch_rt_pos = self.rt_pos_query.late_epoch_rt_pos
+            self.mode = self.rt_pos_query.mode
+            self.sim_thr = self.rt_pos_query.sim_thr
+            extra_args['sim_thr']=self.sim_thr
+            extra_args['enable_rt_pq_threshold']=self.rt_pos_query.enable_rt_pq_threshold
+            
             if self.current_epoch >= self.late_epoch_rt_pos:
                 extra_args['rt_pos']=True
-            if self.mode == 'hard' and self.current_epoch >= self.late_epoch_rt_pos:
+            if self.mode == 'easy':
+                extra_args['sim_mode']='max'
+            elif self.mode == 'hard':
                 extra_args['sim_mode']='min'
             elif self.mode == 'both':
                 if self.current_epoch >= self.late_epoch_rt_pos:

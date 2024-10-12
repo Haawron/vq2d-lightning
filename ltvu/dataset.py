@@ -19,6 +19,7 @@ from PIL import Image
 
 # local (ours)
 
+import random
 
 decord.bridge.set_bridge("torch")
 
@@ -53,10 +54,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         elif ds_config.padding_value == 'zero':
             self.padding_value = 0.
             
-        exp_config = config.get('experiment')
-        self.enable_rt_pos_query = exp_config is not None and exp_config.get('rt_pos_query') is not None
-        if self.enable_rt_pos_query:
-            self.p_rt_pos_query = Path(exp_config.rt_pos_query.rt_pos_query_dir)
+        self.rt_pos_query = config.get('rt_pos_query')            
+        if self.rt_pos_query is not None:
+            self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
         self.split = split
         self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
         self.all_anns = json.load(self.p_ann.open())
@@ -86,7 +86,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
         
-        if self.enable_rt_pos_query and self.split == 'train':
+        if self.rt_pos_query is not None and self.split == 'train':
             rt_pos_queries = self.get_rt_pos_query(ann, frame_idxs)
             
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
@@ -114,7 +114,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'object_title': ann['object_title'],  # str
         }
         
-        if self.enable_rt_pos_query and self.split == 'train':
+        if self.rt_pos_query is not None and self.split == 'train':
             (sample
                 .setdefault('experiment', {})
                 .setdefault('multi_query', {})

@@ -28,5 +28,6 @@ config/eval_jh.yaml
 config/train_jh.yaml
 scripts/eeval.sbatch
 scp.sh
-config/debug_jh.yaml
+config/debug/base_jh.yaml
 notebooks/sel_ckps.ipynb
+tem.py
