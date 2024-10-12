@@ -1,6 +1,6 @@
 # @package _global_
 
-# usage: python train.py +experiment=rt_pos_query
+# usage: python train.py +experiment=thr_rt_pos_query
 
 rt_pos_query:
   rt_pos_query_dir: 'outputs/rt_pos_queries/train'
