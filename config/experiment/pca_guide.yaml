@@ -9,3 +9,11 @@ model:
   weight_singular: 1e-6
   weight_pca_recon: .1
   weight_entropy: 1e-2
+
+  # for version 6
+  # num_layers_st_transformer: 0
+  # resolution_transformer: 32
+  # num_anchor_regions: 32
+
+
+# model.num_layers_st_transformer=0 model.resolution_transformer=32 model.num_anchor_regions=32

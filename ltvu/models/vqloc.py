@@ -140,10 +140,13 @@ class ClipMatcher(nn.Module):
         enable_cls_token_score = False,
         enable_pca_guide = False,
         pca_guide_version: int|float = 1,
+        pca_guide_ablation = False,
         weight_singular = 1e-6,
         weight_pca_recon = .1,
         weight_entropy = 1e-3,
         num_layers_cq_corr_transformer=1,
+
+        debug = False,
         **kwargs
     ) -> None:
         super().__init__()
@@ -182,6 +185,7 @@ class ClipMatcher(nn.Module):
 
         self.enable_pca_guide = enable_pca_guide
         self.pca_guide_version = pca_guide_version
+        self.pca_guide_ablation = pca_guide_ablation
         self.weight_singular = weight_singular
         self.weight_pca_recon = weight_pca_recon
         self.weight_entropy = weight_entropy
@@ -272,7 +276,8 @@ class ClipMatcher(nn.Module):
                 # assert num_layers_st_transformer == 0, 'num_layers_st_transformer should be 0'
                 # assert resolution_transformer == 32, 'resolution_transformer should be 32'
                 # assert num_anchor_regions == 32, 'num_anchor_regions should be 32'
-                self.pe_3d_dense = nn.parameter.Parameter(torch.zeros(1, clip_num_frames * 32 ** 2, 256))
+                self.t_short = 4
+                self.pe_3d_dense = nn.parameter.Parameter(torch.zeros(1, self.t_short * 32 ** 2, 256))
                 self.st_decoder = nn.TransformerDecoder(
                     nn.TransformerDecoderLayer(
                         d_model=256,
@@ -285,6 +290,8 @@ class ClipMatcher(nn.Module):
 
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+
+        self.debug = debug
 
     def init_weights_linear(self, m):
         if type(m) == nn.Linear:
@@ -454,7 +461,7 @@ class ClipMatcher(nn.Module):
 
 
 
-        query_feat = query_feat_dict['feat']
+        query_feat = query_dino_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
 
@@ -483,15 +490,19 @@ class ClipMatcher(nn.Module):
         if self.enable_pca_guide:
             if self.pca_guide_version in [5, 6]:
                 tau = 10
-                query_feat_ = rearrange(query_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
+                _query_dino_feat = rearrange(query_dino_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
                 score_maps = []  # [b,h2*w2,H]
                 for bidx in range(b):
-                    U, S, V = torch.pca_lowrank(query_feat_[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
-                    score_map = torch.matmul(query_feat_[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
+                    U, S, V = torch.pca_lowrank(_query_dino_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
+                    score_map = torch.matmul(_query_dino_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
                     score_map = 1. - torch.exp(-1 * score_map ** 2 / tau)  # [h2*w2,H]
                     score_maps.append(score_map)
                 score_maps = torch.stack(score_maps)  # [b,h2*w2,H]
-                memory_mask_ca = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
+
+                if self.pca_guide_version == 5:
+                    memory_mask_ca = repeat(
+                        score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)',
+                        t=t, h1=h, w1=w, h2=h, w2=w)
 
 
         # find spatial correspondence between query-frame
@@ -509,14 +520,25 @@ class ClipMatcher(nn.Module):
 
         if self.enable_pca_guide:
             if self.pca_guide_version == 6:
-                assert memory_mask_ca is not None
-                query_feat_ = rearrange(query_feat, '(b t) (h w) c -> t b (h w) c', b=b, t=t, h=h)[0]  # collapse t dimension
-                memory_mask_ca = rearrange(
-                    memory_mask_ca, '(b t H) (h1 w1) (h2 w2) -> (b H) (t h1 w1) (h2 w2)',
-                    b=b, t=t, H=self.nhead, h1=h, w1=w, h2=h, w2=w)
-                clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d_dense
-                clip_feat = self.st_decoder(clip_feat, query_feat_, memory_mask=memory_mask_ca)
-                clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) c h w', b=b, t=t, h=h, w=w)
+                nc, ts = t // self.t_short, self.t_short
+                memory_mask_ca = repeat(
+                    score_maps, 'b (h2 w2) H -> (b H) (ts h1 w1) (h2 w2)', ts=ts, h1=h, w1=w, h2=h, w2=w)
+                if self.pca_guide_ablation:
+                    memory_mask_ca = None
+                clip_feat = rearrange(
+                    clip_feat, '(b nc ts) c h w -> nc b (ts h w) c', b=b, ts=ts, nc=nc, h=h, w=w)
+                clip_feat = clip_feat + self.pe_3d_dense
+                _feats = []
+                for cidx in range(nc):  # for saving VRAM or memory mask being too large
+                    _query_dino_feat = rearrange(
+                        query_feat, '(b t) (h w) c -> t b (h w) c', b=b, t=t, h=h)[0]  # collapse t dimension
+                    _feat = self.st_decoder.forward(
+                        clip_feat[cidx], _query_dino_feat, memory_mask=memory_mask_ca)
+                    import pdb; pdb.set_trace()
+                    _feats.append(_feat)
+                clip_feat = torch.stack(_feats)  # [nc,b,ts*h*w,c]
+                clip_feat = rearrange(
+                    clip_feat, 'nc b (ts h w) c -> (b nc ts) c h w', b=b, ts=ts, nc=nc, h=h, w=w)
 
         # down-size features and find spatial-temporal correspondence
         for head in self.down_heads:
@@ -591,12 +613,13 @@ class ClipMatcher(nn.Module):
 
             if self.enable_pca_guide:
                 Q = 4
-                query_feat_ = rearrange(query_feat, '(b t) (h w) c -> t (b h w) c', b=b, t=t, h=h)[0]  # collapse t dimension
+                _query_feat = rearrange(query_feat, '(b t) (h w) c -> t (b h w) c', b=b, t=t, h=h)[0]  # collapse t dimension
+                _query_dino_feat = rearrange(query_dino_feat, 'b c h w -> (b h w) c', b=b)  # [b*h*w,c]
 
                 if self.pca_guide_version == 1:
                     # simply forcing to extract query-wise features by maximizing 2 ~ Q-th singular values
-                    U, S, V = torch.pca_lowrank(query_feat_, q=Q)
-                    query_feat_proj = torch.matmul(query_feat_, V)  # [b*h*w,Q]
+                    U, S, V = torch.pca_lowrank(_query_feat, q=Q)
+                    query_feat_proj = torch.matmul(_query_feat, V)  # [b*h*w,Q]
                     query_feat_proj = rearrange(query_feat_proj, '(b h w) q -> b (h w) q', b=b, h=h)
 
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
@@ -607,12 +630,12 @@ class ClipMatcher(nn.Module):
 
                 elif self.pca_guide_version == 2:
                     # forcing to reconstruct the DINO features by PCA
-                    query_feat_ = self.unreduce(query_feat_)  # [b*h*w,768]
-                    query_feat_ = rearrange(query_feat_, '(b h w) c -> b (h w) c', b=b, h=h)
+                    _query_feat = self.unreduce(_query_feat)  # [b*h*w,768]
+                    _query_feat = rearrange(_query_feat, '(b h w) c -> b (h w) c', b=b, h=h)
                     latent_query = query_feat_dict['hidden_states'].detach()  # [b,1+h*w,c]
                     latent_query = latent_query[:, 1:]  # [b,h*w,c]
-                    query_feats = torch.cat([latent_query, query_feat_], dim=1)  # [b,2*h*w,c]
-                    loss_pca_recon = torch.tensor(0., dtype=query_feat_.dtype, device=device)
+                    query_feats = torch.cat([latent_query, _query_feat], dim=1)  # [b,2*h*w,c]
+                    loss_pca_recon = torch.tensor(0., dtype=_query_feat.dtype, device=device)
                     for bidx in range(b):
                         U, S, V = torch.pca_lowrank(query_feats[bidx], q=Q)
                         query_feats_proj = torch.matmul(query_feats[bidx], V)  # [2*h*w,Q]
@@ -626,12 +649,12 @@ class ClipMatcher(nn.Module):
                     # penalize entropy of a normed score map while limiting sigma's
                     # entropy -> activate only specific parts
                     # sigma -> limit the overall score magnitude
-                    query_feat_ = rearrange(query_feat_, '(b h w) c -> b (h w) c', b=b, h=h)
-                    loss_singular = torch.tensor(0., dtype=query_feat_.dtype, device=device)
-                    loss_entropy = torch.tensor(0., dtype=query_feat_.dtype, device=device)
+                    _query_feat = rearrange(_query_feat, '(b h w) c -> b (h w) c', b=b, h=h)
+                    loss_singular = torch.tensor(0., dtype=_query_feat.dtype, device=device)
+                    loss_entropy = torch.tensor(0., dtype=_query_feat.dtype, device=device)
                     for bidx in range(b):
-                        U, S, V = torch.pca_lowrank(query_feat_[bidx], q=Q)  # [h*w,Q], [Q], [c,Q]
-                        query_feat_proj = torch.matmul(query_feat_[bidx], V).abs()  # [h*w,Q]
+                        U, S, V = torch.pca_lowrank(_query_feat[bidx], q=Q)  # [h*w,Q], [Q], [c,Q]
+                        query_feat_proj = torch.matmul(_query_feat[bidx], V).abs()  # [h*w,Q]
                         tmax = query_feat_proj.max(dim=0, keepdim=True)[0]  # [1,Q]
                         query_feat_proj = query_feat_proj / tmax  # values in [0,1]
                         query_feat_proj = F.softmax(query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
@@ -656,7 +679,6 @@ class ClipMatcher(nn.Module):
 
                 elif self.pca_guide_version == 6:  # checked
                     # DINO PCA score map as a spatio-temporal attention guide
-                    print(loss_dict['loss_prob'])
                     pass
 
                 elif self.pca_guide_version == 7:
@@ -685,6 +707,8 @@ class ClipMatcher(nn.Module):
                 # imgcat(image)
 
                 # print(self.weight_pca * loss_pca)
+            if self.debug:
+                print(loss_dict['loss_prob'])
 
 
             # for logging - losses
