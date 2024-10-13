@@ -304,7 +304,7 @@ class ClipMatcher(nn.Module):
                 h = int(h_origin / self.down_rate)
                 w = int(w_origin / self.down_rate)
             else:
-                feat = self.backbone.get_intermediate_layers(x, n=1)[0]
+                feat, cls_token = self.backbone.get_intermediate_layers(x, n=1, return_class_token=True)
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
             dim = feat.shape[-1]
@@ -385,6 +385,8 @@ class ClipMatcher(nn.Module):
         rt_pos_queries = None,
         rt_pos = False,
         sim_mode = 'max',
+        sim_thr = 0.0,
+        enable_rt_pq_threshold=False,
         **kwargs
     ):
         '''
@@ -397,32 +399,41 @@ class ClipMatcher(nn.Module):
         device = segment.device
 
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
-        layer_id = 'encoder.layer.10.layer_scale2'  # the second last layer
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
             if rt_pos and random.randint(0, 1) == 1:
                 rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-                rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
                 query_feat_dict = self.extract_feature(query)
                 rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
                 query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
+                rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
                 
                 sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
                 
+                sim_mask = sim > sim_thr # [b,t]
+                sim_mask_num = sim_mask.sum() / b
+                batch_has_valid = sim_mask.any(dim=-1) # [b]
+                
+                rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
+                if batch_has_valid.any():
+                    valid_sim_mask = sim_mask.float()  # [b, t]
+                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+                        
                 if sim_mode == 'max':
-                    _, top_sim_idx = sim.topk(1, dim=-1) # [b,1]
+                    top_sim_idx = sim.argmax(dim=-1) # [b,1]
                 elif sim_mode == 'min':
                     top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
                 
+                final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                 rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
                 
-                query = rt_pos_queries[torch.arange(b), top_sim_idx.squeeze(1)] # [b,c,h2,w2]
+                if enable_rt_pq_threshold:
+                    query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
+                else:
+                    query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
             query_feat_dict = self.extract_feature(query)
                 
-                
-
-
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
@@ -563,6 +574,8 @@ class ClipMatcher(nn.Module):
                 'giou': gious,
                 'prob_acc': prob_accuracy,
             })
+            if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
+                log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
             # not for logging but just in case we need it
             info_dict = {

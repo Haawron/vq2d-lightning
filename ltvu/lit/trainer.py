@@ -22,7 +22,7 @@ type_loggers = WandbLogger | CSVLogger
 
 
 class PerSegmentWriter(BasePredictionWriter):
-    def __init__(self, output_dir):
+    def __init__(self, output_dir, test_submit=False):
         super().__init__(write_interval="batch")
         self.p_tmp_outdir = Path(output_dir) / 'tmp'
         self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
@@ -33,6 +33,7 @@ class PerSegmentWriter(BasePredictionWriter):
         for p_tmp in self.p_tmp_outdir.glob('*'):
             p_tmp.unlink()
         self.rank_seg_preds = []
+        self.test_submit = test_submit
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
         # p_tarfile = self.p_tmp_outdir / f'rank-{trainer.global_rank}.tar'
@@ -84,6 +85,13 @@ class PerSegmentWriter(BasePredictionWriter):
                     'ret_scores': torch.cat(new_ret_scores, dim=0)[~mask_duplicated],
                 }
 
+            if self.test_submit:
+                split='test_unannotated'
+                self.p_pred = self.p_pred.with_name('test_predictions.json')
+                self.p_int_pred = self.p_int_pred.with_name('test_intermediate_predictions.pt')
+            else:
+                split='val'
+            
             # save intermediate results
             print('Saving intermediate results...')
             torch.save(qset_preds, self.p_int_pred)
@@ -91,17 +99,18 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds)
+            final_preds = get_final_preds(qset_preds, split=split)
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
 
-            # print metrics
-            subset_metrics = get_metrics(Path('data/vq_v2_val_anno.json'), self.p_pred)
-            metrics_msg = format_metrics(subset_metrics)
-            print(metrics_msg)
-            self.p_metrics_log.write_text(metrics_msg + '\n')
-            json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
+            if not self.test_submit:
+                # print metrics
+                subset_metrics = get_metrics(Path(f'data/vq_v2_val_anno.json'), self.p_pred)
+                metrics_msg = format_metrics(subset_metrics)
+                print(metrics_msg)
+                self.p_metrics_log.write_text(metrics_msg + '\n')
+                json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
 
             # remove temporary files
             for p_tmp in self.p_tmp_outdir.glob('*'):
@@ -118,7 +127,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         ModelSummary(max_depth=2),
         LearningRateMonitor(),
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
-        PerSegmentWriter(output_dir=runtime_outdir),
+        PerSegmentWriter(output_dir=runtime_outdir, test_submit=config.dataset.get('test_submit',False)),
     ]
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(

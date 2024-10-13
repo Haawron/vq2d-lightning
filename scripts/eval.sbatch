@@ -19,3 +19,4 @@ source ./scripts/_setup.sh
 #     ckpt='outputs/batch/2024-09-15/124034/epoch\=80-prob_acc\=0.7859.ckpt'
 python eval.py \
     ckpt='outputs/ckpts/nvfch3cs-epoch\=61-prob_acc\=0.7739.ckpt'
+    # dataset.test_submit=True \
