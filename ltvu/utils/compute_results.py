@@ -41,7 +41,7 @@ def compute_response_track(preds):
     return preds['ret_bboxes'][last_plateau_idx1:last_plateau_idx2].numpy(), last_plateau_idx1, last_plateau_idx2
 
 
-def get_final_preds(preds):
+def get_final_preds(preds, split='val'):
     """Convert whole-clip predictions to submittable format."""
 
     result = {
@@ -53,7 +53,7 @@ def get_final_preds(preds):
         }
     }
 
-    anns = json.load(open('data/vq_v2_val_anno.json'))
+    anns = json.load(open(f'data/vq_v2_{split}_anno.json'))
     pred_tree = {}  # video_uid -> clip_uid -> annotation_uid -> qset_id -> prediction
     for ann in anns:
         video_uid = ann['video_uid']
