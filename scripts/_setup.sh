@@ -16,7 +16,7 @@ for TARFILE in "${TARFILES[@]}"; do
   # last change times in seconds since epoch
   t1=$(stat -c %Z "$TARFILE")
   t2=$(stat -c %Z "$path_random_image")
-  if [ ! -d "$DIR" ] || [ "$t1" -gt "$t2" ]; then
+  if [ $? -ne 0 ] || [ ! -d "$DIR" ] || [ "$t1" -gt "$t2" ]; then
     do_extract=1
     break
   fi
