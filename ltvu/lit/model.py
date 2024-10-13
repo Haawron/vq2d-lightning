@@ -83,7 +83,7 @@ class LitModule(L.LightningModule):
 
         self.exp_config = config.get('experiment')
         self.enable_rt_pos_query = self.exp_config is not None and self.exp_config.get('rt_pos_query') is not None
-          
+
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
@@ -189,6 +189,14 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
+
+    def on_load_checkpoint(self, checkpoint):
+        new_state_dict = {}
+        for k, v in checkpoint['state_dict'].items():
+            if 'query_down_heads' in k:
+                continue
+            new_state_dict[k] = v
+        checkpoint['state_dict'] = new_state_dict
 
     ############ helper functions ############
 

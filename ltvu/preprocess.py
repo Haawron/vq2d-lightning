@@ -26,6 +26,15 @@ REPORTED_INVALID_CLIP_UIDS = {
     'b6061527-3ae2-46b4-b050-15eddc1967bb',  # vq2d
 }
 
+REPORTED_INVALID_VIDEO_UIDS = {
+    '26d0d4bb-df7e-4459-805e-5db87b170e11',  # vq2d test
+    'fdebc0fb-0f2e-42c8-b2f3-c697b4fc1f8a',  # vq2d test
+    '67ae160b-f173-4340-b048-6aebf4027a9d',  # vq2d test
+    '0b2e10d7-6d96-4a4d-a7f9-69656f3ac20b',  # vq2d test
+    '56723ca2-d092-4a6d-aa2a-25669f6644f7',  # vq2d test
+    '196e0e8c-f29f-48de-8e1e-ce52c2e76641',  # vq2d test
+}
+
 
 def generate_flat_annotations_vq2d(all_anns):
 
@@ -40,6 +49,7 @@ def generate_flat_annotations_vq2d(all_anns):
     count_invalids = 0
     for ann_video in all_anns['videos']:
         video_uid = ann_video['video_uid']
+        if
         for ann_clip in ann_video['clips']:
             clip_uid = ann_clip['clip_uid']
             if clip_uid is None or clip_uid in REPORTED_INVALID_CLIP_UIDS:
