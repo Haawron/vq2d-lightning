@@ -49,7 +49,6 @@ def generate_flat_annotations_vq2d(all_anns):
     count_invalids = 0
     for ann_video in all_anns['videos']:
         video_uid = ann_video['video_uid']
-        if
         for ann_clip in ann_video['clips']:
             clip_uid = ann_clip['clip_uid']
             if clip_uid is None or clip_uid in REPORTED_INVALID_CLIP_UIDS:
