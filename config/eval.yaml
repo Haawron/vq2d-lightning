@@ -9,7 +9,7 @@ ckpt: ??? # 'outputs/batch/2024-09-15/124077/epoch=37-prob_acc=0.7626.ckpt'
 
 # frequently overridden parameters
 random_seed: 42
-batch_size: 16
+batch_size: 8
 num_workers: 6
 prefetch_factor: 2
 base_lr: 0.0003

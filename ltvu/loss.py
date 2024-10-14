@@ -75,10 +75,12 @@ def GiouLoss(bbox_p, bbox_g, mask=None):
         giou = torch.zeros_like(giou, device=device, requires_grad=True, dtype=torch.float32)
 
     if torch.is_tensor(mask):
+        loss_iou = torch.mean(1.0 - iou[mask])
         loss_giou = torch.mean(1.0 - giou[mask])
     else:
+        loss_iou = torch.mean(1.0 - iou)
         loss_giou = torch.mean(1.0 - giou)
-    return iou, giou, loss_giou
+    return iou, giou, loss_giou, loss_iou
 
 
 def process_labels(labels, iou, topk=10):
@@ -138,6 +140,7 @@ def get_losses_with_anchor(
     positive_topk = 5,
     weight_bbox_center = 1.,
     weight_bbox_hw = 1.,
+    weight_bbox_iou = .3,
     weight_bbox_giou = .3,
     weight_prob = 100.,
 ):
@@ -201,12 +204,13 @@ def get_losses_with_anchor(
         # bbox giou loss
         pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c').float()
         gt_bbox_replicate = rearrange(gt_bbox.unsqueeze(2).repeat(1,1,N,1), 'b t N c -> (b t N) c').float()
-        iou, giou, loss_giou = GiouLoss(pred_bbox, gt_bbox_replicate, mask=loss_mask.bool().squeeze())
+        iou, giou, loss_giou, loss_iou = GiouLoss(pred_bbox, gt_bbox_replicate, mask=loss_mask.bool().squeeze())
     else:
         pred_bbox = rearrange(pred_bbox, 'b t N c -> (b t N) c')
         req = pred_bbox.requires_grad
         loss_center = torch.tensor(0., requires_grad=req).cuda()
         loss_hw = torch.tensor(0., requires_grad=req).cuda()
+        loss_iou = torch.tensor(0., requires_grad=req).cuda()
         loss_giou = torch.tensor(0., requires_grad=req).cuda()
         iou = torch.tensor(0., requires_grad=req).cuda()
         giou = torch.tensor(0., requires_grad=req).cuda()
@@ -219,12 +223,14 @@ def get_losses_with_anchor(
     loss = {
         'loss_bbox_center': loss_center,
         'loss_bbox_hw': loss_hw,
+        'loss_bbox_iou': loss_iou,
         'loss_bbox_giou': loss_giou,
         'loss_prob': loss_prob,
 
         # weights
         'weight_bbox_center': weight_bbox_center,
         'weight_bbox_hw': weight_bbox_hw,
+        'weight_bbox_iou': weight_bbox_iou,
         'weight_bbox_giou': weight_bbox_giou,
         'weight_prob': weight_prob,
 

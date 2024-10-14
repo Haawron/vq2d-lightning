@@ -94,6 +94,7 @@ loss:
   logit_scale: 1.   # reciprocal of temperature
   weight_bbox_center: 1.
   weight_bbox_hw: 1.
+  weight_bbox_iou: .3
   weight_bbox_giou: .3
   weight_prob: 100.
 

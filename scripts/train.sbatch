@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=only_late
+#SBATCH --job-name=giou2iou
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -28,6 +28,15 @@ source ./scripts/_setup.sh
 #     +experiment=cls_token_score \
 #     model.late_reduce=false batch_size=8
 
-python train.py --config-name train_fast \
-    model.late_reduce=true batch_size=4
+# python train.py --config-name train_fast \
+#     model.late_reduce=true batch_size=4
     # "+experiment=[cls_token_score,rt_pos_query]" \
+
+
+# python train.py --config-name train_fast \
+#     model.late_reduce=true batch_size=4
+    # "+experiment=[cls_token_score,rt_pos_query]" \
+python train.py --config-name train_fast \
+    +experiment=\[rt_pos_query,cls_token_score\] \
+    model.late_reduce=true \
+    batch_size=4 loss.weight_bbox_iou=0.3 loss.weight_bbox_giou=0

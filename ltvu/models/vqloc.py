@@ -132,6 +132,7 @@ class ClipMatcher(nn.Module):
         logit_scale = 1.,
         weight_bbox_center = 1.,
         weight_bbox_hw = 1.,
+        weight_bbox_iou = 0.,
         weight_bbox_giou = .3,
         weight_prob = 100.,
         late_reduce = False,
@@ -169,6 +170,7 @@ class ClipMatcher(nn.Module):
         self.logit_scale = logit_scale
         self.weight_bbox_center = weight_bbox_center
         self.weight_bbox_hw = weight_bbox_hw
+        self.weight_bbox_iou = weight_bbox_iou
         self.weight_bbox_giou = weight_bbox_giou
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
@@ -408,32 +410,32 @@ class ClipMatcher(nn.Module):
                 rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
                 query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
                 rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-                
+
                 sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-                
+
                 sim_mask = sim > sim_thr # [b,t]
                 sim_mask_num = sim_mask.sum() / b
                 batch_has_valid = sim_mask.any(dim=-1) # [b]
-                
+
                 rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
                 if batch_has_valid.any():
                     valid_sim_mask = sim_mask.float()  # [b, t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-                        
+
                 if sim_mode == 'max':
                     top_sim_idx = sim.argmax(dim=-1) # [b,1]
                 elif sim_mode == 'min':
                     top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
-                
+
                 final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                 rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-                
+
                 if enable_rt_pq_threshold:
                     query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
                 else:
                     query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
             query_feat_dict = self.extract_feature(query)
-                
+
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
@@ -524,6 +526,7 @@ class ClipMatcher(nn.Module):
                 positive_threshold=self.positive_threshold,
                 weight_bbox_center=self.weight_bbox_center,
                 weight_bbox_hw=self.weight_bbox_hw,
+                weight_bbox_iou=self.weight_bbox_iou,
                 weight_bbox_giou=self.weight_bbox_giou,
                 weight_prob=self.weight_prob,
             )
