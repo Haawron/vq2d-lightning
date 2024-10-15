@@ -37,12 +37,18 @@ source ./scripts/_setup.sh
 #     model.num_layers_st_transformer=0 model.resolution_transformer=32 model.num_anchor_regions=32 \
 #     trainer.logger.0.group='pca' \
 
+python train.py --config-name train_fast \
+    +experiment=pca_guide \
+    model.pca_guide_version=6  batch_size=6 \
+    model.num_layers_st_transformer=0 model.resolution_transformer=32 model.num_anchor_regions=32 \
+    trainer.logger.0.group='pca' \
+
 # python train.py --config-name train_fast \
 #     +experiment=pca_guide \
 #     model.pca_guide_version=5 \
 #     trainer.logger.0.group='pca' \
 
-python train.py --config-name train_fast \
-    +experiment=pca_guide \
-    model.pca_guide_version=3  batch_size=4 \
+# python train.py --config-name train_fast \
+#     +experiment=pca_guide \
+#     model.pca_guide_version=3  batch_size=4 \
     # model.num_layers_st_transformer=0 model.resolution_transformer=32 model.num_anchor_regions=32 optim.lr_scheduler.warmup_iter=100
