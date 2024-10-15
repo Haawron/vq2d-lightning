@@ -150,8 +150,8 @@ class ClipMatcher(nn.Module):
         guide_from: str = 'backbone',
         guide_to_stx: bool = False,
         guide_to_stst: bool = False,
-        weight_singular: float = 1e-6,
-        weight_entropy: float = 1e-3,
+        weight_singular: float = 0.,
+        weight_entropy: float = 0.,
         rank_pca: int = 4,
 
         debug = False,
