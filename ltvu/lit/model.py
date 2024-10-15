@@ -82,7 +82,7 @@ class LitModule(L.LightningModule):
         self.sample_step = 0
 
         self.rt_pos_query = config.get('rt_pos_query')
-          
+
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
@@ -94,7 +94,7 @@ class LitModule(L.LightningModule):
             self.sim_thr = self.rt_pos_query.sim_thr
             extra_args['sim_thr']=self.sim_thr
             extra_args['enable_rt_pq_threshold']=self.rt_pos_query.enable_rt_pq_threshold
-            
+
             if self.current_epoch >= self.late_epoch_rt_pos:
                 extra_args['rt_pos']=True
             if self.mode == 'easy':
@@ -194,6 +194,14 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
+
+    def on_load_checkpoint(self, checkpoint):
+        new_state_dict = {}
+        for k, v in checkpoint['state_dict'].items():
+            if 'query_down_heads' in k:
+                continue
+            new_state_dict[k] = v
+        checkpoint['state_dict'] = new_state_dict
 
     ############ helper functions ############
 

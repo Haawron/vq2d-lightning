@@ -13,7 +13,10 @@ TARFILES=(
 do_extract=0
 for TARFILE in "${TARFILES[@]}"; do
   path_random_image=$(find $DIR -name '*.jpg' -type f -print -quit)
-  if [ ! -d "$DIR" ] || [ "$TARFILE" -nt "$path_random_image" ]; then
+  # last change times in seconds since epoch
+  t1=$(stat -c %Z "$TARFILE")
+  t2=$(stat -c %Z "$path_random_image")
+  if [ $? -ne 0 ] || [ ! -d "$DIR" ] || [ "$t1" -gt "$t2" ]; then
     do_extract=1
     break
   fi

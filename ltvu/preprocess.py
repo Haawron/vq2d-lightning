@@ -26,8 +26,17 @@ REPORTED_INVALID_CLIP_UIDS = {
     'b6061527-3ae2-46b4-b050-15eddc1967bb',  # vq2d
 }
 
+REPORTED_INVALID_VIDEO_UIDS = {
+    '26d0d4bb-df7e-4459-805e-5db87b170e11',  # vq2d test
+    'fdebc0fb-0f2e-42c8-b2f3-c697b4fc1f8a',  # vq2d test
+    '67ae160b-f173-4340-b048-6aebf4027a9d',  # vq2d test
+    '0b2e10d7-6d96-4a4d-a7f9-69656f3ac20b',  # vq2d test
+    '56723ca2-d092-4a6d-aa2a-25669f6644f7',  # vq2d test
+    '196e0e8c-f29f-48de-8e1e-ce52c2e76641',  # vq2d test
+}
 
-def generate_flat_annotations_vq2d(all_anns):
+
+def generate_flat_annotations_vq2d(all_anns, is_annotated=True):
 
     def polish_bbox_dict_keys(bbox: dict):
         key_map = {
@@ -52,8 +61,11 @@ def generate_flat_annotations_vq2d(all_anns):
                     if not qset['is_valid']:
                         count_invalids += 1
                         continue
-                    oh, ow = qset['response_track'][0]['original_height'], qset['response_track'][0]['original_width']
-                    rt = [polish_bbox_dict_keys(bbox) for bbox in qset['response_track']]
+                    
+                    if is_annotated:
+                        oh, ow = qset['response_track'][0]['original_height'], qset['response_track'][0]['original_width']
+                    else:
+                        oh, ow = qset['visual_crop']['original_height'], qset['visual_crop']['original_width']
                     sample = {
                         'video_uid': video_uid,
                         'clip_uid': clip_uid,
@@ -66,9 +78,14 @@ def generate_flat_annotations_vq2d(all_anns):
                         'query_frame': qset['query_frame'],
                         'object_title': qset['object_title'],
                         'visual_crop': polish_bbox_dict_keys(qset['visual_crop']),
-                        'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
-                        'response_track': rt,
                     }
+
+                    if is_annotated:
+                        rt = [polish_bbox_dict_keys(bbox) for bbox in qset['response_track']]
+                        sample.update({
+                            'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
+                            'response_track': rt,
+                        })
                     flat_anns.append(sample)
     return flat_anns
 

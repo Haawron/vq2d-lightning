@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours
+#SBATCH --job-name=baseline
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -15,6 +15,12 @@ hostname
 source ./scripts/_setup.sh
 
 
-python train.py
+# python train.py
 
 # python train.py --config-name train_fast
+
+# python train.py --config-name train_fast \
+#     +experiment=repair_baseline augment=affine
+
+
+python train.py --config-name train_fast batch_size=4 optim.lr_scheduler.warmup_iter=100

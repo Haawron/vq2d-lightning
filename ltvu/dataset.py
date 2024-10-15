@@ -377,6 +377,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         super().__init__(config, split)
         self.num_frames_per_segment = self.num_frames
         self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered as occupied
+        self.test_submit = config.dataset.get('test_submit',False)
         del self.num_frames  # to avoid confusion
 
         self.all_segments = []
@@ -410,9 +411,12 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         frame_idxs[frame_idxs >= num_frames_clip] = num_frames_clip - 1  # repeat
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
-        gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
-        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
+        if self.test_submit:
+            gt_rt, gt_prob = np.random.randn(t, 4), np.random.randn(t)
+        else:
+            gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
+        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
 
         return {
             # inputs

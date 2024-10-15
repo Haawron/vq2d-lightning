@@ -8,8 +8,12 @@ compile: false
 
 trainer:
   fast_dev_run: 2
+  devices: 1
 
 dataset:
   batch_size: 3
   num_workers: 0
   prefetch_factor: null
+
+model:
+  debug: true
