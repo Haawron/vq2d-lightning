@@ -8,7 +8,7 @@ model:
 
   weight_singular: 1e-6
   weight_pca_recon: .1
-  weight_entropy: 1e-2
+  weight_entropy: 1.
 
   # for version 6
   # num_layers_st_transformer: 0

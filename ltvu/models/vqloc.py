@@ -238,8 +238,10 @@ class ClipMatcher(nn.Module):
         self.CQ_corr_transformer = nn.ModuleList(self.CQ_corr_transformer)
 
         # feature downsample layers
-        self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
-        for i in range(self.num_head_layers-1):
+        num_head_layers = int(math.log2(self.clip_feat_size_coarse // self.resolution_transformer))
+        self.down_heads = []
+        # self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
+        for i in range(num_head_layers):
             self.down_heads.append(
                 nn.Sequential(
                 nn.Conv2d(256, 256, 3, stride=2, padding=1),
@@ -272,7 +274,7 @@ class ClipMatcher(nn.Module):
             if self.pca_guide_version == 2:
                 self.unreduce = nn.Linear(256, 768)
 
-            if self.pca_guide_version == 6:
+            if self.pca_guide_version in [5, 6, 61]:
                 # assert num_layers_st_transformer == 0, 'num_layers_st_transformer should be 0'
                 # assert resolution_transformer == 32, 'resolution_transformer should be 32'
                 # assert num_anchor_regions == 32, 'num_anchor_regions should be 32'
@@ -488,14 +490,16 @@ class ClipMatcher(nn.Module):
 
         memory_mask_ca = None  # [b*t*H,h1*w1,h2*w2]  # h1*w1 for clip(Q), h2*w2 for query(K)
         if self.enable_pca_guide:
-            if self.pca_guide_version in [5, 6]:
-                tau = 10
+            if self.pca_guide_version in [5, 6, 61]:
                 _query_dino_feat = rearrange(query_dino_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
                 score_maps = []  # [b,h2*w2,H]
                 for bidx in range(b):
                     U, S, V = torch.pca_lowrank(_query_dino_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
                     score_map = torch.matmul(_query_dino_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
-                    score_map = 1. - torch.exp(-1 * score_map ** 2 / tau)  # [h2*w2,H]
+                    if self.pca_guide_version == 6:
+                        score_map = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h2*w2,H]
+                    elif self.pca_guide_version == 61:
+                        pass  # noop
                     score_maps.append(score_map)
                 score_maps = torch.stack(score_maps)  # [b,h2*w2,H]
 
@@ -519,7 +523,7 @@ class ClipMatcher(nn.Module):
             clip_feat = self.reduce(clip_feat)
 
         if self.enable_pca_guide:
-            if self.pca_guide_version == 6:
+            if self.pca_guide_version in [6, 61, 62]:
                 nc, ts = t // self.t_short, self.t_short
                 memory_mask_ca = repeat(
                     score_maps, 'b (h2 w2) H -> (b H) (ts h1 w1) (h2 w2)', ts=ts, h1=h, w1=w, h2=h, w2=w)
@@ -655,7 +659,7 @@ class ClipMatcher(nn.Module):
                         U, S, V = torch.pca_lowrank(_query_feat[bidx], q=Q)  # [h*w,Q], [Q], [c,Q]
                         query_feat_proj = torch.matmul(_query_feat[bidx], V).abs()  # [h*w,Q]
                         tmax = query_feat_proj.max(dim=0, keepdim=True)[0]  # [1,Q]
-                        query_feat_proj = query_feat_proj / tmax  # values in [0,1]
+                        query_feat_proj = query_feat_proj / tmax  # values in [-1,1]
                         query_feat_proj = F.softmax(query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
                         query_feat_proj = query_feat_proj.clamp(1e-6, 1-1e-6)  # avoid log(0)
                         self_entropy = -(query_feat_proj * query_feat_proj.log()).sum(dim=0).mean()
@@ -680,8 +684,14 @@ class ClipMatcher(nn.Module):
                     # DINO PCA score map as a spatio-temporal attention guide
                     pass
 
-                elif self.pca_guide_version == 7:
-                    # DINO PCA score map as a spatio-temporal attention guide to 32 x 32 dino features
+                elif self.pca_guide_version == 61:
+                    # DINO feature -> itself
+                    pass
+                elif self.pca_guide_version == 62:
+                    # DINO feature -> simple linear (as PCA is a linear transformation)
+                    pass
+                elif self.pca_guide_version == 63:
+                    # DINO feature -> simple unet
                     pass
 
                 # from io import BytesIO
