@@ -3,6 +3,7 @@ import json
 import torch
 
 import numpy as np
+from pathlib import Path
 from scipy.signal import find_peaks, medfilt
 
 
@@ -41,7 +42,7 @@ def compute_response_track(preds):
     return preds['ret_bboxes'][last_plateau_idx1:last_plateau_idx2].numpy(), last_plateau_idx1, last_plateau_idx2
 
 
-def get_final_preds(preds, split='val'):
+def get_final_preds(preds, split='val', official_anns_dir=None):
     """Convert whole-clip predictions to submittable format."""
 
     result = {
@@ -90,8 +91,94 @@ def get_final_preds(preds, split='val'):
                         'score': 1.0
                     }
 
+    if split == 'test_unannotated':
+        p_raw_ann = Path(official_anns_dir) / f'vq_{split}.json'
+        result = fix_predictions_order(result, p_raw_ann)
     return result
 
+def fix_predictions_order(pred_file, gt_file):
+    # Load the ground truth and predictions
+    with open(gt_file, "r") as fp:
+        gt_annotations = json.load(fp)
+
+    # Extract the video_uid list from the ground truth
+    gt_video_uids = [v["video_uid"] for v in gt_annotations["videos"]]
+
+    # Extract the clips for each video from the ground truth
+    gt_clips_dict = {
+        v["video_uid"]: {clip["clip_uid"]: clip for clip in v["clips"]}
+        for v in gt_annotations["videos"]
+    }
+
+    # Extract video predictions and create a dictionary for faster lookup
+    video_predictions = pred_file["results"]["videos"]
+    video_predictions_dict = {v["video_uid"]: v for v in video_predictions}
+
+    # Combine predictions and extra data (empty entries for missing video_uids)
+    combined_predictions = []
+
+    for uid in gt_video_uids:
+        if uid in video_predictions_dict:
+            # Get the prediction for this video
+            vpred = video_predictions_dict[uid]
+            
+            # Sort clips based on ground truth clip order
+            if "clips" in vpred and uid in gt_clips_dict:
+                gt_clips = gt_clips_dict[uid]
+                vpred_clips_dict = {clip["clip_uid"]: clip for clip in vpred["clips"]}
+                
+                # Ensure all ground truth clips are present in predictions
+                sorted_clips = []
+                for clip_uid, gt_clip in gt_clips.items():
+                    if clip_uid in vpred_clips_dict:
+                        pred_clip = vpred_clips_dict[clip_uid]
+
+                        # Ensure number of predictions matches the number of annotations
+                        num_annotations = len(gt_clip["annotations"])
+                        num_predictions = len(pred_clip["predictions"])
+
+                        if num_predictions < num_annotations:
+                            # Add empty predictions if there are fewer predictions than annotations
+                            for _ in range(num_predictions, num_annotations):
+                                pred_clip["predictions"].append({"query_sets": {}})
+                        
+                        sorted_clips.append(pred_clip)
+                    else:
+                        # Add an empty clip with the same number of empty predictions as annotations
+                        sorted_clips.append({
+                            "clip_uid": clip_uid,
+                            "predictions": [{"query_sets": {}} for _ in range(len(gt_clip["annotations"]))]
+                        })
+                vpred["clips"] = sorted_clips
+            else:
+                # If no clips exist in predictions, create empty clips for the video
+                vpred["clips"] = [
+                    {
+                        "clip_uid": clip_uid,
+                        "predictions": [{"query_sets": {}} for _ in range(len(gt_clips_dict[uid][clip_uid]["annotations"]))]
+                    }
+                    for clip_uid in gt_clips_dict[uid]
+                ]
+
+            combined_predictions.append(vpred)
+        else:
+            # Add missing video entries as empty predictions
+            combined_predictions.append({
+                "video_uid": uid, 
+                "split": "test", 
+                "clips": [
+                    {
+                        "clip_uid": clip_uid,
+                        "predictions": [{"query_sets": {}} for _ in range(len(gt_clips_dict[uid][clip_uid]["annotations"]))]
+                    }
+                    for clip_uid in gt_clips_dict[uid]
+                ]
+            })
+
+    # Update the predictions in the model_predictions object
+    pred_file["results"]["videos"] = combined_predictions
+
+    return pred_file
 
 if __name__ == '__main__':
     from pathlib import Path

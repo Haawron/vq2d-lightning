@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.utils.compute_results import get_final_preds
+from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
 from ltvu.metrics import get_metrics, format_metrics
 
 
@@ -22,7 +22,7 @@ type_loggers = WandbLogger | CSVLogger
 
 
 class PerSegmentWriter(BasePredictionWriter):
-    def __init__(self, output_dir, test_submit=False):
+    def __init__(self, output_dir, official_anns_dir,test_submit=False):
         super().__init__(write_interval="batch")
         self.p_tmp_outdir = Path(output_dir) / 'tmp'
         self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
@@ -34,6 +34,7 @@ class PerSegmentWriter(BasePredictionWriter):
             p_tmp.unlink()
         self.rank_seg_preds = []
         self.test_submit = test_submit
+        self.official_anns_dir = official_anns_dir
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
         # p_tarfile = self.p_tmp_outdir / f'rank-{trainer.global_rank}.tar'
@@ -99,7 +100,7 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds, split=split)
+            final_preds = get_final_preds(qset_preds, split=split, official_anns_dir=self.official_anns_dir)
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
@@ -127,7 +128,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         ModelSummary(max_depth=2),
         LearningRateMonitor(),
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
-        PerSegmentWriter(output_dir=runtime_outdir, test_submit=config.dataset.get('test_submit',False)),
+        PerSegmentWriter(output_dir=runtime_outdir, official_anns_dir=config.dataset.official_anns_dir, test_submit=config.dataset.get('test_submit',False)),
     ]
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
