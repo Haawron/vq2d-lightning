@@ -138,6 +138,7 @@ class ClipMatcher(nn.Module):
 
         # experiment-specific
         enable_cls_token_score = False,
+        cls_norm = False,
         num_layers_cq_corr_transformer=1,
         no_reduce=False,
         **kwargs
@@ -173,6 +174,7 @@ class ClipMatcher(nn.Module):
         self.weight_bbox_giou = weight_bbox_giou
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
+        self.cls_norm = cls_norm
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
@@ -282,6 +284,13 @@ class ClipMatcher(nn.Module):
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
         attn = F.softmax(attn, dim=-1)  # [b*t,1,n]
+        if self.cls_norm:
+            h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
+            attn = rearrange(attn, 'bt 1 (h w) -> bt 1 h w', h=h, w=w)
+            remaining_patches = torch.cat([attn[:, :, 0:2, 2:].flatten(start_dim=-2), attn[:, :, 2:, :].flatten(start_dim=-2)], dim=-1)
+            remaining_mean = remaining_patches.mean(dim=-1, keepdim=True)
+            attn[:, :, 0:2, 0:2]  = remaining_mean.unsqueeze(-1).expand(-1, -1, 2, 2)
+            attn = rearrange(attn, 'bt 1 h w -> bt 1 (h w)')
         attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
 
         return attn
