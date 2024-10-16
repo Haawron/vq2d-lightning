@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
 import math
+from tqdm import tqdm
 
 import random
 from transformers import Dinov2Model
@@ -136,14 +137,38 @@ class ClipMatcher(nn.Module):
         weight_prob = 100.,
         late_reduce = False,
 
-        # experiment-specific
+        #### experiment-specific ####
+        num_layers_cq_corr_transformer: int = 1,
+        num_layers_stst_decoder: int = 0,
+        t_short: int = 4,  # frames
+        no_reduce=False,
+
+        # cls token score
         enable_cls_token_score = False,
         cls_norm = False,
-        num_layers_cq_corr_transformer=1,
-        no_reduce=False,
+
+        # PCA Guide
+        enable_pca_guide: bool = False,
+        guide_from: str = 'backbone',
+        guide_to_stx: bool = False,
+        guide_to_stst: bool = False,
+        weight_singular: float = 0.,
+        weight_entropy: float = 0.,
+        rank_pca: int = 4,
+
+        debug = False,
         **kwargs
     ) -> None:
         super().__init__()
+
+        # argument validation
+        if enable_pca_guide:
+            if guide_from == 'reduce':
+                if late_reduce:
+                    raise ValueError(f'PCA {guide_from=} from reduce layer with {late_reduce=} will be the same as guiding from backbone')
+            if guide_to_stst:
+                if num_layers_stst_decoder == 0:
+                    raise ValueError('Cannot guide to STST without STST decoder')
 
         self.backbone, self.down_rate, self.backbone_dim = build_backbone(backbone_name, backbone_type)
         self.backbone_name = backbone_name
@@ -178,6 +203,17 @@ class ClipMatcher(nn.Module):
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
+        self.num_layers_stst_decoder = num_layers_stst_decoder
+        self.t_short = t_short
+
+        self.enable_pca_guide = enable_pca_guide
+        self.guide_from = guide_from
+        self.guide_to_stx = guide_to_stx
+        self.guide_to_stst = guide_to_stst
+
+        self.weight_singular = weight_singular
+        self.weight_entropy = weight_entropy
+        self.rank_pca = rank_pca
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -259,8 +295,25 @@ class ClipMatcher(nn.Module):
         self.feat_corr_transformer = nn.ModuleList(self.feat_corr_transformer)
         self.temporal_mask = None
 
+
+        if self.num_layers_stst_decoder > 0:
+            stst_in_dim = self.backbone_dim if self.no_reduce else 256
+            self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, stst_in_dim)
+            self.pe_3d_st = nn.parameter.Parameter(self.pe_3d_st)
+            self.stst_decoder = nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=stst_in_dim,
+                    nhead=self.nhead,
+                    dim_feedforward=stst_in_dim*4,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_stst_decoder)
+
         # output head
         self.head = Head(in_dim=sttx_in_dim, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+
+        self.debug = debug
 
     def init_weights_linear(self, m):
         if type(m) == nn.Linear:
@@ -294,6 +347,18 @@ class ClipMatcher(nn.Module):
         attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
 
         return attn
+
+    def compute_pca_score_map(self, guide_feat):
+        b = guide_feat.shape[0]
+        guide_feat = rearrange(guide_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
+        score_maps = []  # [b,h2*w2,H]
+        for bidx in range(b):
+            U, S, V = torch.pca_lowrank(guide_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
+            score_map = torch.matmul(guide_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
+            score_maps.append(score_map)
+        score_maps = torch.stack(score_maps)  # [b,h2*w2,H]
+        score_maps = 1. - torch.exp(-1 * score_maps ** 2 / 10)  # [b,h2*w2,H]
+        return score_maps
 
     def extract_feature(self, x) -> dict:
         hidden_states = {}
@@ -422,35 +487,40 @@ class ClipMatcher(nn.Module):
                 rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
                 query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
                 rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-                
+
                 sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-                
+
                 sim_mask = sim > sim_thr # [b,t]
                 sim_mask_num = sim_mask.sum() / b
                 batch_has_valid = sim_mask.any(dim=-1) # [b]
-                
+
                 rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
                 if batch_has_valid.any():
                     valid_sim_mask = sim_mask.float()  # [b, t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-                        
+
                 if sim_mode == 'max':
                     top_sim_idx = sim.argmax(dim=-1) # [b,1]
                 elif sim_mode == 'min':
                     top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
-                
+
                 final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                 rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-                
+
                 if enable_rt_pq_threshold:
                     query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
                 else:
                     query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
             query_feat_dict = self.extract_feature(query)
-                
+
+
+
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
+
+        if self.enable_pca_guide and self.guide_from == 'backbone':
+            score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
 
         # reduce channel size
         if not self.late_reduce and not self.no_reduce:
@@ -458,12 +528,20 @@ class ClipMatcher(nn.Module):
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
 
+        if self.enable_pca_guide and self.guide_from == 'reduce':
+            score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
+
         if use_hnm and compute_loss:
             clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
             b **= 2
 
-        # cls_mask
-        cls_mask = None
+        # masks
+        nc, ts = t // self.t_short, self.t_short
+        stx_tgt_mask = None   # [b*t*H,h*w,h*w], Q, K
+        stx_mem_mask = None   # [b*t*H,h1*w1,h2*w2]
+        stst_mem_mask = None  # [b*H,ts*h1*w1,h2*w2]  # h1*w1 for clip(Q), h2*w2 for query(K)
+
+        # cls token score
         if self.enable_cls_token_score:
             latent_query = query_feat_dict['hidden_states']
             latent_clip = clip_feat_dict['hidden_states']
@@ -471,27 +549,57 @@ class ClipMatcher(nn.Module):
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
             with self.backbone_context():
                 cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls)
+            stx_tgt_mask = cls_mask
+
+        # pca guide
+        if self.enable_pca_guide:
+            if self.guide_to_stx:
+                raise NotImplementedError
+            if self.guide_to_stst:
+                pca_mask = repeat(
+                    score_maps, 'b (h2 w2) H -> (b H) (ts h1 w1) (h2 w2)', ts=ts, h1=h, w1=w, h2=h, w2=w)
+                stst_mem_mask = pca_mask
 
         # find spatial correspondence between query-frame
-        query_feat = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
+        query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')            # [b*t,n,c]
         for layer in self.CQ_corr_transformer:
-            clip_feat = layer(clip_feat, query_feat, tgt_mask=cls_mask)                        # [b*t,n,c]
+            layer: nn.TransformerDecoderLayer  # written for pylance
+            clip_feat = layer.forward(
+                tgt=clip_feat, memory=query_feat_expanded,
+                tgt_mask=stx_tgt_mask, memory_mask=stx_mem_mask)
         clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
 
         if self.late_reduce and not self.no_reduce:
-            clip_feat = self.reduce(clip_feat)
+            all_feat = torch.cat([query_feat, clip_feat], dim=0)
+            all_feat = self.reduce(all_feat)
+            query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
+
+        if self.num_layers_stst_decoder > 0:
+            clip_feat = rearrange(
+                clip_feat, '(b nc ts) c h w -> nc b (ts h w) c', b=b, ts=ts, nc=nc, h=h, w=w)
+            clip_feat = clip_feat + self.pe_3d_st
+            query_feat = rearrange(query_feat, 'b c h w -> b (h w) c', b=b, h=h)
+            _feats = []
+            for cidx in range(nc):  # for saving VRAM or memory mask being too large
+                _feat = self.stst_decoder.forward(clip_feat[cidx], query_feat, memory_mask=stst_mem_mask)
+                _feats.append(_feat)
+            clip_feat = torch.stack(_feats)  # [nc,b,ts*h*w,c]
+            clip_feat = rearrange(
+                clip_feat, 'nc b (ts h w) c -> (b nc ts) c h w', b=b, ts=ts, nc=nc, h=h, w=w)
 
         # down-size features and find spatial-temporal correspondence
-        for head in self.down_heads:
+        for down_head in self.down_heads:
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
                 clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
                 mask = self.get_mask(clip_feat, t)
                 for layer in self.feat_corr_transformer:
                     clip_feat = layer(clip_feat, src_mask=mask)
-                clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) c h w', b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
+                clip_feat = rearrange(
+                    clip_feat, 'b (t h w) c -> (b t) c h w',
+                    b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
                 break  # ? why break here
-            clip_feat = head(clip_feat)
+            clip_feat = down_head.forward(clip_feat)
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]
@@ -550,6 +658,35 @@ class ClipMatcher(nn.Module):
                     assert l.requires_grad, f'{loss_name} should require grad'
                 total_loss = total_loss + w * l
 
+
+            if self.weight_singular > 0 or self.weight_entropy > 0:
+                # penalize entropy of a normed score map while limiting sigma's
+                # entropy -> activate only specific parts
+                # sigma -> limit the overall score magnitude
+                loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
+                loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
+                for bidx in range(b):
+                    U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
+                    query_feat_proj = torch.matmul(query_feat[bidx], V).abs()  # [h*w,Q]
+                    tmax = query_feat_proj.max(dim=0, keepdim=True)[0]  # [1,Q]
+                    query_feat_proj = query_feat_proj / tmax  # values in [-1,1]
+                    query_feat_proj = F.softmax(query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
+                    query_feat_proj = query_feat_proj.clamp(1e-6, 1-1e-6)  # avoid log(0)
+                    self_entropy = -(query_feat_proj * query_feat_proj.log()).sum(dim=0).mean()
+                    loss_entropy = loss_entropy + self_entropy.mean()
+                    max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
+                    loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()
+                loss_singular = loss_singular / b
+                loss_entropy = loss_entropy / b
+                if self.weight_singular > 0:
+                    total_loss = total_loss + self.weight_singular * loss_singular
+                if self.weight_entropy > 0:
+                    total_loss = total_loss + self.weight_entropy * loss_entropy
+                # print(loss_singular, loss_entropy, loss_dict['loss_prob'])
+
+            if self.debug:
+                tqdm.write(repr(loss_dict['loss_prob']))
+
             # for logging - losses
             loss_dict = detach_dict(loss_dict)
             log_dict = {
@@ -559,6 +696,12 @@ class ClipMatcher(nn.Module):
                 'loss_bbox_giou': loss_dict['loss_bbox_giou'].mean(),
                 'loss_prob': loss_dict['loss_prob'].mean(),
             }
+
+            if self.weight_singular > 0:
+                log_dict.update({'loss_singular': loss_singular.detach()})
+            if self.weight_entropy > 0:
+                log_dict.update({'loss_entropy': loss_entropy.detach()})
+
 
             # for logging - metrics
             preds_top = detach_dict(preds_top)

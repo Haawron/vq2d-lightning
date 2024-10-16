@@ -1,0 +1,13 @@
+# @package _global_
+
+# usage: python train.py +experiment=pca_guide
+
+
+model:
+  enable_pca_guide: true
+  guide_from: 'backbone'  # DINO's Query feat's PCA score map as a spatio-temporal attention guide
+  guide_to_stx: false  # Guide the spatial decoder
+  guide_to_stst: true  # Guide the short-term spatio-temporal decoder
+
+
+# model.num_layers_st_transformer=0 model.resolution_transformer=32 model.num_anchor_regions=32

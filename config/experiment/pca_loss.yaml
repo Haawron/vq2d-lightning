@@ -1,0 +1,9 @@
+# @package _global_
+
+# usage: python train.py +experiment=pca_loss
+
+
+model:
+  weight_singular: 1e-6
+  weight_entropy: 1.
+  rank_pca: 4
