@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
+from ltvu.utils.compute_results import get_final_preds
 from ltvu.metrics import get_metrics, format_metrics
 
 
