@@ -1,9 +1,8 @@
-import time
+import re
 import hydra.utils
 from omegaconf import OmegaConf
 
 import torch
-import torch.distributed as dist
 import torch.optim
 
 import lightning as L
@@ -196,12 +195,59 @@ class LitModule(L.LightningModule):
             self.model.backbone.eval()
 
     def on_load_checkpoint(self, checkpoint):
+        param_names = set('model.' + k for k in self.model.state_dict().keys())
         new_state_dict = {}
+
+        replacements = (
+            (
+                ('backbone._orig_mod', 'backbone'),
+                ('backbone', 'backbone._orig_mod'),
+            ),
+            (
+                (r'CQ_corr_transformer\.(\d+)', r'CQ_corr_transformer.\1.net'),
+                (r'CQ_corr_transformer\.(\d+)\.net', r'CQ_corr_transformer.\1'),
+                (r'self_attn\.(.*)', r'self_attn.net.\1'),
+                (r'self_attn\.net\.(.*)', r'self_attn.\1'),
+            ),
+        )
+
+        def dfs(k, idx=0):
+            if idx == len(replacements):
+                return None
+
+            if (k0 := dfs(k, idx+1)) is not None:
+                return k0
+
+            for base, repl in replacements[idx]:
+                k1 = re.sub(base, repl, k)
+                if k1 == k: # no change
+                    continue
+
+                if k1 in param_names:
+                    return k1
+
+                if (kx := dfs(k1, idx+1)) is not None:
+                    return kx
+
         for k, v in checkpoint['state_dict'].items():
             if 'query_down_heads' in k:
                 continue
-            new_state_dict[k] = v
+            if k in param_names:
+                new_state_dict[k] = v
+            else:
+                if (kk := dfs(k)) is not None:
+                    new_state_dict[kk] = v
+                else:
+                    raise ValueError(f'Key {k} not found in the model')
+
         checkpoint['state_dict'] = new_state_dict
+        checkpoint['epoch'] = self.current_epoch
+        checkpoint['global_step'] = self.global_step
+        del checkpoint['loops']  # remove previous fit loop state
+        del checkpoint['callbacks']
+        checkpoint['optimizer_states'] = {}
+        if 'lr_schedulers' in checkpoint:
+            checkpoint['lr_schedulers'] = {}
 
     ############ helper functions ############
 

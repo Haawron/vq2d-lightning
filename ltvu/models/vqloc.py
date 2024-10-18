@@ -67,23 +67,24 @@ def BasicBlock_Conv2D(in_dim, out_dim):
     return module
 
 
+# https://github.com/mit-han-lab/temporal-shift-module/blob/master/ops/temporal_shift.py
 class TemporalShift(nn.Module):
-    # https://github.com/mit-han-lab/temporal-shift-module/blob/master/ops/temporal_shift.py
     def __init__(self, net, num_frames=32, n_div=8):
         super(TemporalShift, self).__init__()
         self.net = net
         self.num_frames = num_frames
         self.fold_div = n_div
 
-    def forward(self, x):
-        x = self.shift(x, self.num_frames, fold_div=self.fold_div)
-        return self.net(x)
+    def forward(self, tgt, *args, **kwargs):
+        tgt = self.shift(tgt, self.num_frames, fold_div=self.fold_div)
+        return self.net(tgt, *args, **kwargs)
 
     @staticmethod
     def shift(x, t, fold_div=8):
-        nt, c, h, w = x.size()
+        nt, hw, c = x.size()
+        h, w = int(hw ** 0.5), int(hw ** 0.5)
         b = nt // t
-        x = x.view(b, t, c, h, w)
+        x = rearrange(x, '(b t) (h w) c -> b t c h w', b=b, t=t, h=h, w=w)
 
         fold = c // fold_div
         out = torch.zeros_like(x)
@@ -91,48 +92,7 @@ class TemporalShift(nn.Module):
         out[:, 1:, fold: 2 * fold] = x[:, :-1, fold: 2 * fold]  # shift right
         out[:, :, 2 * fold:] = x[:, :, 2 * fold:]  # not shift
 
-        return out.view(nt, c, h, w)
-
-
-def make_temporal_shift(net, num_frames=32, n_div=8, place='blockres'):
-    num_layers = 4
-    num_frames_list = [num_frames] * num_layers
-
-    import torchvision
-    if isinstance(net, torchvision.models.ResNet):
-        if place == 'block':
-            def make_block_temporal(stage, this_segment):
-                blocks = list(stage.children())
-                print('=> Processing stage with {} blocks'.format(len(blocks)))
-                for i, b in enumerate(blocks):
-                    blocks[i] = TemporalShift(b, num_frames=this_segment, n_div=n_div)
-                return nn.Sequential(*(blocks))
-
-            net.layer1 = make_block_temporal(net.layer1, num_frames_list[0])
-            net.layer2 = make_block_temporal(net.layer2, num_frames_list[1])
-            net.layer3 = make_block_temporal(net.layer3, num_frames_list[2])
-            net.layer4 = make_block_temporal(net.layer4, num_frames_list[3])
-
-        elif 'blockres' in place:
-            n_round = 1
-            if len(list(net.layer3.children())) >= 23:
-                n_round = 2
-                print('=> Using n_round {} to insert temporal shift'.format(n_round))
-
-            def make_block_temporal(stage, this_num_frames):
-                blocks = list(stage.children())
-                print('=> Processing stage with {} blocks residual'.format(len(blocks)))
-                for i, b in enumerate(blocks):
-                    if i % n_round == 0:
-                        blocks[i].conv1 = TemporalShift(b.conv1, num_frames=this_num_frames, n_div=n_div)
-                return nn.Sequential(*blocks)
-
-            net.layer1 = make_block_temporal(net.layer1, num_frames_list[0])
-            net.layer2 = make_block_temporal(net.layer2, num_frames_list[1])
-            net.layer3 = make_block_temporal(net.layer3, num_frames_list[2])
-            net.layer4 = make_block_temporal(net.layer4, num_frames_list[3])
-    else:
-        raise NotImplementedError(place)
+        return rearrange(out, 'b t c h w -> (b t) (h w) c')
 
 
 class IntermediateFeatureExtractor:
@@ -221,6 +181,9 @@ class ClipMatcher(nn.Module):
         weight_entropy: float = 0.,
         rank_pca: int = 4,
 
+        # temporal shift
+        enable_temporal_shift_stx: bool = False,
+
         debug = False,
         **kwargs
     ) -> None:
@@ -282,6 +245,8 @@ class ClipMatcher(nn.Module):
         self.weight_entropy = weight_entropy
         self.rank_pca = rank_pca
 
+        self.enable_temporal_shift_stx = enable_temporal_shift_stx
+
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
             num_regions=[self.num_anchor_regions, self.num_anchor_regions])
@@ -329,6 +294,13 @@ class ClipMatcher(nn.Module):
             )
         self.CQ_corr_transformer = nn.ModuleList(self.CQ_corr_transformer)
 
+        if self.enable_temporal_shift_stx:
+            new_modules = []
+            for stx_layer in self.CQ_corr_transformer:
+                stx_layer.self_attn = TemporalShift(stx_layer.self_attn, num_frames=clip_num_frames, n_div=8)
+                new_modules.append(stx_layer)
+            self.CQ_corr_transformer = nn.ModuleList(new_modules)
+
         # feature downsample layers
         self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
         for i in range(self.num_head_layers-1):
@@ -360,23 +332,11 @@ class ClipMatcher(nn.Module):
         self.temporal_mask = None
 
 
-        # if self.num_layers_stst_decoder > 0:
-        #     self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, 256)
-        #     self.pe_3d_st = nn.parameter.Parameter(self.pe_3d_st)
-        #     self.stst_decoder = nn.TransformerDecoder(
-        #         nn.TransformerDecoderLayer(
-        #             d_model=256,
-        #             nhead=self.nhead,
-        #             dim_feedforward=1024,
-        #             dropout=transformer_dropout,
-        #             activation='gelu',
-        #             batch_first=True),
-        #         num_layers=self.num_layers_stst_decoder)
-
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
-
         self.debug = debug
+        if debug:
+            print(self)
 
     def init_weights_linear(self, m):
         if type(m) == nn.Linear:
@@ -710,6 +670,7 @@ class ClipMatcher(nn.Module):
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
+                query_feat = rearrange(query_feat, 'b c h w -> b (h w) c')  # [b,h*w,c]
                 for bidx in range(b):
                     U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
                     query_feat_proj = torch.matmul(query_feat[bidx], V).abs()  # [h*w,Q]
