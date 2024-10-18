@@ -9,6 +9,7 @@ DIR=/local_datasets/ego4d_data/v2/vq2d_frames/320ss
 TARFILES=(
   outputs/frames/vq2d_pos_and_query_frames_320ss.tar
   outputs/frames/vq2d_pos_and_query_frames_320ss-val.tar
+  outputs/frames/vq2d_pos_and_query_frames_320ss-test_unannotated.tar
 )
 do_extract=0
 for TARFILE in "${TARFILES[@]}"; do
@@ -30,7 +31,7 @@ for TARFILE in "${TARFILES[@]}"; do
       echo "Failed to create directory, exiting..."
       exit 1
     fi
-    tar -xf $TARFILE -C /local_datasets/ --overwrite
+    tar -xf $TARFILE -C /local_datasets/ --skip-old-files
     find "$DIR" -maxdepth 1 -type d -exec chmod 1777 {} \;
   else
     echo "Directory is up-to-date, skipping extraction."

@@ -81,11 +81,30 @@ def main(config: DictConfig):
     else:
         trainer.fit(plm, datamodule=pdm)
 
-    if not config.get('debug', False):
-        log_to_console('\n' + "="*80 + '\n')
-        log_to_console('Evaluating best model')
-        plm = LitModule.load_from_checkpoint(ckpt_callback.best_model_path)
-        trainer.predict(plm, datamodule=pdm, return_predictions=False)
+    if config.predict_val or config.predict_test:
+        p_ckpt = 'outputs/batch/2024-10-13/130884/epoch=105-iou=0.4454.ckpt'
+        p_ckpt = p_ckpt if config.get('debug') else ckpt_callback.best_model_path
+        eval_config = hydra.compose(config_name='eval', overrides=[
+            f'ckpt={str(p_ckpt).replace('=', '\\=')}',
+            f'batch_size={config.batch_size}',
+            f'num_workers={config.num_workers}',
+            f'prefetch_factor={config.prefetch_factor}'
+        ])
+        plm = LitModule.load_from_checkpoint(p_ckpt)
+        pdm = LitVQ2DDataModule(eval_config)
+
+        if config.predict_val:
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model')
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
+
+        if config.predict_test:
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model on test set')
+            pdm.test_submit = True
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
 
 
 if __name__ == '__main__':
