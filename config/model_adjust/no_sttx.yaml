@@ -1,0 +1,8 @@
+# @package _global_
+
+
+# usage: python train.py +model_adjust=\[no_st,...\]
+
+
+model:
+  num_layers_st_transformer: 0

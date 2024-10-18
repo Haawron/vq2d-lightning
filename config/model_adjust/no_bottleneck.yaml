@@ -1,0 +1,9 @@
+# @package _global_
+
+
+# usage: python train.py +model_adjust=\[no_bottleneck,...\]
+
+
+model:
+  resolution_transformer: 32
+  num_anchor_regions: 32

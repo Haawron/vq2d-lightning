@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=pca-3+6
+#SBATCH --job-name=pca-guide-to-stx
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -22,34 +22,8 @@ source ./scripts/_setup.sh
 #     model.late_reduce=true \
 #     model.num_layers_st_transformer=0 \
 
-# stst 1
-# python train.py --config-name train_fast \
-#     batch_size=4 \
-#     model.num_layers_stst_decoder=1 \
-#     optim.lr_scheduler.warmup_iter=100 \
-
-# no sttx + no bn
-# python train.py --config-name train_fast \
-#     batch_size=4 \
-#     model.num_layers_st_transformer=0 \
-#     model.resolution_transformer=32 model.num_anchor_regions=32 \
-#     optim.lr_scheduler.warmup_iter=100 \
-
-# PCA 3+6
+# guide to stx
 python train.py --config-name train_fast \
-    +experiment=\[pca_guide,pca_loss\] \
-    batch_size=4 \
-    model.num_layers_stst_decoder=1 \
-    optim.lr_scheduler.warmup_iter=100 \
-    trainer.logger.0.group='pca' \
-
-# PCA 3+6 + 4개
-# python train.py --config-name train_fast \
-#     +experiment=\[pca_guide,pca_loss,rt_pos_query,cls_token_score\] \
-#     batch_size=3 \
-#     model.num_layers_stst_decoder=1 \
-#     model.num_layers_st_transformer=0 \
-#     model.resolution_transformer=32 model.num_anchor_regions=32 \
-#     model.late_reduce=true \
-#     optim.lr_scheduler.warmup_iter=100 \
-#     trainer.logger.0.group='pca' \
+    +experiment=\[pca_guide\] \
+    +model_adjust=\[no_sttx,no_bottleneck\] \
+    batch_size=4

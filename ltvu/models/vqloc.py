@@ -1,4 +1,5 @@
 from typing import Iterable, Callable
+import warnings
 
 import torch.nn as nn
 import torch
@@ -64,6 +65,74 @@ def BasicBlock_Conv2D(in_dim, out_dim):
         nn.BatchNorm2d(out_dim),
         nn.LeakyReLU(inplace=True))
     return module
+
+
+class TemporalShift(nn.Module):
+    # https://github.com/mit-han-lab/temporal-shift-module/blob/master/ops/temporal_shift.py
+    def __init__(self, net, num_frames=32, n_div=8):
+        super(TemporalShift, self).__init__()
+        self.net = net
+        self.num_frames = num_frames
+        self.fold_div = n_div
+
+    def forward(self, x):
+        x = self.shift(x, self.num_frames, fold_div=self.fold_div)
+        return self.net(x)
+
+    @staticmethod
+    def shift(x, t, fold_div=8):
+        nt, c, h, w = x.size()
+        b = nt // t
+        x = x.view(b, t, c, h, w)
+
+        fold = c // fold_div
+        out = torch.zeros_like(x)
+        out[:, :-1, :fold] = x[:, 1:, :fold]  # shift left
+        out[:, 1:, fold: 2 * fold] = x[:, :-1, fold: 2 * fold]  # shift right
+        out[:, :, 2 * fold:] = x[:, :, 2 * fold:]  # not shift
+
+        return out.view(nt, c, h, w)
+
+
+def make_temporal_shift(net, num_frames=32, n_div=8, place='blockres'):
+    num_layers = 4
+    num_frames_list = [num_frames] * num_layers
+
+    import torchvision
+    if isinstance(net, torchvision.models.ResNet):
+        if place == 'block':
+            def make_block_temporal(stage, this_segment):
+                blocks = list(stage.children())
+                print('=> Processing stage with {} blocks'.format(len(blocks)))
+                for i, b in enumerate(blocks):
+                    blocks[i] = TemporalShift(b, num_frames=this_segment, n_div=n_div)
+                return nn.Sequential(*(blocks))
+
+            net.layer1 = make_block_temporal(net.layer1, num_frames_list[0])
+            net.layer2 = make_block_temporal(net.layer2, num_frames_list[1])
+            net.layer3 = make_block_temporal(net.layer3, num_frames_list[2])
+            net.layer4 = make_block_temporal(net.layer4, num_frames_list[3])
+
+        elif 'blockres' in place:
+            n_round = 1
+            if len(list(net.layer3.children())) >= 23:
+                n_round = 2
+                print('=> Using n_round {} to insert temporal shift'.format(n_round))
+
+            def make_block_temporal(stage, this_num_frames):
+                blocks = list(stage.children())
+                print('=> Processing stage with {} blocks residual'.format(len(blocks)))
+                for i, b in enumerate(blocks):
+                    if i % n_round == 0:
+                        blocks[i].conv1 = TemporalShift(b.conv1, num_frames=this_num_frames, n_div=n_div)
+                return nn.Sequential(*blocks)
+
+            net.layer1 = make_block_temporal(net.layer1, num_frames_list[0])
+            net.layer2 = make_block_temporal(net.layer2, num_frames_list[1])
+            net.layer3 = make_block_temporal(net.layer3, num_frames_list[2])
+            net.layer4 = make_block_temporal(net.layer4, num_frames_list[3])
+    else:
+        raise NotImplementedError(place)
 
 
 class IntermediateFeatureExtractor:
@@ -139,7 +208,6 @@ class ClipMatcher(nn.Module):
 
         #### experiment-specific ####
         num_layers_cq_corr_transformer: int = 1,
-        num_layers_stst_decoder: int = 0,
         t_short: int = 4,  # frames
 
         # cls token score
@@ -149,7 +217,6 @@ class ClipMatcher(nn.Module):
         enable_pca_guide: bool = False,
         guide_from: str = 'backbone',
         guide_to_stx: bool = False,
-        guide_to_stst: bool = False,
         weight_singular: float = 0.,
         weight_entropy: float = 0.,
         rank_pca: int = 4,
@@ -164,9 +231,15 @@ class ClipMatcher(nn.Module):
             if guide_from == 'reduce':
                 if late_reduce:
                     raise ValueError(f'PCA {guide_from=} from reduce layer with {late_reduce=} will be the same as guiding from backbone')
-            if guide_to_stst:
-                if num_layers_stst_decoder == 0:
-                    raise ValueError('Cannot guide to STST without STST decoder')
+
+        if 'guide_to_stst' in kwargs:
+            raise ValueError(
+                'guide_to_stst is deprecated, revert to the commit 33b24363a6a48514ad95d2d256fc59dbddf59918')
+
+        if kwargs.get('num_layers_stst_decoder', 0) > 0:
+            raise ValueError(
+                'Setting num_layers_stst_decoder > 0 is deprecated, revert to the commit 33b24363a6a48514ad95d2d256fc59dbddf59918')
+
 
         self.backbone, self.down_rate, self.backbone_dim = build_backbone(backbone_name, backbone_type)
         self.backbone_name = backbone_name
@@ -199,13 +272,11 @@ class ClipMatcher(nn.Module):
         self.enable_cls_token_score = enable_cls_token_score
         self.late_reduce = late_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
-        self.num_layers_stst_decoder = num_layers_stst_decoder
         self.t_short = t_short
 
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
         self.guide_to_stx = guide_to_stx
-        self.guide_to_stst = guide_to_stst
 
         self.weight_singular = weight_singular
         self.weight_entropy = weight_entropy
@@ -289,18 +360,18 @@ class ClipMatcher(nn.Module):
         self.temporal_mask = None
 
 
-        if self.num_layers_stst_decoder > 0:
-            self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, 256)
-            self.pe_3d_st = nn.parameter.Parameter(self.pe_3d_st)
-            self.stst_decoder = nn.TransformerDecoder(
-                nn.TransformerDecoderLayer(
-                    d_model=256,
-                    nhead=self.nhead,
-                    dim_feedforward=1024,
-                    dropout=transformer_dropout,
-                    activation='gelu',
-                    batch_first=True),
-                num_layers=self.num_layers_stst_decoder)
+        # if self.num_layers_stst_decoder > 0:
+        #     self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, 256)
+        #     self.pe_3d_st = nn.parameter.Parameter(self.pe_3d_st)
+        #     self.stst_decoder = nn.TransformerDecoder(
+        #         nn.TransformerDecoderLayer(
+        #             d_model=256,
+        #             nhead=self.nhead,
+        #             dim_feedforward=1024,
+        #             dropout=transformer_dropout,
+        #             activation='gelu',
+        #             batch_first=True),
+        #         num_layers=self.num_layers_stst_decoder)
 
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
@@ -388,7 +459,7 @@ class ClipMatcher(nn.Module):
         }
 
 
-    def get_mask(self, src, t):
+    def get_vqloc_sttx_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
             device = src.device
             hw = src.shape[1] // t
@@ -524,7 +595,8 @@ class ClipMatcher(nn.Module):
         nc, ts = t // self.t_short, self.t_short
         stx_tgt_mask = None   # [b*t*H,h*w,h*w], Q, K
         stx_mem_mask = None   # [b*t*H,h1*w1,h2*w2]
-        stst_mem_mask = None  # [b*H,ts*h1*w1,h2*w2]  # h1*w1 for clip(Q), h2*w2 for query(K)
+        sttx_src_mask = None  # [b*t*H,h*w,h*w]
+        # stst_mem_mask = None  # [b*H,ts*h1*w1,h2*w2]  # h1*w1 for clip(Q), h2*w2 for query(K)
 
         # cls token score
         if self.enable_cls_token_score:
@@ -539,20 +611,17 @@ class ClipMatcher(nn.Module):
         # pca guide
         if self.enable_pca_guide:
             if self.guide_to_stx:
-                raise NotImplementedError
-            if self.guide_to_stst:
-                pca_mask = repeat(
-                    score_maps, 'b (h2 w2) H -> (b H) (ts h1 w1) (h2 w2)', ts=ts, h1=h, w1=w, h2=h, w2=w)
-                stst_mem_mask = pca_mask
+                stx_mem_mask = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
 
         # find spatial correspondence between query-frame
         query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, 'b c h w -> b (h w) c')            # [b*t,n,c]
-        for layer in self.CQ_corr_transformer:
-            layer: nn.TransformerDecoderLayer  # written for pylance
-            clip_feat = layer.forward(
-                tgt=clip_feat, memory=query_feat_expanded,
-                tgt_mask=stx_tgt_mask, memory_mask=stx_mem_mask)
+        for stx_layer in self.CQ_corr_transformer:
+            stx_layer: nn.TransformerDecoderLayer  # written for pylance
+            clip_feat = stx_layer.forward(
+                tgt=clip_feat, tgt_mask=stx_tgt_mask,  # used in the SA block
+                memory=query_feat_expanded, memory_mask=stx_mem_mask  # used in the CA block
+            )
         clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
 
         if self.late_reduce:
@@ -560,31 +629,22 @@ class ClipMatcher(nn.Module):
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
 
-        if self.num_layers_stst_decoder > 0:
-            clip_feat = rearrange(
-                clip_feat, '(b nc ts) c h w -> nc b (ts h w) c', b=b, ts=ts, nc=nc, h=h, w=w)
-            clip_feat = clip_feat + self.pe_3d_st
-            query_feat = rearrange(query_feat, 'b c h w -> b (h w) c', b=b, h=h)
-            _feats = []
-            for cidx in range(nc):  # for saving VRAM or memory mask being too large
-                _feat = self.stst_decoder.forward(clip_feat[cidx], query_feat, memory_mask=stst_mem_mask)
-                _feats.append(_feat)
-            clip_feat = torch.stack(_feats)  # [nc,b,ts*h*w,c]
-            clip_feat = rearrange(
-                clip_feat, 'nc b (ts h w) c -> (b nc ts) c h w', b=b, ts=ts, nc=nc, h=h, w=w)
-
         # down-size features and find spatial-temporal correspondence
         for down_head in self.down_heads:
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
-                clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
-                mask = self.get_mask(clip_feat, t)
-                for layer in self.feat_corr_transformer:
-                    clip_feat = layer(clip_feat, src_mask=mask)
-                clip_feat = rearrange(
-                    clip_feat, 'b (t h w) c -> (b t) c h w',
-                    b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
-                break  # ? why break here
+                break
             clip_feat = down_head.forward(clip_feat)
+
+        if len(self.feat_corr_transformer) > 0:
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
+            mask = self.get_vqloc_sttx_mask(clip_feat, t)
+            sttx_src_mask = mask
+            for sttx_layer in self.feat_corr_transformer:
+                sttx_layer: nn.TransformerEncoderLayer  # written for pylance
+                clip_feat = sttx_layer.forward(clip_feat, src_mask=sttx_src_mask)
+            clip_feat = rearrange(
+                clip_feat, 'b (t h w) c -> (b t) c h w',
+                b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]
