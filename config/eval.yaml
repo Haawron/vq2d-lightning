@@ -16,16 +16,7 @@ base_lr: 0.0003
 compile: false
 backbone_precision: 'fp32'  # bf16 or fp32 or fp16
 backbone_fp32_mm_precision: 'highest'  # medium or high or highest
-
-
-# # runtime parameters
-# jid: ${oc.env:SLURM_JOB_ID}
-# job_type: ${job_type:}  # debug or batch
-# YY: ${now:%Y}
-# mm: ${now:%m}  # month
-# dd: ${now:%d}  # day
-# runtime_outdir: ${runtime_outdir:}
-
+test_submit: false
 
 run_type: eval
 
@@ -36,4 +27,4 @@ trainer:
 dataset:
   padding_value: 'mean'  # zero or mean
   clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'
-  test_submit : False
+  test_submit: ${test_submit}

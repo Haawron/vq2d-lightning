@@ -141,9 +141,11 @@ class ClipMatcher(nn.Module):
         num_layers_cq_corr_transformer: int = 1,
         num_layers_stst_decoder: int = 0,
         t_short: int = 4,  # frames
+        no_reduce=False,
 
         # cls token score
         enable_cls_token_score = False,
+        cls_norm = False,
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -197,7 +199,9 @@ class ClipMatcher(nn.Module):
         self.weight_bbox_giou = weight_bbox_giou
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
+        self.cls_norm = cls_norm
         self.late_reduce = late_reduce
+        self.no_reduce = no_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
         self.num_layers_stst_decoder = num_layers_stst_decoder
         self.t_short = t_short
@@ -231,19 +235,20 @@ class ClipMatcher(nn.Module):
             self.get_cross_cls_attn_score = torch.compile(self.get_cross_cls_attn_score)
 
         # feature reduce layer
-        self.reduce = nn.Sequential(
-            nn.Conv2d(self.backbone_dim, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(inplace=True),
-            nn.Conv2d(256, 256, 3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(inplace=True),
-        )
+        if not self.no_reduce:
+            self.reduce = nn.Sequential(
+                nn.Conv2d(self.backbone_dim, 256, 3, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(inplace=True),
+                nn.Conv2d(256, 256, 3, padding=1),
+                nn.BatchNorm2d(256),
+                nn.LeakyReLU(inplace=True),
+            )
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
         self.nhead = 4
-        stx_in_dim = self.backbone_dim if self.late_reduce else 256
+        stx_in_dim = self.backbone_dim if self.late_reduce or self.no_reduce else 256
 
         for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
@@ -259,29 +264,31 @@ class ClipMatcher(nn.Module):
         self.CQ_corr_transformer = nn.ModuleList(self.CQ_corr_transformer)
 
         # feature downsample layers
+        sttx_in_dim = self.backbone_dim if self.no_reduce else 256
         self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
         for i in range(self.num_head_layers-1):
             self.down_heads.append(
                 nn.Sequential(
-                nn.Conv2d(256, 256, 3, stride=2, padding=1),
-                nn.BatchNorm2d(256),
+                nn.Conv2d(sttx_in_dim, sttx_in_dim, 3, stride=2, padding=1),
+                nn.BatchNorm2d(sttx_in_dim),
                 nn.LeakyReLU(inplace=True),
             ))
         self.down_heads = nn.ModuleList(self.down_heads)
 
         # spatial-temporal PE
-        self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, 256)
+        self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, sttx_in_dim)
         self.pe_3d = nn.parameter.Parameter(self.pe_3d)
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
         self.num_layers_st_transformer = num_layers_st_transformer
+        sttx_in_feeddim = 3072 if self.no_reduce else 2048
         for _ in range(self.num_layers_st_transformer):
             self.feat_corr_transformer.append(
                     torch.nn.TransformerEncoderLayer(
-                        d_model=256,
+                        d_model=sttx_in_dim,
                         nhead=8,
-                        dim_feedforward=2048,
+                        dim_feedforward=sttx_in_feeddim,
                         dropout=transformer_dropout,
                         activation='gelu',
                         batch_first=True))
@@ -290,20 +297,21 @@ class ClipMatcher(nn.Module):
 
 
         if self.num_layers_stst_decoder > 0:
-            self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, 256)
+            stst_in_dim = self.backbone_dim if self.no_reduce else 256
+            self.pe_3d_st = torch.zeros(1, self.t_short * 32 ** 2, stst_in_dim)
             self.pe_3d_st = nn.parameter.Parameter(self.pe_3d_st)
             self.stst_decoder = nn.TransformerDecoder(
                 nn.TransformerDecoderLayer(
-                    d_model=256,
+                    d_model=stst_in_dim,
                     nhead=self.nhead,
-                    dim_feedforward=1024,
+                    dim_feedforward=stst_in_dim*4,
                     dropout=transformer_dropout,
                     activation='gelu',
                     batch_first=True),
                 num_layers=self.num_layers_stst_decoder)
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+        self.head = Head(in_dim=sttx_in_dim, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
 
         self.debug = debug
 
@@ -329,6 +337,13 @@ class ClipMatcher(nn.Module):
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
         attn = F.softmax(attn, dim=-1)  # [b*t,1,n]
+        if self.cls_norm:
+            h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
+            attn = rearrange(attn, 'bt 1 (h w) -> bt 1 h w', h=h, w=w)
+            remaining_patches = torch.cat([attn[:, :, 0:2, 2:].flatten(start_dim=-2), attn[:, :, 2:, :].flatten(start_dim=-2)], dim=-1)
+            remaining_mean = remaining_patches.mean(dim=-1, keepdim=True)
+            attn[:, :, 0:2, 0:2]  = remaining_mean.unsqueeze(-1).expand(-1, -1, 2, 2)
+            attn = rearrange(attn, 'bt 1 h w -> bt 1 (h w)')
         attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
 
         return attn
@@ -508,7 +523,7 @@ class ClipMatcher(nn.Module):
             score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
 
         # reduce channel size
-        if not self.late_reduce:
+        if not self.late_reduce and not self.no_reduce:
             all_feat = torch.cat([query_feat, clip_feat], dim=0)
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
@@ -555,7 +570,7 @@ class ClipMatcher(nn.Module):
                 tgt_mask=stx_tgt_mask, memory_mask=stx_mem_mask)
         clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
 
-        if self.late_reduce:
+        if self.late_reduce and not self.no_reduce:
             all_feat = torch.cat([query_feat, clip_feat], dim=0)
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)

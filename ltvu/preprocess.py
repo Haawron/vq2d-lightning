@@ -27,16 +27,27 @@ REPORTED_INVALID_CLIP_UIDS = {
 }
 
 REPORTED_INVALID_VIDEO_UIDS = {
-    '26d0d4bb-df7e-4459-805e-5db87b170e11',  # vq2d test
-    'fdebc0fb-0f2e-42c8-b2f3-c697b4fc1f8a',  # vq2d test
-    '67ae160b-f173-4340-b048-6aebf4027a9d',  # vq2d test
-    '0b2e10d7-6d96-4a4d-a7f9-69656f3ac20b',  # vq2d test
-    '56723ca2-d092-4a6d-aa2a-25669f6644f7',  # vq2d test
-    '196e0e8c-f29f-48de-8e1e-ce52c2e76641',  # vq2d test
+    # vq2d test
+    '26d0d4bb-df7e-4459-805e-5db87b170e11',
+    'fdebc0fb-0f2e-42c8-b2f3-c697b4fc1f8a',
+    '67ae160b-f173-4340-b048-6aebf4027a9d',
+    '0b2e10d7-6d96-4a4d-a7f9-69656f3ac20b',
+    '56723ca2-d092-4a6d-aa2a-25669f6644f7',
+    '196e0e8c-f29f-48de-8e1e-ce52c2e76641',
 }
 
 
-def generate_flat_annotations_vq2d(all_anns, is_annotated=True):
+def generate_flat_annotations_vq2d(p_official_ann: Path):
+    """
+    Usage
+    -----
+    
+    Basic usage:
+    
+        from ltvu.preprocess import generate_flat_annotations_vq2d
+        p_official_ann = Path('SOMEPATH/vq_val.json')
+        flat_anns = generate_flat_annotations_vq2d(p_official_ann)
+    """
 
     def polish_bbox_dict_keys(bbox: dict):
         key_map = {
@@ -45,6 +56,8 @@ def generate_flat_annotations_vq2d(all_anns, is_annotated=True):
             'original_width': None, 'original_height': None}
         return {key_map[k]: v for k, v in bbox.items() if key_map.get(k) is not None}
 
+    all_anns = json.load(p_official_ann.open())
+    is_annotated = 'unannotated' not in p_official_ann.stem
     flat_anns = []
     count_invalids = 0
     for ann_video in all_anns['videos']:
@@ -61,11 +74,8 @@ def generate_flat_annotations_vq2d(all_anns, is_annotated=True):
                     if not qset['is_valid']:
                         count_invalids += 1
                         continue
-                    
-                    if is_annotated:
-                        oh, ow = qset['response_track'][0]['original_height'], qset['response_track'][0]['original_width']
-                    else:
-                        oh, ow = qset['visual_crop']['original_height'], qset['visual_crop']['original_width']
+
+                    oh, ow = qset['visual_crop']['original_height'], qset['visual_crop']['original_width']
                     sample = {
                         'video_uid': video_uid,
                         'clip_uid': clip_uid,

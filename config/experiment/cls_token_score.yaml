@@ -4,6 +4,7 @@
 
 model:
   enable_cls_token_score: true
+  cls_norm: false
   # late_reduce: true
 
 # batch_size: 4
