@@ -1,0 +1,4 @@
+# @package _global_
+
+lt_track_query:
+  lt_track_query_dir: '/outputs/lt_tracks/trains'
