@@ -374,7 +374,7 @@ class ClipMatcher(nn.Module):
         self.temporal_mask = None
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+        self.head = Head(in_dim=sttx_in_dim, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
         self.debug = debug
 
     def init_weights_linear(self, m):
