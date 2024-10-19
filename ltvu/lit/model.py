@@ -1,9 +1,8 @@
-import time
+import re
 import hydra.utils
 from omegaconf import OmegaConf
 
 import torch
-import torch.distributed as dist
 import torch.optim
 
 import lightning as L
@@ -196,7 +195,40 @@ class LitModule(L.LightningModule):
             self.model.backbone.eval()
 
     def on_load_checkpoint(self, checkpoint):
+        param_names = set('model.' + k for k in self.model.state_dict().keys())
         new_state_dict = {}
+
+        replacements = (
+            (
+                ('backbone._orig_mod', 'backbone'),
+                ('backbone', 'backbone._orig_mod'),
+            ),
+            (
+                (r'CQ_corr_transformer\.(\d+)', r'CQ_corr_transformer.\1.net'),
+                (r'CQ_corr_transformer\.(\d+)\.net', r'CQ_corr_transformer.\1'),
+                (r'(.*CQ_corr_transformer.*)\.self_attn\.(.*)', r'\1.self_attn.net.\2'),
+                (r'(.*CQ_corr_transformer.*)\.self_attn\.net\.(.*)', r'\1.self_attn.\2'),
+            ),
+        )
+
+        def dfs(k, idx=0):
+            if idx == len(replacements):
+                return None
+
+            if (k0 := dfs(k, idx+1)) is not None:
+                return k0
+
+            for base, repl in replacements[idx]:
+                k1 = re.sub(base, repl, k)
+                if k1 == k: # no change
+                    continue
+
+                if k1 in param_names:
+                    return k1
+
+                if (kx := dfs(k1, idx+1)) is not None:
+                    return kx
+
         for k, v in checkpoint['state_dict'].items():
             if 'query_down_heads' in k:
                 continue
