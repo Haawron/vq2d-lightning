@@ -67,6 +67,8 @@ def main(config: DictConfig):
     pdm = LitVQ2DDataModule(config)
     trainer, ckpt_callback = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 
+    log_to_console(str(plm.model))
+
     # if wandblogger is present, log the hostname to the wandb dashboard
     for logger in trainer.loggers:
         if isinstance(logger, WandbLogger):
@@ -108,7 +110,8 @@ def main(config: DictConfig):
 
 
 if __name__ == '__main__':
-    os.environ["SLURM_JOB_NAME"] = "bash"  # https://github.com/Lightning-AI/pytorch-lightning/issues/16236#issuecomment-1690552495
+    if os.environ.get('SLURM_JOB_NUM_NODES', 1) == 1 or os.environ.get('SLURM_NNODES', 1) == 1:
+        os.environ["SLURM_JOB_NAME"] = "bash"  # https://github.com/Lightning-AI/pytorch-lightning/issues/16236#issuecomment-1690552495
     OmegaConf.register_new_resolver("job_type", lambda : 'batch' if within_slurm_batch() else 'debug')
     OmegaConf.register_new_resolver('runtime_outdir', lambda : hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     OmegaConf.register_new_resolver("eval", eval)
