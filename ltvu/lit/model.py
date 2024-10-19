@@ -232,8 +232,22 @@ class LitModule(L.LightningModule):
         for k, v in checkpoint['state_dict'].items():
             if 'query_down_heads' in k:
                 continue
-            new_state_dict[k] = v
+            if k in param_names:
+                new_state_dict[k] = v
+            else:
+                if (kk := dfs(k)) is not None:
+                    new_state_dict[kk] = v
+                else:
+                    raise ValueError(f'Key {k} not found in the model')
+
         checkpoint['state_dict'] = new_state_dict
+        checkpoint['epoch'] = self.current_epoch
+        checkpoint['global_step'] = self.global_step
+        del checkpoint['loops']  # remove previous fit loop state
+        del checkpoint['callbacks']
+        checkpoint['optimizer_states'] = {}
+        if 'lr_schedulers' in checkpoint:
+            checkpoint['lr_schedulers'] = {}
 
     ############ helper functions ############
 

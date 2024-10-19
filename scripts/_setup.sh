@@ -11,19 +11,20 @@ TARFILES=(
   outputs/frames/vq2d_pos_and_query_frames_320ss-val.tar
   outputs/frames/vq2d_pos_and_query_frames_320ss-test_unannotated.tar
 )
-do_extract=0
-for TARFILE in "${TARFILES[@]}"; do
-  path_random_image=$(find $DIR -name '*.jpg' -type f -print -quit)
-  # last change times in seconds since epoch
-  t1=$(stat -c %Z "$TARFILE")
-  t2=$(stat -c %Z "$path_random_image")
-  if [ $? -ne 0 ] || [ ! -d "$DIR" ] || [ "$t1" -gt "$t2" ]; then
-    do_extract=1
-    break
-  fi
-done
 
 for TARFILE in "${TARFILES[@]}"; do
+  do_extract=0
+  for TARFILE in "${TARFILES[@]}"; do
+    path_random_image=$(find $DIR -name '*.jpg' -type f -print -quit)
+    # last change times in seconds since epoch
+    t1=$(stat -c %Z "$TARFILE")
+    t2=$(stat -c %Z "$path_random_image")
+    if [ $? -ne 0 ] || [ ! -d "$DIR" ] || [ "$t1" -gt "$t2" ]; then
+      do_extract=1
+      break
+    fi
+  done
+
   if [ "$do_extract" -eq 1 ]; then
     echo "Tar file is newer, extracting..."
     mkdir -p $DIR

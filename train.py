@@ -75,9 +75,9 @@ def main(config: DictConfig):
     if within_slurm_batch():
         write_batch_script(jid, default_root_dir)
 
-    resume_config = config.get('resume')
-    if resume_config is not None:
-        trainer.fit(plm, datamodule=pdm, ckpt_path=resume_config)
+    # don't convert 'ckpt_finetune_from' to 'ckpt' as it may conflict with the eval config
+    if ckpt_finetune_from := config.get('ckpt_finetune_from'):
+        trainer.fit(plm, datamodule=pdm, ckpt_path=ckpt_finetune_from)
     else:
         trainer.fit(plm, datamodule=pdm)
 

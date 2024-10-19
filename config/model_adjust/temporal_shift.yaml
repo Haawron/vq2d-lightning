@@ -1,0 +1,7 @@
+# @package _global_
+
+
+model:
+  enable_temporal_shift_stx: true  # Shift the temporal decoder
+  # num_total_shift_segments: 8  # Number of segments for temporal shift
+  # num_shift_segments: 1  # Number of segments for temporal shift
