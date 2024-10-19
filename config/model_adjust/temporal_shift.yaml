@@ -1,5 +1,6 @@
 # @package _global_
 
+# usage: python train.py +model_adjust=\[temporal_shift,...\]
 
 model:
   enable_temporal_shift_stx: true  # Shift the temporal decoder
