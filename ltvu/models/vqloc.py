@@ -1,5 +1,5 @@
 from typing import Iterable, Callable
-import warnings
+from collections import OrderedDict
 
 import torch.nn as nn
 import torch
@@ -95,6 +95,15 @@ class TemporalShift(nn.Module):
         return rearrange(out, 'b t c h w -> (b t) (h w) c')
 
 
+class TemporalShiftConv(TemporalShift):
+    def forward(self, x):
+        bt, c, h, w = x.shape
+        x = rearrange(x, '(b t) c h w -> (b t) (h w) c', t=self.num_frames)
+        x = self.shift(x, self.num_frames, fold_div=self.fold_div)
+        x = rearrange(x, '(b t) (h w) c -> (b t) c h w', t=self.num_frames, h=h)
+        return self.net(x)
+
+
 class IntermediateFeatureExtractor:
     def __init__(self, model: nn.Module, layer_ids: Iterable[str]):
         self.model = model
@@ -181,10 +190,15 @@ class ClipMatcher(nn.Module):
         guide_to_stx: bool = False,
         weight_singular: float = 0.,
         weight_entropy: float = 0.,
+        singular_include_first: bool = True,
+        entropy_include_first: bool = True,
         rank_pca: int = 4,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
+        enable_temporal_shift_conv_summary: bool = False,
+
+        conv_summary_layers: int = 0,
 
         debug = False,
         **kwargs
@@ -248,8 +262,13 @@ class ClipMatcher(nn.Module):
         self.weight_singular = weight_singular
         self.weight_entropy = weight_entropy
         self.rank_pca = rank_pca
+        self.singular_include_first = singular_include_first
+        self.entropy_include_first = entropy_include_first
 
         self.enable_temporal_shift_stx = enable_temporal_shift_stx
+        self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
+
+        self.conv_summary_layers = conv_summary_layers
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -318,6 +337,22 @@ class ClipMatcher(nn.Module):
             ))
         self.down_heads = nn.ModuleList(self.down_heads)
 
+        if self.conv_summary_layers > 0:
+            def conv_block(in_dim, out_dim):
+                return nn.Sequential(OrderedDict([
+                    ('conv', nn.Conv2d(in_dim, out_dim, 3, padding=1)),
+                    ('bn', nn.BatchNorm2d(out_dim)),
+                    ('relu', nn.LeakyReLU(inplace=True))
+                ]))
+            self.conv_summary = nn.ModuleList([conv_block(256, 256) for _ in range(self.conv_summary_layers)])
+        else:
+            self.conv_summary = None
+
+        if self.enable_temporal_shift_conv_summary:
+            assert self.conv_summary is not None, 'conv_summary must be enabled to use temporal shift'
+            # shift only the first layer
+            self.conv_summary[0].conv = TemporalShiftConv(self.conv_summary[0].conv, num_frames=clip_num_frames, n_div=8)
+
         # spatial-temporal PE
         self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, sttx_in_dim)
         self.pe_3d = nn.parameter.Parameter(self.pe_3d)
@@ -338,12 +373,9 @@ class ClipMatcher(nn.Module):
         self.feat_corr_transformer = nn.ModuleList(self.feat_corr_transformer)
         self.temporal_mask = None
 
-
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
         self.debug = debug
-        if debug:
-            print(self)
 
     def init_weights_linear(self, m):
         if type(m) == nn.Linear:
@@ -609,6 +641,10 @@ class ClipMatcher(nn.Module):
                 break
             clip_feat = down_head.forward(clip_feat)
 
+        if self.conv_summary is not None:
+            for conv in self.conv_summary:
+                clip_feat = clip_feat + conv(clip_feat)
+
         if len(self.feat_corr_transformer) > 0:
             clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
             mask = self.get_vqloc_sttx_mask(clip_feat, t)
@@ -687,6 +723,10 @@ class ClipMatcher(nn.Module):
                 query_feat = rearrange(query_feat, 'b c h w -> b (h w) c')  # [b,h*w,c]
                 for bidx in range(b):
                     U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
+                    if not self.singular_include_first:
+                        S = S[1:]
+                    if not self.entropy_include_first:
+                        V = V[:, 1:]
                     query_feat_proj = torch.matmul(query_feat[bidx], V).abs()  # [h*w,Q]
                     tmax = query_feat_proj.max(dim=0, keepdim=True)[0]  # [1,Q]
                     query_feat_proj = query_feat_proj / tmax  # values in [-1,1]
