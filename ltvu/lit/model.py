@@ -1,9 +1,8 @@
-import time
+import re
 import hydra.utils
 from omegaconf import OmegaConf
 
 import torch
-import torch.distributed as dist
 import torch.optim
 
 import lightning as L
@@ -46,12 +45,12 @@ class LitModule(L.LightningModule):
     for batch_idx, batch in enumerate(train_dataloader):
         # ... model train loop
         if validate_at_some_point:  # when meet some condition
-            torch.set_grad_enabled(False)  # disable grads + batchnorm + dropout
-            model.eval()
+            torch.set_grad_enabled(False)  # disable grads
+            model.eval()  # disable batchnorm + dropout
             for val_batch_idx, val_batch in enumerate(val_dataloader):
                 val_out = model.validation_step(val_batch, val_batch_idx)  # -> should be handled in `on_validation_epoch_end`
-            torch.set_grad_enabled(True)  # enable grads + batchnorm + dropout
-            model.train()
+            torch.set_grad_enabled(True)  # enable grads
+            model.train()  # enable batchnorm + dropout
     ```
 
     ---
@@ -81,11 +80,33 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
 
+        self.rt_pos_query = config.get('rt_pos_query')
+
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
-        output_dict = self.model.forward(**batch, compute_loss=True)
+        extra_args = {}
+        if self.rt_pos_query is not None:
+            self.late_epoch_rt_pos = self.rt_pos_query.late_epoch_rt_pos
+            self.mode = self.rt_pos_query.mode
+            self.sim_thr = self.rt_pos_query.sim_thr
+            extra_args['sim_thr']=self.sim_thr
+            extra_args['enable_rt_pq_threshold']=self.rt_pos_query.enable_rt_pq_threshold
+
+            if self.current_epoch >= self.late_epoch_rt_pos:
+                extra_args['rt_pos']=True
+            if self.mode == 'easy':
+                extra_args['sim_mode']='max'
+            elif self.mode == 'hard':
+                extra_args['sim_mode']='min'
+            elif self.mode == 'both':
+                if self.current_epoch >= self.late_epoch_rt_pos:
+                    extra_args['sim_mode']='min'
+                else:
+                    extra_args['sim_mode']='max'
+        output_dict = self.model.forward(**batch, compute_loss=True, **extra_args)
+
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
         log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Train')
@@ -100,12 +121,12 @@ class LitModule(L.LightningModule):
         if 'log_dict' in output_dict:
             log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
             self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
-            if self.sample_step > 0:  # after sanity check done
-                if batch_idx % 50 == 0:
-                  try:
-                      self.print_outputs(batch, output_dict, bidxs=[0])
-                  except Exception as e:
-                      print(f"Error in {batch['clip_uid']} print_outputs: {e}")
+            # if self.sample_step > 0:  # after sanity check done
+            #     if batch_idx % 50 == 0:
+            #       try:
+            #           self.print_outputs(batch, output_dict, bidxs=[0])
+            #       except Exception as e:
+            #           print(f"Error in {batch['clip_uid']} print_outputs: {e}")
             self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
@@ -172,6 +193,61 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
+
+    def on_load_checkpoint(self, checkpoint):
+        param_names = set('model.' + k for k in self.model.state_dict().keys())
+        new_state_dict = {}
+
+        replacements = (
+            (
+                ('backbone._orig_mod', 'backbone'),
+                ('backbone', 'backbone._orig_mod'),
+            ),
+            (
+                (r'CQ_corr_transformer\.(\d+)', r'CQ_corr_transformer.\1.net'),
+                (r'CQ_corr_transformer\.(\d+)\.net', r'CQ_corr_transformer.\1'),
+                (r'(.*CQ_corr_transformer.*)\.self_attn\.(.*)', r'\1.self_attn.net.\2'),
+                (r'(.*CQ_corr_transformer.*)\.self_attn\.net\.(.*)', r'\1.self_attn.\2'),
+            ),
+        )
+
+        def dfs(k, idx=0):
+            if idx == len(replacements):
+                return None
+
+            if (k0 := dfs(k, idx+1)) is not None:
+                return k0
+
+            for base, repl in replacements[idx]:
+                k1 = re.sub(base, repl, k)
+                if k1 == k: # no change
+                    continue
+
+                if k1 in param_names:
+                    return k1
+
+                if (kx := dfs(k1, idx+1)) is not None:
+                    return kx
+
+        for k, v in checkpoint['state_dict'].items():
+            if 'query_down_heads' in k:
+                continue
+            if k in param_names:
+                new_state_dict[k] = v
+            else:
+                if (kk := dfs(k)) is not None:
+                    new_state_dict[kk] = v
+                else:
+                    raise ValueError(f'Key {k} not found in the model')
+
+        checkpoint['state_dict'] = new_state_dict
+        checkpoint['epoch'] = self.current_epoch
+        checkpoint['global_step'] = self.global_step
+        del checkpoint['loops']  # remove previous fit loop state
+        del checkpoint['callbacks']
+        checkpoint['optimizer_states'] = {}
+        if 'lr_schedulers' in checkpoint:
+            checkpoint['lr_schedulers'] = {}
 
     ############ helper functions ############
 

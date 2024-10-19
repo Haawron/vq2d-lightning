@@ -15,32 +15,42 @@ from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
 from ltvu.utils.compute_results import get_final_preds
-from ltvu.metrics import get_metrics, print_metrics
+from ltvu.metrics import get_metrics, format_metrics
 
 
 type_loggers = WandbLogger | CSVLogger
 
 
 class PerSegmentWriter(BasePredictionWriter):
-    def __init__(self, output_dir):
+    def __init__(self,
+        output_dir,
+        test_submit = False,
+    ):
         super().__init__(write_interval="batch")
         self.p_tmp_outdir = Path(output_dir) / 'tmp'
         self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
         self.p_int_pred = Path(output_dir) / 'intermediate_predictions.pt'
         self.p_pred = Path(output_dir) / 'predictions.json'
         self.p_metrics = Path(output_dir) / 'metrics.json'
+        self.p_metrics_log = Path(output_dir) / 'metrics.log'
         for p_tmp in self.p_tmp_outdir.glob('*'):
             p_tmp.unlink()
         self.rank_seg_preds = []
+        self.test_submit = test_submit
+
+        if self.test_submit:
+            self.split = 'test_unannotated'
+            self.p_pred = self.p_pred.with_name('test_predictions.json')
+            self.p_int_pred = self.p_int_pred.with_name('test_intermediate_predictions.pt')
+        else:
+            self.split = 'val'
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
-        # p_tarfile = self.p_tmp_outdir / f'rank-{trainer.global_rank}.tar'
         for pred_output in prediction:
             qset_uuid = pred_output['qset_uuid']
             seg_idx = pred_output['seg_idx']
             num_segments = pred_output['num_segments']
             self.rank_seg_preds.append((qset_uuid, seg_idx, num_segments, pred_output))
-            # append_tensor_to_tar(p_tarfile, pred_output, f'{qset_uuid}_{seg_idx}_{num_segments}.pt')
 
         if batch_idx % 100 == 0:  # checkpointing
             self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
@@ -90,15 +100,18 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds)
+            final_preds = get_final_preds(qset_preds, split=self.split)
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
 
-            # print metrics
-            subset_metrics = get_metrics(Path('data/vq_v2_val_anno.json'), self.p_pred)
-            print_metrics(subset_metrics)
-            json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
+            if not self.test_submit:
+                # print metrics
+                subset_metrics = get_metrics(Path(f'data/vq_v2_val_anno.json'), self.p_pred)
+                metrics_msg = format_metrics(subset_metrics)
+                print(metrics_msg)
+                self.p_metrics_log.write_text(metrics_msg + '\n')
+                json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
 
             # remove temporary files
             for p_tmp in self.p_tmp_outdir.glob('*'):
@@ -115,7 +128,10 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         ModelSummary(max_depth=2),
         LearningRateMonitor(),
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
-        PerSegmentWriter(output_dir=runtime_outdir),
+        PerSegmentWriter(
+            output_dir=runtime_outdir,
+            test_submit=config.dataset.get('test_submit', False),
+        ),
     ]
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(

@@ -1,0 +1,15 @@
+# @package _global_
+
+
+# usage: python train.py +debug=overfit
+
+debug: true
+
+trainer:
+  logger: []
+  overfit_batches: 10
+  max_epochs: 10
+  check_val_every_n_epoch: 5
+
+model:
+  debug: true

@@ -41,8 +41,15 @@ def compute_response_track(preds):
     return preds['ret_bboxes'][last_plateau_idx1:last_plateau_idx2].numpy(), last_plateau_idx1, last_plateau_idx2
 
 
-def get_final_preds(preds):
-    """Convert whole-clip predictions to submittable format."""
+def get_final_preds(preds, split='val'):
+    """Convert whole-clip predictions to submittable format.
+    
+    Usage:
+    
+        preds = torch.load('SOMEPATH/intermediate_predictions.pt', weights_only=True)
+        results = get_final_preds(preds)
+        json.dump(results, open('SOMEPATH/predictions.json', 'w'))
+    """
 
     result = {
         'version': '1.0.5',
@@ -53,7 +60,7 @@ def get_final_preds(preds):
         }
     }
 
-    anns = json.load(open('data/vq_v2_val_anno.json'))
+    anns = json.load(open(f'data/vq_v2_{split}_anno.json'))
     pred_tree = {}  # video_uid -> clip_uid -> annotation_uid -> qset_id -> prediction
     for ann in anns:
         video_uid = ann['video_uid']
@@ -63,7 +70,13 @@ def get_final_preds(preds):
 
         qset_uuid = f'{annotation_uid}_{qset_id}'
         qset_pred = preds[qset_uuid]
-        pred_tree.setdefault(video_uid, {}).setdefault(clip_uid, {}).setdefault(annotation_uid, {})[qset_id] = qset_pred
+        bboxes, fno_s, _ = compute_response_track(qset_pred)  # bboxes and start fno of the response track
+        # just edit keys and prepend fno_s to the bboxes
+        final_bboxes = [
+            {'fno': fno, 'x1': b[0], 'y1': b[1], 'x2': b[2], 'y2': b[3]}
+            for fno, b in enumerate(bboxes.astype(int).tolist(), start=fno_s)]
+        pred_tree.setdefault(video_uid, {}).setdefault(clip_uid, {}).setdefault(annotation_uid, {})[qset_id] \
+            = final_bboxes
 
     for video_uid, clips in pred_tree.items():
         result['results']['videos'].append({
@@ -80,13 +93,9 @@ def get_final_preds(preds):
                     'annotation_uid': annotation_uid,
                     'query_sets': {}
                 })
-                for qset_id, qset_pred in query_sets.items():
-                    bboxes, fno_s, _ = compute_response_track(qset_pred)
-                    bboxes = [
-                        {'fno': fno, 'x1': b[0], 'y1': b[1], 'x2': b[2], 'y2': b[3]}
-                        for fno, b in enumerate(bboxes.astype(int).tolist(), start=fno_s)]
+                for qset_id, final_bboxes in query_sets.items():
                     result['results']['videos'][-1]['clips'][-1]['predictions'][-1]['query_sets'][qset_id] = {
-                        'bboxes': bboxes,
+                        'bboxes': final_bboxes,
                         'score': 1.0
                     }
 

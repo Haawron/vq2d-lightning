@@ -25,8 +25,10 @@ STD = [0.229, 0.224, 0.225]
 
 
 class LitVQ2DDataModule(L.LightningDataModule):
-    ALL_NUM_CLIPS = 4690  # train + val
-    ALL_NUM_ANNS = [13607, 4504]  # train, val
+    # ALL_NUM_CLIPS = 4690  # train + val
+    # ALL_NUM_ANNS = [13607, 4504]  # train, val
+    ALL_NUM_CLIPS = 5814  # train + val + test_unannotated
+    ALL_NUM_ANNS = [13607, 4504, 4461]  # train, val, test_unannotated
 
     def __init__(self, config):
         super().__init__()
@@ -40,10 +42,13 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.pin_memory = ds_config.pin_memory
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
+        self.test_submit = ds_config.get('test_submit', False)
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
+
+        self.rt_pos_query = config.get('rt_pos_query')
 
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
@@ -58,10 +63,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         """
         print('Preparing data...')
         video_uids, clip_uids = set(), set()
-        for split, desired_num_anns in zip(['train', 'val'], self.ALL_NUM_ANNS):
-            p_raw_ann = self.p_official_anns_dir / f'vq_{split}.json'
-            all_anns = json.load(p_raw_ann.open())
-            flat_anns = generate_flat_annotations_vq2d(all_anns)
+        for split, desired_num_anns in zip(['train', 'val', 'test_unannotated'], self.ALL_NUM_ANNS):
+            p_official_ann = self.p_official_anns_dir / f'vq_{split}.json'
+            flat_anns = generate_flat_annotations_vq2d(p_official_ann)
             assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
             print(f'Found {len(flat_anns)} annotations in {split}.')
             p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
@@ -95,6 +99,14 @@ class LitVQ2DDataModule(L.LightningDataModule):
         batch.update({
             'segment': segment, 'query': query,
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
+
+        if self.rt_pos_query is not None and self.trainer is not None and self.trainer.training:
+            rt_pos_queries = batch['experiment']['multi_query']['rt_pos_queries']  # [b, #Q, c, h, w]
+            bsz = rt_pos_queries.shape[0]
+            rt_pos_queries = rearrange(rt_pos_queries, 'b q c h w -> (b q) c h w')
+            rt_pos_queries = self.normalization(rt_pos_queries)  # [b*#Q, c, h, w]
+            rt_pos_queries = rearrange(rt_pos_queries, '(b q) c h w -> b q c h w', b=bsz)
+            batch['rt_pos_queries'] = rt_pos_queries
         return batch
 
     def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
@@ -166,7 +178,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             drop_last=False,
         )
 
-    def test_dataloader(self):
+    def pred_dataloader(self):
         return torch.utils.data.DataLoader(
             VQ2DEvalDataset(self.config, split='val'),
             batch_size=self.batch_size,
@@ -178,7 +190,23 @@ class LitVQ2DDataModule(L.LightningDataModule):
             drop_last=False,
         )
 
-    predict_dataloader = test_dataloader
+    def test_dataloader(self):
+        return torch.utils.data.DataLoader(
+            VQ2DEvalDataset(self.config, split='test_unannotated'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def predict_dataloader(self):
+        if self.test_submit:
+            return self.test_dataloader()
+        else:
+            return self.pred_dataloader()
 
 
 if __name__ == '__main__':

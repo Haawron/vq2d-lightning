@@ -19,3 +19,15 @@ not_extracted*
 notebooks/diffusion/
 notebooks/dino_repair/
 .vscode/
+config/base_jh.yaml
+scripts/ttrain.sbatch
+scripts/__setup.sh
+config/eval_fast_jh.yaml
+config/train_fast_jh.yaml
+config/eval_jh.yaml
+config/train_jh.yaml
+scripts/eeval.sbatch
+scp.sh
+config/debug/base_jh.yaml
+notebooks/sel_ckps.ipynb
+tem.py

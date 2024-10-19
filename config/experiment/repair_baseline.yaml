@@ -1,0 +1,9 @@
+# @package _global_
+
+# usage: python train.py +experiment=repair_baseline
+
+base_lr: 0.0001
+
+model:
+  positive_threshold: 0.3
+  weight_prob: 10.
