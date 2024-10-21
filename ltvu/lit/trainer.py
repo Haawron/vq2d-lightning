@@ -121,7 +121,7 @@ class PerSegmentWriter(BasePredictionWriter):
             self.p_tmp_outdir.rmdir()
 
 
-def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True):
+def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True, ddp_timeout=30):
     runtime_outdir: str = config.runtime_outdir
     trainer_config: DictConfig = config.trainer
 
@@ -171,7 +171,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
     trainer_config = OmegaConf.to_container(trainer_config, resolve=True)
     if 'strategy' not in trainer_config:
         trainer_config['strategy'] = DDPStrategy(
-            timeout=datetime.timedelta(seconds=30),
+            timeout=datetime.timedelta(ddp_timeout),
             find_unused_parameters=True)
     trainer = L.Trainer(
         **trainer_config,
