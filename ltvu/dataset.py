@@ -53,8 +53,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             self.padding_value = .5
         elif ds_config.padding_value == 'zero':
             self.padding_value = 0.
-            
-        self.rt_pos_query = config.get('rt_pos_query')            
+
+        self.rt_pos_query = config.get('rt_pos_query')
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
         self.split = split
@@ -85,13 +85,13 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
-        
+
         if self.rt_pos_query is not None and self.split == 'train':
             rt_pos_queries = self.get_rt_pos_query(ann, frame_idxs)
-            
+
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
-        
+
         sample = {
             # inputs
             'segment': segment,  # [t, c, h, w], normalized
@@ -113,7 +113,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'visual_crop': vc,  # dict
             'object_title': ann['object_title'],  # str
         }
-        
+
         if self.rt_pos_query is not None and self.split == 'train':
             (sample
                 .setdefault('experiment', {})
@@ -213,7 +213,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
 
-    def get_rt_pos_query(self, ann, frame_idxs): 
+    def get_rt_pos_query(self, ann, frame_idxs):
         clip_uid = ann['clip_uid']
         query_set = ann['query_set']
         annotation_uid = ann['annotation_uid']
@@ -224,9 +224,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 'w': rt['w'],
                 'h': rt['h'],
             }
-        
+
         rt_pos_queries = []
-        
+
         for frame_idx in frame_idxs:
             if frame_idx in list(rt_ann.keys()):
                 frame = Image.open(self.p_rt_pos_query / clip_uid / f'{clip_uid}_{frame_idx}_{annotation_uid}_{query_set}.jpg')
@@ -244,13 +244,13 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 frame = F.interpolate(frame[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
             else:
                 frame = torch.zeros(3, self.query_size[0], self.query_size[1])
-                
+
             rt_pos_queries.append(frame.squeeze(0))
-        
+
         rt_pos_queries = torch.stack(rt_pos_queries)
-        
+
         return rt_pos_queries
-    
+
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_
 
@@ -377,7 +377,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         super().__init__(config, split)
         self.num_frames_per_segment = self.num_frames
         self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered as occupied
-        self.test_submit = config.dataset.get('test_submit',False)
+        self.test_submit = split == 'test_unannotated'
         del self.num_frames  # to avoid confusion
 
         self.all_segments = []

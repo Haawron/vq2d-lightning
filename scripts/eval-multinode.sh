@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=test
+#SBATCH --job-name=eval
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
 #SBATCH -N 2
-#SBATCH --gres=gpu:4
-#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:6
+#SBATCH --ntasks-per-node=6
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-gpu=43G
 #SBATCH -x ariel-k[1,2],ariel-m1
@@ -38,38 +38,21 @@ echo "Network interfaces: ${interfaces[@]}"
 
 
 ################# setup #################
+tar_test_frames=outputs/frames/vq2d_pos_and_query_frames_320ss-test_unannotated.tar
 for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
-    ssh $sshopt $host bash $(realpath ./scripts/_setup.sh) &
+    ssh $sshopt $host "tar -xf $(realpath $tar_test_frames) -C /local_datasets 2>/dev/null" &
 done
 echo "Waiting for setup to finish..."
 wait
 echo "Setup finished."
 
 
-################# run training #################
-# full+tsmconv
-# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$batchhostinterface \
-#     srun -N $SLURM_NNODES --unbuffered --exclusive --open-mode=append --cpus-per-task=8 \
-#     python -u train.py --config-name train_fast \
-#         +trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-#         +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide,pca_loss\] \
-#         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#         +model.enable_temporal_shift_conv_summary=true \
-#         model.late_reduce=true \
-#         model.cls_norm=true \
-#         rt_pos_query.sim_thr=0.6 \
-#         batch_size=3
-
-# full+tsmattn+tsmconv
+################# run eval #################
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
-    python train.py --config-name train_fast \
+    python eval.py \
         +trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-        +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide,pca_loss\] \
-        +model_adjust=\[no_sttx,no_bottleneck,conv_summary,temporal_shift\] \
-        model.late_reduce=true \
-        model.cls_norm=true \
-        rt_pos_query.sim_thr=0.6 \
-        batch_size=3
+        ckpt='outputs/batch/2024-10-19/133186/epoch\=54-prob_acc\=0.7952.ckpt' \
+        test_submit=true
 
 exit $?

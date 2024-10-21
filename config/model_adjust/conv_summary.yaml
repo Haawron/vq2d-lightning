@@ -1,0 +1,8 @@
+# @package _global_
+
+
+# usage: python train.py +model_adjust=\[conv_summary,...\]
+
+
+model:
+  conv_summary_layers: 2
