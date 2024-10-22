@@ -6,7 +6,7 @@ import numpy as np
 from scipy.signal import find_peaks, medfilt
 
 
-def compute_response_track(preds):
+def compute_response_track(preds, plateau_threshold_ratio=0.7):
     # logit to prob
     probs = torch.sigmoid(preds['ret_scores']).numpy()
 
@@ -25,7 +25,7 @@ def compute_response_track(preds):
     last_valid_peak = valid_peaks[-1]
 
     # find the last plateau
-    plateau_threshold = probs_sm[last_valid_peak] * 0.7
+    plateau_threshold = probs_sm[last_valid_peak] * plateau_threshold_ratio
     last_plateau_idx1 = np.where(probs_sm[:last_valid_peak] < plateau_threshold)[0]
     if last_plateau_idx1.size == 0:
         last_plateau_idx1 = len(probs) - 2
@@ -41,7 +41,7 @@ def compute_response_track(preds):
     return preds['ret_bboxes'][last_plateau_idx1:last_plateau_idx2].numpy(), last_plateau_idx1, last_plateau_idx2
 
 
-def get_final_preds(preds, split='val'):
+def get_final_preds(preds, split='val', plateau_threshold_ratio=0.7):
     """Convert whole-clip predictions to submittable format.
     
     Usage:
@@ -70,7 +70,7 @@ def get_final_preds(preds, split='val'):
 
         qset_uuid = f'{annotation_uid}_{qset_id}'
         qset_pred = preds[qset_uuid]
-        bboxes, fno_s, _ = compute_response_track(qset_pred)  # bboxes and start fno of the response track
+        bboxes, fno_s, _ = compute_response_track(qset_pred, plateau_threshold_ratio)  # bboxes and start fno of the response track
         # just edit keys and prepend fno_s to the bboxes
         final_bboxes = [
             {'fno': fno, 'x1': b[0], 'y1': b[1], 'x2': b[2], 'y2': b[3]}
@@ -102,6 +102,81 @@ def get_final_preds(preds, split='val'):
     return result
 
 
+def fix_predictions_order(final_preds, p_official_ann):
+    # Load the ground truth and predictions
+    with open(p_official_ann, "r") as fp:
+        ann = json.load(fp)
+    # Extract the video_uid list from the ground truth
+    gt_video_uids = [v["video_uid"] for v in ann["videos"]]
+    # Extract the clips for each video from the ground truth
+    gt_clips_dict = {
+        v["video_uid"]: {clip["clip_uid"]: clip for clip in v["clips"]}
+        for v in ann["videos"]
+    }
+    # Extract video predictions and create a dictionary for faster lookup
+    video_predictions = final_preds["results"]["videos"]
+    video_predictions_dict = {v["video_uid"]: v for v in video_predictions}
+    # Combine predictions and extra data (empty entries for missing video_uids)
+    combined_predictions = []
+    for uid in gt_video_uids:
+        if uid in video_predictions_dict:
+            # Get the prediction for this video
+            vpred = video_predictions_dict[uid]
+
+            # Sort clips based on ground truth clip order
+            if "clips" in vpred and uid in gt_clips_dict:
+                gt_clips = gt_clips_dict[uid]
+                vpred_clips_dict = {clip["clip_uid"]: clip for clip in vpred["clips"]}
+
+                # Ensure all ground truth clips are present in predictions
+                sorted_clips = []
+                for clip_uid, gt_clip in gt_clips.items():
+                    if clip_uid in vpred_clips_dict:
+                        pred_clip = vpred_clips_dict[clip_uid]
+                        # Ensure number of predictions matches the number of annotations
+                        num_annotations = len(gt_clip["annotations"])
+                        num_predictions = len(pred_clip["predictions"])
+                        if num_predictions < num_annotations:
+                            # Add empty predictions if there are fewer predictions than annotations
+                            for _ in range(num_predictions, num_annotations):
+                                pred_clip["predictions"].append({"query_sets": {}})
+
+                        sorted_clips.append(pred_clip)
+                    else:
+                        # Add an empty clip with the same number of empty predictions as annotations
+                        sorted_clips.append({
+                            "clip_uid": clip_uid,
+                            "predictions": [{"query_sets": {}} for _ in range(len(gt_clip["annotations"]))]
+                        })
+                vpred["clips"] = sorted_clips
+            else:
+                # If no clips exist in predictions, create empty clips for the video
+                vpred["clips"] = [
+                    {
+                        "clip_uid": clip_uid,
+                        "predictions": [{"query_sets": {}} for _ in range(len(gt_clips_dict[uid][clip_uid]["annotations"]))]
+                    }
+                    for clip_uid in gt_clips_dict[uid]
+                ]
+            combined_predictions.append(vpred)
+        else:
+            # Add missing video entries as empty predictions
+            combined_predictions.append({
+                "video_uid": uid,
+                "split": "test",
+                "clips": [
+                    {
+                        "clip_uid": clip_uid,
+                        "predictions": [{"query_sets": {}} for _ in range(len(gt_clips_dict[uid][clip_uid]["annotations"]))]
+                    }
+                    for clip_uid in gt_clips_dict[uid]
+                ]
+            })
+    # Update the predictions in the model_predictions object
+    final_preds["results"]["videos"] = combined_predictions
+    return final_preds
+
+
 if __name__ == '__main__':
     from pathlib import Path
     from ltvu.metrics import get_metrics, print_metrics
@@ -109,31 +184,6 @@ if __name__ == '__main__':
     p_tmp_outdir = Path('outputs/debug/2024-09-25/126347/tmp')
     p_int_pred = p_tmp_outdir.parent / 'intermediate_predictions.pt'
     p_pred = p_tmp_outdir.parent / 'predictions.json'
-
-    # all_seg_preds = {}
-    # for p_pt in p_tmp_outdir.glob('*.pt'):
-    #     rank_seg_preds = torch.load(p_pt, weights_only=True)
-    #     for qset_uuid, seg_idx, num_segments, pred_output in rank_seg_preds:
-    #         if qset_uuid not in all_seg_preds:
-    #             all_seg_preds[qset_uuid] = [None] * num_segments
-    #         all_seg_preds[qset_uuid][seg_idx] = pred_output
-
-    # # merge features
-    # qset_preds = {}
-    # for qset_uuid, qset_seg_preds in all_seg_preds.items():
-    #     new_ret_bboxes, new_ret_scores, frame_idxs = [], [], []
-    #     num_segments = len(qset_seg_preds)
-    #     for seg_idx, seg_pred in enumerate(qset_seg_preds):
-    #         assert seg_pred is not None, f'{qset_uuid}_{seg_idx}_{num_segments}'
-    #         new_ret_bboxes.append(seg_pred['ret_bboxes'])
-    #         new_ret_scores.append(seg_pred['ret_scores'])
-    #         frame_idxs.append(seg_pred['frame_idxs'])
-    #     frame_idxs = torch.cat(frame_idxs, dim=0)
-    #     mask_duplicated = frame_idxs == torch.cat([torch.tensor([-1]), frame_idxs[:-1]])
-    #     qset_preds[qset_uuid] = {
-    #         'ret_bboxes': torch.cat(new_ret_bboxes, dim=0)[~mask_duplicated].numpy(),
-    #         'ret_scores': torch.cat(new_ret_scores, dim=0)[~mask_duplicated].numpy(),
-    #     }
 
     # json.dump(qset_preds, p_int_pred.open('w'))
     qset_preds = torch.load(p_int_pred, weights_only=True)
