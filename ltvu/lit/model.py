@@ -240,6 +240,9 @@ class LitModule(L.LightningModule):
                 else:
                     raise ValueError(f'Key {k} not found in the model')
 
+        if 'model.pe_stx' not in new_state_dict:
+            new_state_dict['model.pe_stx'] = torch.tensor(0.0)
+
         checkpoint['state_dict'] = new_state_dict
         checkpoint['epoch'] = self.current_epoch
         checkpoint['global_step'] = self.global_step

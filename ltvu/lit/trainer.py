@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.utils.compute_results import get_final_preds
+from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
 from ltvu.metrics import get_metrics, format_metrics
 
 
@@ -101,6 +101,11 @@ class PerSegmentWriter(BasePredictionWriter):
 
             # get final predictions
             final_preds = get_final_preds(qset_preds, split=self.split)
+
+            if self.test_submit:
+                # fix the order of the predictions
+                final_preds = fix_predictions_order(
+                    final_preds, '/data/datasets/ego4d_data/v2/annotations/vq_test_unannotated.json')
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
