@@ -1,0 +1,6 @@
+# @package _global_
+
+# usage: python train.py +experiment=no_reduce
+
+model:
+  no_reduce: true

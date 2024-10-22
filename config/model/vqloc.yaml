@@ -8,7 +8,6 @@ window_transformer: 5
 resolution_transformer: 8
 num_anchor_regions: 16
 num_layers_st_transformer: 3
-num_layers_stst_decoder: 0
 t_short: 4  # frames
 transformer_dropout: 0.0
 late_reduce: false
@@ -24,3 +23,7 @@ weight_bbox_center: ${loss.weight_bbox_center}
 weight_bbox_hw: ${loss.weight_bbox_hw}
 weight_bbox_giou: ${loss.weight_bbox_giou}
 weight_prob: ${loss.weight_prob}
+
+
+# legacy
+num_layers_stst_decoder: 0

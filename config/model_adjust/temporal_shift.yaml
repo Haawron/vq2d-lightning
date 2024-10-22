@@ -1,0 +1,9 @@
+# @package _global_
+
+# usage: python train.py +model_adjust=\[temporal_shift,...\]
+
+model:
+  enable_temporal_shift_stx: true  # Shift the temporal decoder
+  enable_temporal_shift_conv_summary: true  # Shift the conv_summary layers
+  # num_total_shift_segments: 8  # Number of segments for temporal shift
+  # num_shift_segments: 1  # Number of segments for temporal shift

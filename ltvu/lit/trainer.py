@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.utils.compute_results import get_final_preds
+from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
 from ltvu.metrics import get_metrics, format_metrics
 
 
@@ -22,7 +22,10 @@ type_loggers = WandbLogger | CSVLogger
 
 
 class PerSegmentWriter(BasePredictionWriter):
-    def __init__(self, output_dir, test_submit=False):
+    def __init__(self,
+        output_dir,
+        test_submit = False,
+    ):
         super().__init__(write_interval="batch")
         self.p_tmp_outdir = Path(output_dir) / 'tmp'
         self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
@@ -35,14 +38,19 @@ class PerSegmentWriter(BasePredictionWriter):
         self.rank_seg_preds = []
         self.test_submit = test_submit
 
+        if self.test_submit:
+            self.split = 'test_unannotated'
+            self.p_pred = self.p_pred.with_name('test_predictions.json')
+            self.p_int_pred = self.p_int_pred.with_name('test_intermediate_predictions.pt')
+        else:
+            self.split = 'val'
+
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
-        # p_tarfile = self.p_tmp_outdir / f'rank-{trainer.global_rank}.tar'
         for pred_output in prediction:
             qset_uuid = pred_output['qset_uuid']
             seg_idx = pred_output['seg_idx']
             num_segments = pred_output['num_segments']
             self.rank_seg_preds.append((qset_uuid, seg_idx, num_segments, pred_output))
-            # append_tensor_to_tar(p_tarfile, pred_output, f'{qset_uuid}_{seg_idx}_{num_segments}.pt')
 
         if batch_idx % 100 == 0:  # checkpointing
             self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
@@ -85,13 +93,6 @@ class PerSegmentWriter(BasePredictionWriter):
                     'ret_scores': torch.cat(new_ret_scores, dim=0)[~mask_duplicated],
                 }
 
-            if self.test_submit:
-                split='test_unannotated'
-                self.p_pred = self.p_pred.with_name('test_predictions.json')
-                self.p_int_pred = self.p_int_pred.with_name('test_intermediate_predictions.pt')
-            else:
-                split='val'
-            
             # save intermediate results
             print('Saving intermediate results...')
             torch.save(qset_preds, self.p_int_pred)
@@ -99,7 +100,12 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds, split=split)
+            final_preds = get_final_preds(qset_preds, split=self.split)
+
+            if self.test_submit:
+                # fix the order of the predictions
+                final_preds = fix_predictions_order(
+                    final_preds, '/data/datasets/ego4d_data/v2/annotations/vq_test_unannotated.json')
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
@@ -118,7 +124,7 @@ class PerSegmentWriter(BasePredictionWriter):
             self.p_tmp_outdir.rmdir()
 
 
-def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True):
+def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True, ddp_timeout=30):
     runtime_outdir: str = config.runtime_outdir
     trainer_config: DictConfig = config.trainer
 
@@ -127,7 +133,10 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         ModelSummary(max_depth=2),
         LearningRateMonitor(),
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
-        PerSegmentWriter(output_dir=runtime_outdir, test_submit=config.dataset.get('test_submit',False)),
+        PerSegmentWriter(
+            output_dir=runtime_outdir,
+            test_submit=config.dataset.get('test_submit', False),
+        ),
     ]
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
@@ -164,7 +173,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
     trainer_config = OmegaConf.to_container(trainer_config, resolve=True)
     if 'strategy' not in trainer_config:
         trainer_config['strategy'] = DDPStrategy(
-            timeout=datetime.timedelta(seconds=600),
+            timeout=datetime.timedelta(ddp_timeout),
             find_unused_parameters=True)
     trainer = L.Trainer(
         **trainer_config,

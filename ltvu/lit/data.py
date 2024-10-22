@@ -42,12 +42,12 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.pin_memory = ds_config.pin_memory
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
-        self.test_submit = ds_config.get('test_submit',False)
+        self.test_submit = ds_config.get('test_submit', False)
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
-        
+
         self.rt_pos_query = config.get('rt_pos_query')
 
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
@@ -64,12 +64,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
         print('Preparing data...')
         video_uids, clip_uids = set(), set()
         for split, desired_num_anns in zip(['train', 'val', 'test_unannotated'], self.ALL_NUM_ANNS):
-            p_raw_ann = self.p_official_anns_dir / f'vq_{split}.json'
-            all_anns = json.load(p_raw_ann.open())
-            if split == 'test_unannotated':
-                flat_anns = generate_flat_annotations_vq2d(all_anns, is_annotated=False)
-            else:
-                flat_anns = generate_flat_annotations_vq2d(all_anns, is_annotated=True)
+            p_official_ann = self.p_official_anns_dir / f'vq_{split}.json'
+            flat_anns = generate_flat_annotations_vq2d(p_official_ann)
             assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
             print(f'Found {len(flat_anns)} annotations in {split}.')
             p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
@@ -103,7 +99,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         batch.update({
             'segment': segment, 'query': query,
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
-        
+
         if self.rt_pos_query is not None and self.trainer is not None and self.trainer.training:
             rt_pos_queries = batch['experiment']['multi_query']['rt_pos_queries']  # [b, #Q, c, h, w]
             bsz = rt_pos_queries.shape[0]
@@ -158,6 +154,17 @@ class LitVQ2DDataModule(L.LightningDataModule):
         query = self.normalization(query)  # [b,c,h,w]
         return segment, query
 
+    def denormalize(self, segment, query):  # TODO: static
+        bsz = segment.shape[0]
+        denorm = kornia.enhance.Denormalize(
+            mean=torch.tensor(MEAN, device=segment.device, dtype=segment.dtype),
+            std=torch.tensor(STD, device=segment.device, dtype=segment.dtype),)
+        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        segment = denorm(segment)  # [b,t,c,h,w]
+        segment = rearrange(segment, '(b t) c h w -> b t c h w', b=bsz)
+        query = denorm(query)  # [b,c,h,w]
+        return segment, query
+
     def train_dataloader(self, shuffle=True):
         return torch.utils.data.DataLoader(
             VQ2DFitDataset(self.config, split='train'),
@@ -193,7 +200,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             drop_last=False,
         )
-        
+
     def test_dataloader(self):
         return torch.utils.data.DataLoader(
             VQ2DEvalDataset(self.config, split='test_unannotated'),
@@ -211,6 +218,22 @@ class LitVQ2DDataModule(L.LightningDataModule):
             return self.test_dataloader()
         else:
             return self.pred_dataloader()
+
+    def get_val_sample(self, idx):
+        """Get a single sample from the validation set as a batch for debugging."""
+        ds = VQ2DFitDataset(self.config, split='val')
+        ds.all_anns = ds.all_anns[idx:idx+1]
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=1,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+        return next(iter(dl))
 
 
 if __name__ == '__main__':

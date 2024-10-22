@@ -12,7 +12,7 @@ random_seed: 42
 batch_size: 3
 num_workers: 6
 prefetch_factor: 4
-base_lr: 0.0003
+base_lr: 0.0003  # 3e-4
 compile: false
 backbone_precision: 'fp32'  # bf16 or fp32 or fp16
 backbone_fp32_mm_precision: 'highest'  # medium or high or highest
@@ -25,7 +25,7 @@ YY: ${now:%Y}
 mm: ${now:%m}  # month
 dd: ${now:%d}  # day
 runtime_outdir: ${runtime_outdir:}
-total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE}'}
+total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE} * ${oc.env:SLURM_JOB_NUM_NODES,1}'}
 max_steps: ${eval:'${trainer.max_epochs} * 13607 // ${total_bsz} + 1'}
 
 

@@ -67,6 +67,8 @@ def main(config: DictConfig):
     pdm = LitVQ2DDataModule(config)
     trainer, ckpt_callback = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 
+    log_to_console(str(plm.model))
+
     # if wandblogger is present, log the hostname to the wandb dashboard
     for logger in trainer.loggers:
         if isinstance(logger, WandbLogger):
@@ -75,21 +77,42 @@ def main(config: DictConfig):
     if within_slurm_batch():
         write_batch_script(jid, default_root_dir)
 
-    resume_config = config.get('resume')
-    if resume_config is not None:
-        trainer.fit(plm, datamodule=pdm, ckpt_path=resume_config)
+    # don't convert 'ckpt_finetune_from' to 'ckpt' as it may conflict with the eval config
+    if ckpt_finetune_from := config.get('ckpt_finetune_from'):
+        trainer.fit(plm, datamodule=pdm, ckpt_path=ckpt_finetune_from)
     else:
         trainer.fit(plm, datamodule=pdm)
 
-    if not config.get('debug', False):
-        log_to_console('\n' + "="*80 + '\n')
-        log_to_console('Evaluating best model')
-        plm = LitModule.load_from_checkpoint(ckpt_callback.best_model_path)
-        trainer.predict(plm, datamodule=pdm, return_predictions=False)
+    if config.predict_val or config.predict_test:
+        p_ckpt = 'outputs/batch/2024-10-13/130884/epoch=105-iou=0.4454.ckpt'
+        p_ckpt = p_ckpt if config.get('debug') else ckpt_callback.best_model_path
+        eval_config = hydra.compose(config_name='eval', overrides=[
+            f'ckpt={str(p_ckpt).replace('=', '\\=')}',
+            f'batch_size={config.batch_size}',
+            f'num_workers={config.num_workers}',
+            f'prefetch_factor={config.prefetch_factor}'
+        ])
+        plm = LitModule.load_from_checkpoint(p_ckpt)
+        pdm = LitVQ2DDataModule(eval_config)
+        trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+
+        if config.predict_val:
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model')
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
+
+        if config.predict_test:
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model on test set')
+            pdm.test_submit = True
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
 
 
 if __name__ == '__main__':
-    os.environ["SLURM_JOB_NAME"] = "bash"  # https://github.com/Lightning-AI/pytorch-lightning/issues/16236#issuecomment-1690552495
+    if int(os.environ.get('SLURM_JOB_NUM_NODES', 1)) == 1 or int(os.environ.get('SLURM_NNODES', 1)) == 1:
+        os.environ["SLURM_JOB_NAME"] = "bash"  # https://github.com/Lightning-AI/pytorch-lightning/issues/16236#issuecomment-1690552495
     OmegaConf.register_new_resolver("job_type", lambda : 'batch' if within_slurm_batch() else 'debug')
     OmegaConf.register_new_resolver('runtime_outdir', lambda : hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
     OmegaConf.register_new_resolver("eval", eval)
