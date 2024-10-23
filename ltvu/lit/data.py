@@ -154,6 +154,17 @@ class LitVQ2DDataModule(L.LightningDataModule):
         query = self.normalization(query)  # [b,c,h,w]
         return segment, query
 
+    def denormalize(self, segment, query):  # TODO: static
+        bsz = segment.shape[0]
+        denorm = kornia.enhance.Denormalize(
+            mean=torch.tensor(MEAN, device=segment.device, dtype=segment.dtype),
+            std=torch.tensor(STD, device=segment.device, dtype=segment.dtype),)
+        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        segment = denorm(segment)  # [b,t,c,h,w]
+        segment = rearrange(segment, '(b t) c h w -> b t c h w', b=bsz)
+        query = denorm(query)  # [b,c,h,w]
+        return segment, query
+
     def train_dataloader(self, shuffle=True):
         return torch.utils.data.DataLoader(
             VQ2DFitDataset(self.config, split='train'),
@@ -207,6 +218,22 @@ class LitVQ2DDataModule(L.LightningDataModule):
             return self.test_dataloader()
         else:
             return self.pred_dataloader()
+
+    def get_val_sample(self, idx):
+        """Get a single sample from the validation set as a batch for debugging."""
+        ds = VQ2DFitDataset(self.config, split='val')
+        ds.all_anns = ds.all_anns[idx:idx+1]
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=1,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+        return next(iter(dl))
 
 
 if __name__ == '__main__':
