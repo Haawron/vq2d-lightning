@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.utils.compute_results import get_final_preds
+from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
 from ltvu.metrics import get_metrics, format_metrics
 
 
@@ -38,7 +38,7 @@ class PerSegmentWriter(BasePredictionWriter):
             p_tmp.unlink()
         self.rank_seg_preds = []
         self.test_submit = test_submit
-        self.official_anns_dir = official_anns_dir
+        self.official_anns_dir = Path(official_anns_dir)
 
         if self.test_submit:
             self.split = 'test_unannotated'
@@ -102,7 +102,12 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds, split=self.split, official_anns_dir=self.official_anns_dir)
+            final_preds = get_final_preds(qset_preds, split=self.split)
+
+            if self.test_submit:
+                # fix the order of the predictions
+                final_preds = fix_predictions_order(
+                    final_preds, self.official_anns_dir / f'vq_test_unannotated.json')
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
