@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours_base
+#SBATCH --job-name=ours_base-conv2stst
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -16,8 +16,9 @@ source ./scripts/_setup.sh
 
 
 # ours_base
-python train.py --config-name train_fast +ours=base
+# python train.py --config-name train_fast +ours=base
 
+# ours_base
 # python train.py --config-name train_fast \
 #     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
 #     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
@@ -25,3 +26,20 @@ python train.py --config-name train_fast +ours=base
 #     model.late_reduce=true \
 #     model.cls_norm=true \
 #     batch_size=3 \
+
+# ours_base - temporal shift
+# python train.py --config-name train_fast \
+#     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     model.late_reduce=true \
+#     model.cls_norm=true \
+#     batch_size=3 \
+
+# ours_base -> stst
+python train.py --config-name train_fast \
+    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+    +model_adjust=\[no_sttx,no_bottleneck\] \
+    +model.num_layers_short_term_spatio_temporal_transformer=1 \
+    model.late_reduce=true \
+    model.cls_norm=true \
+    batch_size=3 \

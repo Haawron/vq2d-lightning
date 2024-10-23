@@ -200,6 +200,7 @@ class ClipMatcher(nn.Module):
 
         conv_summary_layers: int = 0,
         type_pe_stx: str | None = None,
+        num_layers_short_term_spatio_temporal_transformer: int = 0,
 
         debug = False,
         **kwargs
@@ -272,6 +273,8 @@ class ClipMatcher(nn.Module):
         self.conv_summary_layers = conv_summary_layers
         self.type_pe_stx = type_pe_stx
 
+        self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
+
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
             num_regions=[self.num_anchor_regions, self.num_anchor_regions])
@@ -301,6 +304,7 @@ class ClipMatcher(nn.Module):
                 nn.BatchNorm2d(256),
                 nn.LeakyReLU(inplace=True),
             )
+            self.reduce = torch.compile(self.reduce)
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
@@ -313,13 +317,9 @@ class ClipMatcher(nn.Module):
             dummy = torch.zeros(1, 1 + 1024, stx_in_dim)
             emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:].detach()  # [1,1024,768]
             if self.type_pe_stx == '3d':  # 25M params
-                # self.pe_stx = torch.zeros(1, clip_num_frames * self.clip_feat_size_coarse ** 2, stx_in_dim)
-                # self.pe_stx = rearrange(self.pe_stx, '1 (t h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
                 self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
             elif self.type_pe_stx == '2d':  # 0.8M params
-                # self.pe_stx = torch.zeros(1, self.clip_feat_size_coarse ** 2, stx_in_dim)
-                self.pe_stx = emb
-                self.pe_stx = self.pe_stx[:, None]  # [1,1,h*w,c]
+                self.pe_stx = emb[:, None]  # [1,1,h*w,c]
         self.pe_stx = nn.parameter.Parameter(self.pe_stx)
 
         for _ in range(self.num_layers_cq_corr_transformer):
@@ -341,6 +341,9 @@ class ClipMatcher(nn.Module):
                 stx_layer.self_attn = TemporalShift(stx_layer.self_attn, num_frames=clip_num_frames, n_div=8)
                 new_modules.append(stx_layer)
             self.CQ_corr_transformer = nn.ModuleList(new_modules)
+        else:
+            for i in range(len(self.CQ_corr_transformer)):
+                self.CQ_corr_transformer[i] = torch.compile(self.CQ_corr_transformer[i])
 
         # feature downsample layers
         sttx_in_dim = self.backbone_dim if self.no_reduce else 256
@@ -389,6 +392,20 @@ class ClipMatcher(nn.Module):
                         batch_first=True))
         self.feat_corr_transformer = nn.ModuleList(self.feat_corr_transformer)
         self.temporal_mask = None
+
+        if self.num_layers_short_term_spatio_temporal_transformer > 0:
+            self.stst_transformer = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=256,
+                    nhead=8,
+                    dim_feedforward=1024,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_short_term_spatio_temporal_transformer)
+            self.stst_transformer = torch.compile(self.stst_transformer)
+        else:
+            self.stst_transformer = None
 
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
@@ -697,6 +714,11 @@ class ClipMatcher(nn.Module):
             clip_feat = rearrange(
                 clip_feat, 'b (t h w) c -> (b t) c h w',
                 b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
+
+        if self.stst_transformer is not None:
+            clip_feat = rearrange(clip_feat, '(b nc ts) c h w -> (b nc) (ts h w) c', b=b, nc=nc, ts=ts, h=h, w=w)
+            clip_feat = self.stst_transformer(clip_feat)
+            clip_feat = rearrange(clip_feat, '(b nc) (ts h w) c -> (b nc ts) c h w', b=b, nc=nc, ts=ts, h=h, w=w)
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]
