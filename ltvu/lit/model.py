@@ -204,6 +204,14 @@ class LitModule(L.LightningModule):
                 ('backbone', 'backbone._orig_mod'),
             ),
             (
+                ('reduce._orig_mod', 'reduce'),
+                ('reduce', 'reduce._orig_mod'),
+            ),
+            (
+                (r'CQ_corr_transformer\.(\d+)\._orig_mod', r'CQ_corr_transformer.\1'),
+                (r'CQ_corr_transformer\.(\d+)', r'CQ_corr_transformer.\1._orig_mod'),
+            ),
+            (
                 (r'CQ_corr_transformer\.(\d+)', r'CQ_corr_transformer.\1.net'),
                 (r'CQ_corr_transformer\.(\d+)\.net', r'CQ_corr_transformer.\1'),
                 (r'(.*CQ_corr_transformer.*)\.self_attn\.(.*)', r'\1.self_attn.net.\2'),
@@ -230,19 +238,23 @@ class LitModule(L.LightningModule):
                     return kx
 
         for k, v in checkpoint['state_dict'].items():
+            # ignore conditions
             if 'query_down_heads' in k:
                 continue
+            if 'pe_stx' in k:
+                if not isinstance(v, torch.Tensor) or v.numel() < 256:  # Null tensor
+                    continue
+
+            # replace conditions
             if k in param_names:
                 new_state_dict[k] = v
             else:
                 if (kk := dfs(k)) is not None:
                     new_state_dict[kk] = v
                 else:
-                    raise ValueError(f'Key {k} not found in the model')
+                    raise ValueError(f'Key {k} not found in the model\n\n{param_names}\n')
 
-        if 'model.pe_stx' not in new_state_dict:
-            new_state_dict['model.pe_stx'] = torch.tensor(0.0)
-
+        # reset the training state
         checkpoint['state_dict'] = new_state_dict
         checkpoint['epoch'] = self.current_epoch
         checkpoint['global_step'] = self.global_step

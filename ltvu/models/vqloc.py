@@ -312,15 +312,15 @@ class ClipMatcher(nn.Module):
         stx_in_dim = self.backbone_dim if self.late_reduce or self.no_reduce else 256
 
         if self.type_pe_stx is None:
-            self.pe_stx = torch.tensor(0.)
+            self.pe_stx = None
         else:
             dummy = torch.zeros(1, 1 + 1024, stx_in_dim)
-            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:].detach()  # [1,1024,768]
+            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:].clone()  # [1,1024,768]
             if self.type_pe_stx == '3d':  # 25M params
                 self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
             elif self.type_pe_stx == '2d':  # 0.8M params
                 self.pe_stx = emb[:, None]  # [1,1,h*w,c]
-        self.pe_stx = nn.parameter.Parameter(self.pe_stx)
+            self.pe_stx = nn.parameter.Parameter(self.pe_stx)
 
         for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
@@ -667,7 +667,8 @@ class ClipMatcher(nn.Module):
         # spatial correspondence
         query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, '(b t) c h w -> b t (h w) c', b=b)
-        clip_feat = clip_feat + self.pe_stx
+        if self.pe_stx is not None:
+            clip_feat = clip_feat + self.pe_stx
         clip_feat = rearrange(clip_feat, 'b t (h w) c -> (b t) (h w) c', b=b, h=h)
 
         for stx_layer in self.CQ_corr_transformer:

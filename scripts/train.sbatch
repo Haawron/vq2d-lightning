@@ -36,10 +36,18 @@ source ./scripts/_setup.sh
 #     batch_size=3 \
 
 # ours_base -> stst
+# python train.py --config-name train_fast \
+#     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+#     +model_adjust=\[no_sttx,no_bottleneck\] \
+#     +model.num_layers_short_term_spatio_temporal_transformer=1 \
+#     model.late_reduce=true \
+#     model.cls_norm=true \
+#     batch_size=3 \
+
+# ours_base - CLS
 python train.py --config-name train_fast \
-    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
-    +model_adjust=\[no_sttx,no_bottleneck\] \
-    +model.num_layers_short_term_spatio_temporal_transformer=1 \
+    +experiment=\[rt_pos_query,pca_guide\] \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +model.enable_temporal_shift_conv_summary=true \
     model.late_reduce=true \
-    model.cls_norm=true \
     batch_size=3 \
