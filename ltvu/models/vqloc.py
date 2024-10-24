@@ -584,7 +584,7 @@ class ClipMatcher(nn.Module):
                 if sim_mode == 'max':
                     top_sim_idx = sim.argmax(dim=-1) # [b,1]
                 elif sim_mode == 'min':
-                    top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
+                    top_sim_idx = sim.argmin(dim=-1)  # [b, 1]
 
                 final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                 rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
