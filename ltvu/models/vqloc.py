@@ -315,9 +315,9 @@ class ClipMatcher(nn.Module):
             self.pe_stx = None
         else:
             dummy = torch.zeros(1, 1 + 1024, stx_in_dim)
-            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:].clone()  # [1,1024,768]
+            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:]  # [1,1024,768]
             if self.type_pe_stx == '3d':  # 25M params
-                self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
+                self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse).clone()
             elif self.type_pe_stx == '2d':  # 0.8M params
                 self.pe_stx = emb[:, None]  # [1,1,h*w,c]
             self.pe_stx = nn.parameter.Parameter(self.pe_stx)
