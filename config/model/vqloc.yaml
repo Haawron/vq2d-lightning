@@ -8,6 +8,7 @@ window_transformer: 5
 resolution_transformer: 8
 num_anchor_regions: 16
 num_layers_st_transformer: 3
+apply_sttx_mask: true
 t_short: 4  # frames
 transformer_dropout: 0.0
 late_reduce: false

@@ -157,6 +157,7 @@ class ClipMatcher(nn.Module):
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
+        apply_sttx_mask = True,
         transformer_dropout = 0.,
         fix_backbone = True,
 
@@ -183,6 +184,7 @@ class ClipMatcher(nn.Module):
         # cls token score
         enable_cls_token_score = False,
         cls_norm = False,
+        cls_repair_neighbor = False,
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -252,9 +254,12 @@ class ClipMatcher(nn.Module):
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
         self.cls_norm = cls_norm
+        self.cls_repair_neighbor = cls_repair_neighbor
+
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
+        self.apply_sttx_mask = apply_sttx_mask
         self.t_short = t_short
 
         self.enable_pca_guide = enable_pca_guide
@@ -417,7 +422,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def get_cross_cls_attn_score(self,latent_query, latent_clip):
+    def get_cross_cls_attn_score(self, latent_query, latent_clip):
         """
         latent_query: [b,1,c]
         latent_clip: [b*t,n,c]
@@ -425,6 +430,20 @@ class ClipMatcher(nn.Module):
         BT, N, C = latent_clip.shape
         B = latent_query.shape[0]
         T = BT // B
+
+        if self.cls_repair_neighbor:
+            w = self.clip_feat_size_coarse
+            feat = rearrange(latent_clip, '(b t) (h w) c -> b t h w c', b=B, t=T, w=w)
+            neighbor_patches = torch.cat([
+                rearrange(feat[:, :, 0:2, 2:4], '... hh ww c -> ... (hh ww) c'),  # [b,t,2,2,c] -> [b,t,4,c]
+                rearrange(feat[:, :, 2:4, 0:4], '... hh ww c -> ... (hh ww) c'),  # [b,t,2,4,c] -> [b,t,8,c]
+            ], dim=2)  # [b,t,12,c]
+            neighbor_norm_mean = neighbor_patches.norm(dim=-1, keepdim=True).mean(dim=-2, keepdim=True)  # [b,t,1,1]
+            neighbor_mean = neighbor_patches.mean(dim=2, keepdim=True)  # [b,t,1,c]
+            neighbor_mean /= neighbor_mean.norm(dim=-1, keepdim=True)
+            neighbor_mean *= neighbor_norm_mean
+            neighbor_mean = rearrange(neighbor_mean, 'b t 1 c -> (b t) 1 c')
+            latent_clip[:, [0, 1, w, w+1]] = neighbor_mean
 
         last_layer = self.backbone.encoder.layer[-1]
         Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
@@ -440,7 +459,7 @@ class ClipMatcher(nn.Module):
             remaining_mean = remaining_patches.mean(dim=-1, keepdim=True)
             attn[:, :, 0:2, 0:2]  = remaining_mean.unsqueeze(-1).expand(-1, -1, 2, 2)
             attn = rearrange(attn, 'bt 1 h w -> bt 1 (h w)')
-        attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
+        attn = repeat(attn, '(b t) 1 n2 -> (b t H) n1 n2', b=B, H=self.nhead, n1=N, n2=N)
 
         return attn
 
@@ -707,8 +726,10 @@ class ClipMatcher(nn.Module):
 
         if len(self.feat_corr_transformer) > 0:
             clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
-            mask = self.get_vqloc_sttx_mask(clip_feat, t)
-            sttx_src_mask = mask
+            if self.apply_sttx_mask:
+                mask = self.get_vqloc_sttx_mask(clip_feat, t)
+                sttx_src_mask = mask
+            tqdm.write(repr(sttx_src_mask))
             for sttx_layer in self.feat_corr_transformer:
                 sttx_layer: nn.TransformerEncoderLayer  # written for pylance
                 clip_feat = sttx_layer.forward(clip_feat, src_mask=sttx_src_mask)

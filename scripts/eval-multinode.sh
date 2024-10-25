@@ -25,7 +25,7 @@ batchhostport=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); pr
 interfaces=()
 for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
     echo $host
-    hostip=$(ssh $sshopt $host hostname -i)
+    hostip=$(ssh $sshopt $host hostname -i | awk '{print $1}')
     interfaces+=($(ssh $sshopt $host bash -c "ifconfig | grep -B1 $hostip | head -n1 | awk '{print \$1}' | sed 's/:\$//'"))
 done
 interfaces=$(echo "${interfaces[@]}" | tr ' ' ',')  # string join
