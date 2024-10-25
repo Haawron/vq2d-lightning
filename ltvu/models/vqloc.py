@@ -552,6 +552,8 @@ class ClipMatcher(nn.Module):
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
         rt_pos_queries = None,
+        rt_pos_top_k = 1,
+        rt_pos_idx = None, # -1 means not gt
         rt_pos = False,
         sim_mode = 'max',
         sim_thr = 0.0,
@@ -573,7 +575,7 @@ class ClipMatcher(nn.Module):
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
-            if rt_pos and random.randint(0, 1) == 1:
+            if (rt_pos and random.randint(0, 1) == 1) or self.debug:
                 rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
                 query_feat_dict = self.extract_feature(query)
@@ -586,7 +588,8 @@ class ClipMatcher(nn.Module):
 
                 sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
 
-                sim_mask = sim > sim_thr # [b,t]
+                valid_gt_mask = rt_pos_idx != -1
+                sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
                 sim_mask_num = sim_mask.sum() / b
                 batch_has_valid = sim_mask.any(dim=-1) # [b]
 
@@ -594,12 +597,14 @@ class ClipMatcher(nn.Module):
                 if batch_has_valid.any():
                     valid_sim_mask = sim_mask.float()  # [b, t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-
+                    
                 if sim_mode == 'max':
-                    top_sim_idx = sim.argmax(dim=-1) # [b,1]
+                    masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
+                    top_sim_idx = masked_sim.argmax(dim=-1)  # [b,1]
                 elif sim_mode == 'min':
-                    top_sim_idx = sim.argmin(dim=-1)  # [b, 1]
-
+                    masked_sim = sim.masked_fill(~valid_gt_mask, float('inf'))
+                    top_sim_idx = masked_sim.argmin(dim=-1)  # [b,1]
+                    
                 final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
                 rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
 

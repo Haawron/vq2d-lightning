@@ -107,6 +107,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             rt_pos_queries = self.normalization(rt_pos_queries)  # [b*#Q, c, h, w]
             rt_pos_queries = rearrange(rt_pos_queries, '(b q) c h w -> b q c h w', b=bsz)
             batch['rt_pos_queries'] = rt_pos_queries
+            batch['rt_pos_idx'] = batch['experiment']['multi_query']['rt_pos_idx']
         return batch
 
     def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
