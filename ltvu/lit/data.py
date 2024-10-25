@@ -235,6 +235,22 @@ class LitVQ2DDataModule(L.LightningDataModule):
         )
         return next(iter(dl))
 
+    def get_train_sample(self, idx):
+        """Get a single sample from the validation set as a batch for debugging."""
+        ds = VQ2DFitDataset(self.config, split='train')
+        ds.all_anns = ds.all_anns[idx:idx+1]
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=1,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+        return next(iter(dl))
+
 
 if __name__ == '__main__':
     import os

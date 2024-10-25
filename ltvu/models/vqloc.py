@@ -525,6 +525,21 @@ class ClipMatcher(nn.Module):
             self.backbone_dtype,
             self.fix_backbone)
 
+    def extract_rt_feat(self,
+        segment,
+        query,
+        rt_pos_queries = None,
+        **kwargs
+    ):
+        b, t = segment.shape[:2]
+        with self.backbone_context():
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+            rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+            query_feat_dict = self.extract_feature(query)
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c') # [b,1,c]
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+        return rt_pos_queries_cls, query_cls
 
     def forward(
         self,
@@ -565,6 +580,9 @@ class ClipMatcher(nn.Module):
                 rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
                 query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
                 rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+                if get_intermediate_features:
+                    output_dict['feat']['rt_pos_query'] = rt_pos_queries_cls.clone()
+                    output_dict['feat']['rt_query'] = query_cls.clone()
 
                 sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
 
