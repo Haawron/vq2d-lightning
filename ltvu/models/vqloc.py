@@ -729,7 +729,6 @@ class ClipMatcher(nn.Module):
             if self.apply_sttx_mask:
                 mask = self.get_vqloc_sttx_mask(clip_feat, t)
                 sttx_src_mask = mask
-            tqdm.write(repr(sttx_src_mask))
             for sttx_layer in self.feat_corr_transformer:
                 sttx_layer: nn.TransformerEncoderLayer  # written for pylance
                 clip_feat = sttx_layer.forward(clip_feat, src_mask=sttx_src_mask)
