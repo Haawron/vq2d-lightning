@@ -51,7 +51,7 @@ echo "Setup finished."
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python train.py --config-name train_fast \
-        +trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+        trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
         +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
         random_seed=43 \

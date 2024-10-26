@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=eval
+#SBATCH --job-name=eval-134815
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
 #SBATCH -N 2
-#SBATCH --gres=gpu:6
-#SBATCH --ntasks-per-node=6
+#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-gpu=43G
 #SBATCH -x ariel-k[1,2],ariel-m1
@@ -51,8 +51,7 @@ echo "Setup finished."
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python eval.py \
-        +trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-        ckpt='outputs/batch/2024-10-19/133186/epoch\=54-prob_acc\=0.7952.ckpt' \
-        test_submit=true
+        trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+        ckpt='outputs/batch/2024-10-25/134815/epoch\=44-prob_acc\=0.7937.ckpt'
 
 exit $?
