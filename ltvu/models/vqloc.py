@@ -178,6 +178,7 @@ class ClipMatcher(nn.Module):
 
         #### experiment-specific ####
         num_layers_cq_corr_transformer: int = 1,
+        nhead_stx: int = 4,
         t_short: int = 4,  # frames
         no_reduce=False,
 
@@ -201,6 +202,8 @@ class ClipMatcher(nn.Module):
         enable_temporal_shift_conv_summary: bool = False,
 
         conv_summary_layers: int = 0,
+        conv_summary_1d_layers: int = 0,
+        conv_summary_1d_first: bool = False,
         type_pe_stx: str | None = None,
         num_layers_short_term_spatio_temporal_transformer: int = 0,
 
@@ -276,6 +279,8 @@ class ClipMatcher(nn.Module):
         self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
 
         self.conv_summary_layers = conv_summary_layers
+        self.conv_summary_1d_layers = conv_summary_1d_layers
+        self.conv_summary_1d_first = conv_summary_1d_first
         self.type_pe_stx = type_pe_stx
 
         self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
@@ -313,7 +318,7 @@ class ClipMatcher(nn.Module):
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
-        self.nhead = 4
+        self.nhead = nhead_stx
         stx_in_dim = self.backbone_dim if self.late_reduce or self.no_reduce else 256
 
         if self.type_pe_stx is None:
@@ -372,6 +377,17 @@ class ClipMatcher(nn.Module):
             self.conv_summary = nn.ModuleList([conv_block(256, 256) for _ in range(self.conv_summary_layers)])
         else:
             self.conv_summary = None
+
+        if self.conv_summary_1d_layers > 0:
+            def conv_block(in_dim, out_dim):
+                return nn.Sequential(OrderedDict([
+                    ('conv', nn.Conv1d(in_dim, out_dim, 3, padding=1)),
+                    ('bn', nn.BatchNorm1d(out_dim)),
+                    ('relu', nn.LeakyReLU(inplace=True))
+                ]))
+            self.conv_summary_1d = nn.ModuleList([conv_block(256, 256) for _ in range(self.conv_summary_1d_layers)])
+        else:
+            self.conv_summary_1d = None
 
         if self.enable_temporal_shift_conv_summary:
             assert self.conv_summary is not None, 'conv_summary must be enabled to use temporal shift'
@@ -565,6 +581,27 @@ class ClipMatcher(nn.Module):
             self.backbone_dtype,
             self.fix_backbone)
 
+    def forward_conv_summary_1d(self, clip_feat, output_dict, get_intermediate_features = False):
+        _, _, h, w = clip_feat.shape
+        clip_feat = rearrange(clip_feat, 'b c h w -> b c (h w)')
+        for conv in self.conv_summary_1d:
+            clip_feat = clip_feat + conv(clip_feat)
+        clip_feat = rearrange(clip_feat, 'b c (h w) -> b c h w', h=h, w=w)
+
+        if get_intermediate_features:
+            output_dict['feat']['clip']['conv_1d'] = clip_feat.clone()
+
+        return clip_feat
+
+    def forward_conv_summary(self, clip_feat, output_dict, get_intermediate_features = False):
+        for conv in self.conv_summary:
+            clip_feat = clip_feat + conv(clip_feat)
+
+        if get_intermediate_features:
+            output_dict['feat']['clip']['conv'] = clip_feat.clone()
+
+        return clip_feat
+
 
     def forward(
         self,
@@ -717,12 +754,28 @@ class ClipMatcher(nn.Module):
                 break
             clip_feat = down_head.forward(clip_feat)
 
+        if self.conv_summary_1d is not None and self.conv_summary_1d_first:
+            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
         if self.conv_summary is not None:
-            for conv in self.conv_summary:
-                clip_feat = clip_feat + conv(clip_feat)
+            clip_feat = self.forward_conv_summary(clip_feat, output_dict, get_intermediate_features)
+        if self.conv_summary_1d is not None and not self.conv_summary_1d_first:
+            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
 
-            if get_intermediate_features:
-                output_dict['feat']['clip']['conv'] = clip_feat.clone()
+        # if self.conv_summary is not None:
+        #     for conv in self.conv_summary:
+        #         clip_feat = clip_feat + conv(clip_feat)
+
+        #     if get_intermediate_features:
+        #         output_dict['feat']['clip']['conv'] = clip_feat.clone()
+
+        # if self.conv_summary_1d is not None:
+        #     clip_feat = rearrange(clip_feat, 'b c h w -> b c (h w)')
+        #     for conv in self.conv_summary_1d:
+        #         clip_feat = clip_feat + conv(clip_feat)
+        #     clip_feat = rearrange(clip_feat, 'b c (h w) -> b c h w', h=h, w=w)
+
+        #     if get_intermediate_features:
+        #         output_dict['feat']['clip']['conv_1d'] = clip_feat.clone()
 
         if len(self.feat_corr_transformer) > 0:
             clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
