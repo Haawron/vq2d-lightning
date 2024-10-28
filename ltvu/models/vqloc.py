@@ -205,7 +205,9 @@ class ClipMatcher(nn.Module):
         conv_summary_1d_layers: int = 0,
         conv_summary_1d_first: bool = False,
         type_pe_stx: str | None = None,
+        num_layers_small_cq_corr_transformer: int = 0,
         num_layers_short_term_spatio_temporal_transformer: int = 0,
+        num_layers_self_spatial_transformer: int = 0,
 
         debug = False,
         **kwargs
@@ -283,7 +285,9 @@ class ClipMatcher(nn.Module):
         self.conv_summary_1d_first = conv_summary_1d_first
         self.type_pe_stx = type_pe_stx
 
+        self.num_layers_small_cq_corr_transformer = num_layers_small_cq_corr_transformer
         self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
+        self.num_layers_self_spatial_transformer = num_layers_self_spatial_transformer
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -355,6 +359,20 @@ class ClipMatcher(nn.Module):
             for i in range(len(self.CQ_corr_transformer)):
                 self.CQ_corr_transformer[i] = torch.compile(self.CQ_corr_transformer[i])
 
+        if self.num_layers_small_cq_corr_transformer > 0:
+            self.small_stx = nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=256,
+                    nhead=self.nhead,
+                    dim_feedforward=2048,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_small_cq_corr_transformer)
+            self.small_stx = torch.compile(self.small_stx)
+        else:
+            self.small_stx = None
+
         # feature downsample layers
         sttx_in_dim = self.backbone_dim if self.no_reduce else 256
         self.num_head_layers, self.down_heads = int(math.log2(self.clip_feat_size_coarse)), []
@@ -397,6 +415,20 @@ class ClipMatcher(nn.Module):
         # spatial-temporal PE
         self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, sttx_in_dim)
         self.pe_3d = nn.parameter.Parameter(self.pe_3d)
+
+        if self.num_layers_self_spatial_transformer > 0:
+            self.self_stx = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=sttx_in_dim,
+                    nhead=8,
+                    dim_feedforward=2048,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_self_spatial_transformer)
+            self.self_stx = torch.compile(self.self_stx)
+        else:
+            self.self_stx = None
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
@@ -748,6 +780,17 @@ class ClipMatcher(nn.Module):
                 output_dict['feat']['clip']['late_reduce'] = clip_feat.clone()
                 output_dict['feat']['query']['late_reduce'] = query_feat.clone()
 
+
+        ################## after STX ##################
+
+        if self.small_stx is not None:
+            query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> (b t) (h w) c', b=b)
+            clip_feat = self.small_stx.forward(
+                tgt=clip_feat, tgt_mask=stx_tgt_mask,
+                memory=query_feat_expanded, memory_mask=stx_mem_mask)
+            clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
+
         # down-size feature
         for down_head in self.down_heads:
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
@@ -761,21 +804,12 @@ class ClipMatcher(nn.Module):
         if self.conv_summary_1d is not None and not self.conv_summary_1d_first:
             clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
 
-        # if self.conv_summary is not None:
-        #     for conv in self.conv_summary:
-        #         clip_feat = clip_feat + conv(clip_feat)
-
-        #     if get_intermediate_features:
-        #         output_dict['feat']['clip']['conv'] = clip_feat.clone()
-
-        # if self.conv_summary_1d is not None:
-        #     clip_feat = rearrange(clip_feat, 'b c h w -> b c (h w)')
-        #     for conv in self.conv_summary_1d:
-        #         clip_feat = clip_feat + conv(clip_feat)
-        #     clip_feat = rearrange(clip_feat, 'b c (h w) -> b c h w', h=h, w=w)
-
-        #     if get_intermediate_features:
-        #         output_dict['feat']['clip']['conv_1d'] = clip_feat.clone()
+        if self.self_stx is not None:
+            _, _, h, w = clip_feat.shape
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
+            clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) (h w) c', b=b, t=t, h=h)
+            clip_feat = self.self_stx(clip_feat)
+            clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
 
         if len(self.feat_corr_transformer) > 0:
             clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
@@ -793,6 +827,8 @@ class ClipMatcher(nn.Module):
             clip_feat = rearrange(clip_feat, '(b nc ts) c h w -> (b nc) (ts h w) c', b=b, nc=nc, ts=ts, h=h, w=w)
             clip_feat = self.stst_transformer(clip_feat)
             clip_feat = rearrange(clip_feat, '(b nc) (ts h w) c -> (b nc ts) c h w', b=b, nc=nc, ts=ts, h=h, w=w)
+
+        ################## Detection Head ##################
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]

@@ -94,15 +94,16 @@ def main(config: DictConfig):
         ])
         plm = LitModule.load_from_checkpoint(p_ckpt)
         pdm = LitVQ2DDataModule(eval_config)
-        trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
 
         if config.predict_val:
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
             log_to_console('Evaluating the best model')
             trainer.predict(plm, datamodule=pdm, return_predictions=False)
             log_to_console('\n' + "="*80 + '\n')
 
         if config.predict_test:
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
             log_to_console('Evaluating the best model on test set')
             pdm.test_submit = True
