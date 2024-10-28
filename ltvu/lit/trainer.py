@@ -24,6 +24,7 @@ type_loggers = WandbLogger | CSVLogger
 class PerSegmentWriter(BasePredictionWriter):
     def __init__(self,
         output_dir,
+        official_anns_dir,
         test_submit = False,
     ):
         super().__init__(write_interval="batch")
@@ -37,6 +38,7 @@ class PerSegmentWriter(BasePredictionWriter):
             p_tmp.unlink()
         self.rank_seg_preds = []
         self.test_submit = test_submit
+        self.official_anns_dir = Path(official_anns_dir)
 
         if self.test_submit:
             self.split = 'test_unannotated'
@@ -105,7 +107,7 @@ class PerSegmentWriter(BasePredictionWriter):
             if self.test_submit:
                 # fix the order of the predictions
                 final_preds = fix_predictions_order(
-                    final_preds, '/data/datasets/ego4d_data/v2/annotations/vq_test_unannotated.json')
+                    final_preds, self.official_anns_dir / f'vq_test_unannotated.json')
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
@@ -135,6 +137,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
         PerSegmentWriter(
             output_dir=runtime_outdir,
+            official_anns_dir=config.dataset.official_anns_dir,
             test_submit=config.dataset.get('test_submit', False),
         ),
     ]

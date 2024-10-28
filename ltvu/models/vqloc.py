@@ -182,6 +182,9 @@ class ClipMatcher(nn.Module):
         t_short: int = 4,  # frames
         no_reduce=False,
 
+        # EPQ (HQQ)
+        sim_between: str = 'query',
+
         # cls token score
         enable_cls_token_score = False,
         cls_norm = False,
@@ -267,6 +270,8 @@ class ClipMatcher(nn.Module):
         self.apply_sttx_mask = apply_sttx_mask
         self.t_short = t_short
 
+        self.sim_between = sim_between
+
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
         self.guide_to_stx = guide_to_stx
@@ -318,7 +323,6 @@ class ClipMatcher(nn.Module):
                 nn.BatchNorm2d(256),
                 nn.LeakyReLU(inplace=True),
             )
-            self.reduce = torch.compile(self.reduce)
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
@@ -355,9 +359,6 @@ class ClipMatcher(nn.Module):
                 stx_layer.self_attn = TemporalShift(stx_layer.self_attn, num_frames=clip_num_frames, n_div=8)
                 new_modules.append(stx_layer)
             self.CQ_corr_transformer = nn.ModuleList(new_modules)
-        else:
-            for i in range(len(self.CQ_corr_transformer)):
-                self.CQ_corr_transformer[i] = torch.compile(self.CQ_corr_transformer[i])
 
         if self.num_layers_small_cq_corr_transformer > 0:
             self.small_stx = nn.TransformerDecoder(
@@ -634,6 +635,22 @@ class ClipMatcher(nn.Module):
 
         return clip_feat
 
+    def extract_rt_feat(self,
+        segment,
+        query,
+        rt_pos_queries = None,
+        **kwargs
+    ):
+        b, t = segment.shape[:2]
+        with self.backbone_context():
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+            rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+            query_feat_dict = self.extract_feature(query)
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c') # [b,1,c]
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+        return rt_pos_queries_cls, query_cls
+
 
     def forward(
         self,
@@ -646,6 +663,8 @@ class ClipMatcher(nn.Module):
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
         rt_pos_queries = None,
+        rt_pos_top_k = 1,
+        rt_pos_idx = None, # -1 means not gt
         rt_pos = False,
         sim_mode = 'max',
         sim_thr = 0.0,
@@ -667,39 +686,58 @@ class ClipMatcher(nn.Module):
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
-            if rt_pos and random.randint(0, 1) == 1:
-                rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
-                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-                query_feat_dict = self.extract_feature(query)
-                rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
-                query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
-                rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-
-                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-
-                sim_mask = sim > sim_thr # [b,t]
-                sim_mask_num = sim_mask.sum() / b
-                batch_has_valid = sim_mask.any(dim=-1) # [b]
-
-                rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
-                if batch_has_valid.any():
-                    valid_sim_mask = sim_mask.float()  # [b, t]
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-
-                if sim_mode == 'max':
-                    top_sim_idx = sim.argmax(dim=-1) # [b,1]
-                elif sim_mode == 'min':
-                    top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
-
-                final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
-                rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-
-                if enable_rt_pq_threshold:
-                    query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
-                else:
-                    query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
             query_feat_dict = self.extract_feature(query)
 
+        if rt_pos and (random.randint(0, 1) == 1 or self.debug):
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+            with self.backbone_context():
+                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']  # [b*t,c], [b,c,1]
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+            if get_intermediate_features:
+                output_dict['feat']['rt_pos_query'] = rt_pos_queries_cls.clone()
+                output_dict['feat']['rt_query'] = query_cls.clone()
+
+            valid_gt_mask = rt_pos_idx != -1  # [b,t]
+
+            if self.sim_between == 'positives':  # sim between query and rt_pos_queries
+                _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
+                _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
+                simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
+                sim = []  # [b,t]
+                for bidx in range(b):
+                    sim.append(simmat[bidx, valid_gt_mask[bidx]].mean(dim=0))  # [t]
+                sim = torch.stack(sim)  # [b,t]
+            elif self.sim_between == 'query':  # sim between query and rt_pos_queries
+                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
+
+            sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
+            sim_mask_num = sim_mask.sum() / b
+            batch_has_valid = sim_mask.any(dim=-1) # [b]
+
+            rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
+            if batch_has_valid.any():
+                valid_sim_mask = sim_mask.float()  # [b, t]
+                rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+
+            if sim_mode == 'max':
+                masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
+                top_sim_idx = masked_sim.argmax(dim=-1)  # [b,1]
+            elif sim_mode == 'min':
+                masked_sim = sim.masked_fill(~valid_gt_mask, float('inf'))
+                top_sim_idx = masked_sim.argmin(dim=-1)  # [b,1]
+
+            final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
+            rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+
+            if enable_rt_pq_threshold:
+                query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
+            else:
+                query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
+
+            with self.backbone_context():
+                query_feat_dict = self.extract_feature(query)
 
 
         query_feat = query_feat_dict['feat']
