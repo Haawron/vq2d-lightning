@@ -8,3 +8,6 @@ rt_pos_query:
   mode: 'easy'
   enable_rt_pq_threshold: True
   sim_thr: 0.0
+
+model:
+  sim_between: 'query'
