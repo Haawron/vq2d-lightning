@@ -5,17 +5,17 @@
 
 
 defaults:
-  - _self_
   - ../experiment: [rt_pos_query, cls_token_score, pca_guide]
   - ../model_adjust: [no_sttx, no_bottleneck, conv_summary]
+  - _self_
 
 model:
   enable_temporal_shift_conv_summary: true
   late_reduce: true
   cls_norm: true
-  type_pe_stx: '3d'
+  # type_pe_stx: '3d'
 
 batch_size: 3
 
-trainer:
-  gradient_clip_val: 1.
+# trainer:
+#   gradient_clip_val: 1.

@@ -87,7 +87,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
 
         if self.rt_pos_query is not None and self.split == 'train':
-            rt_pos_queries = self.get_rt_pos_query(ann, frame_idxs)
+            rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         query = self.get_query(ann)
@@ -119,6 +119,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 .setdefault('experiment', {})
                 .setdefault('multi_query', {})
                 .setdefault('rt_pos_queries', rt_pos_queries))
+            sample['experiment']['multi_query']['rt_pos_idx'] = np.array(rt_pos_idx)
 
         return sample
 
@@ -225,7 +226,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 'h': rt['h'],
             }
 
-        rt_pos_queries = []
+        rt_pos_queries, rt_pos_idx = [], []
 
         for frame_idx in frame_idxs:
             if frame_idx in list(rt_ann.keys()):
@@ -244,12 +245,13 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 frame = F.interpolate(frame[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
             else:
                 frame = torch.zeros(3, self.query_size[0], self.query_size[1])
-
+                frame_idx = -1
+            rt_pos_idx.append(frame_idx)
             rt_pos_queries.append(frame.squeeze(0))
 
         rt_pos_queries = torch.stack(rt_pos_queries)
 
-        return rt_pos_queries
+        return rt_pos_queries, rt_pos_idx
 
     def get_response_track(self, ann: dict, frame_idxs: np.ndarray):
         """_summary_

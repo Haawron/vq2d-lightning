@@ -157,6 +157,7 @@ class ClipMatcher(nn.Module):
         resolution_transformer = 8,
         num_anchor_regions = 16,
         num_layers_st_transformer = 3,
+        apply_sttx_mask = True,
         transformer_dropout = 0.,
         fix_backbone = True,
 
@@ -177,12 +178,17 @@ class ClipMatcher(nn.Module):
 
         #### experiment-specific ####
         num_layers_cq_corr_transformer: int = 1,
+        nhead_stx: int = 4,
         t_short: int = 4,  # frames
         no_reduce=False,
+
+        # EPQ (HQQ)
+        sim_between: str = 'query',
 
         # cls token score
         enable_cls_token_score = False,
         cls_norm = False,
+        cls_repair_neighbor = False,
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -199,7 +205,12 @@ class ClipMatcher(nn.Module):
         enable_temporal_shift_conv_summary: bool = False,
 
         conv_summary_layers: int = 0,
+        conv_summary_1d_layers: int = 0,
+        conv_summary_1d_first: bool = False,
         type_pe_stx: str | None = None,
+        num_layers_small_cq_corr_transformer: int = 0,
+        num_layers_short_term_spatio_temporal_transformer: int = 0,
+        num_layers_self_spatial_transformer: int = 0,
 
         debug = False,
         **kwargs
@@ -251,10 +262,15 @@ class ClipMatcher(nn.Module):
         self.weight_prob = weight_prob
         self.enable_cls_token_score = enable_cls_token_score
         self.cls_norm = cls_norm
+        self.cls_repair_neighbor = cls_repair_neighbor
+
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
         self.num_layers_cq_corr_transformer = num_layers_cq_corr_transformer
+        self.apply_sttx_mask = apply_sttx_mask
         self.t_short = t_short
+
+        self.sim_between = sim_between
 
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
@@ -270,7 +286,13 @@ class ClipMatcher(nn.Module):
         self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
 
         self.conv_summary_layers = conv_summary_layers
+        self.conv_summary_1d_layers = conv_summary_1d_layers
+        self.conv_summary_1d_first = conv_summary_1d_first
         self.type_pe_stx = type_pe_stx
+
+        self.num_layers_small_cq_corr_transformer = num_layers_small_cq_corr_transformer
+        self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
+        self.num_layers_self_spatial_transformer = num_layers_self_spatial_transformer
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -304,23 +326,19 @@ class ClipMatcher(nn.Module):
 
         # clip-query correspondence
         self.CQ_corr_transformer = []
-        self.nhead = 4
+        self.nhead = nhead_stx
         stx_in_dim = self.backbone_dim if self.late_reduce or self.no_reduce else 256
 
         if self.type_pe_stx is None:
-            self.pe_stx = torch.tensor(0.)
+            self.pe_stx = None
         else:
             dummy = torch.zeros(1, 1 + 1024, stx_in_dim)
-            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:].detach()  # [1,1024,768]
+            emb = self.backbone.embeddings.interpolate_pos_encoding(dummy, 448, 448)[:, 1:]  # [1,1024,768]
             if self.type_pe_stx == '3d':  # 25M params
-                # self.pe_stx = torch.zeros(1, clip_num_frames * self.clip_feat_size_coarse ** 2, stx_in_dim)
-                # self.pe_stx = rearrange(self.pe_stx, '1 (t h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
-                self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse)
+                self.pe_stx = repeat(emb, '1 (h w) c -> 1 t (h w) c', t=clip_num_frames, h=self.clip_feat_size_coarse).clone()
             elif self.type_pe_stx == '2d':  # 0.8M params
-                # self.pe_stx = torch.zeros(1, self.clip_feat_size_coarse ** 2, stx_in_dim)
-                self.pe_stx = emb
-                self.pe_stx = self.pe_stx[:, None]  # [1,1,h*w,c]
-        self.pe_stx = nn.parameter.Parameter(self.pe_stx)
+                self.pe_stx = emb[:, None]  # [1,1,h*w,c]
+            self.pe_stx = nn.parameter.Parameter(self.pe_stx)
 
         for _ in range(self.num_layers_cq_corr_transformer):
             self.CQ_corr_transformer.append(
@@ -341,6 +359,20 @@ class ClipMatcher(nn.Module):
                 stx_layer.self_attn = TemporalShift(stx_layer.self_attn, num_frames=clip_num_frames, n_div=8)
                 new_modules.append(stx_layer)
             self.CQ_corr_transformer = nn.ModuleList(new_modules)
+
+        if self.num_layers_small_cq_corr_transformer > 0:
+            self.small_stx = nn.TransformerDecoder(
+                nn.TransformerDecoderLayer(
+                    d_model=256,
+                    nhead=self.nhead,
+                    dim_feedforward=2048,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_small_cq_corr_transformer)
+            self.small_stx = torch.compile(self.small_stx)
+        else:
+            self.small_stx = None
 
         # feature downsample layers
         sttx_in_dim = self.backbone_dim if self.no_reduce else 256
@@ -365,6 +397,17 @@ class ClipMatcher(nn.Module):
         else:
             self.conv_summary = None
 
+        if self.conv_summary_1d_layers > 0:
+            def conv_block(in_dim, out_dim):
+                return nn.Sequential(OrderedDict([
+                    ('conv', nn.Conv1d(in_dim, out_dim, 3, padding=1)),
+                    ('bn', nn.BatchNorm1d(out_dim)),
+                    ('relu', nn.LeakyReLU(inplace=True))
+                ]))
+            self.conv_summary_1d = nn.ModuleList([conv_block(256, 256) for _ in range(self.conv_summary_1d_layers)])
+        else:
+            self.conv_summary_1d = None
+
         if self.enable_temporal_shift_conv_summary:
             assert self.conv_summary is not None, 'conv_summary must be enabled to use temporal shift'
             # shift only the first layer
@@ -373,6 +416,20 @@ class ClipMatcher(nn.Module):
         # spatial-temporal PE
         self.pe_3d = torch.zeros(1, clip_num_frames * self.resolution_transformer ** 2, sttx_in_dim)
         self.pe_3d = nn.parameter.Parameter(self.pe_3d)
+
+        if self.num_layers_self_spatial_transformer > 0:
+            self.self_stx = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=sttx_in_dim,
+                    nhead=8,
+                    dim_feedforward=2048,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_self_spatial_transformer)
+            self.self_stx = torch.compile(self.self_stx)
+        else:
+            self.self_stx = None
 
         # spatial-temporal transformer layer
         self.feat_corr_transformer = []
@@ -390,6 +447,20 @@ class ClipMatcher(nn.Module):
         self.feat_corr_transformer = nn.ModuleList(self.feat_corr_transformer)
         self.temporal_mask = None
 
+        if self.num_layers_short_term_spatio_temporal_transformer > 0:
+            self.stst_transformer = nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=256,
+                    nhead=8,
+                    dim_feedforward=1024,
+                    dropout=transformer_dropout,
+                    activation='gelu',
+                    batch_first=True),
+                num_layers=self.num_layers_short_term_spatio_temporal_transformer)
+            self.stst_transformer = torch.compile(self.stst_transformer)
+        else:
+            self.stst_transformer = None
+
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
         self.debug = debug
@@ -400,7 +471,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def get_cross_cls_attn_score(self,latent_query, latent_clip):
+    def get_cross_cls_attn_score(self, latent_query, latent_clip):
         """
         latent_query: [b,1,c]
         latent_clip: [b*t,n,c]
@@ -408,6 +479,20 @@ class ClipMatcher(nn.Module):
         BT, N, C = latent_clip.shape
         B = latent_query.shape[0]
         T = BT // B
+
+        if self.cls_repair_neighbor:
+            w = self.clip_feat_size_coarse
+            feat = rearrange(latent_clip, '(b t) (h w) c -> b t h w c', b=B, t=T, w=w)
+            neighbor_patches = torch.cat([
+                rearrange(feat[:, :, 0:2, 2:4], '... hh ww c -> ... (hh ww) c'),  # [b,t,2,2,c] -> [b,t,4,c]
+                rearrange(feat[:, :, 2:4, 0:4], '... hh ww c -> ... (hh ww) c'),  # [b,t,2,4,c] -> [b,t,8,c]
+            ], dim=2)  # [b,t,12,c]
+            neighbor_norm_mean = neighbor_patches.norm(dim=-1, keepdim=True).mean(dim=-2, keepdim=True)  # [b,t,1,1]
+            neighbor_mean = neighbor_patches.mean(dim=2, keepdim=True)  # [b,t,1,c]
+            neighbor_mean /= neighbor_mean.norm(dim=-1, keepdim=True)
+            neighbor_mean *= neighbor_norm_mean
+            neighbor_mean = rearrange(neighbor_mean, 'b t 1 c -> (b t) 1 c')
+            latent_clip[:, [0, 1, w, w+1]] = neighbor_mean
 
         last_layer = self.backbone.encoder.layer[-1]
         Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
@@ -423,7 +508,7 @@ class ClipMatcher(nn.Module):
             remaining_mean = remaining_patches.mean(dim=-1, keepdim=True)
             attn[:, :, 0:2, 0:2]  = remaining_mean.unsqueeze(-1).expand(-1, -1, 2, 2)
             attn = rearrange(attn, 'bt 1 h w -> bt 1 (h w)')
-        attn = repeat(attn, '(b t) 1 n2 -> (b t h) n1 n2', b=B, h=self.nhead, n1=N, n2=N)
+        attn = repeat(attn, '(b t) 1 n2 -> (b t H) n1 n2', b=B, H=self.nhead, n1=N, n2=N)
 
         return attn
 
@@ -529,6 +614,43 @@ class ClipMatcher(nn.Module):
             self.backbone_dtype,
             self.fix_backbone)
 
+    def forward_conv_summary_1d(self, clip_feat, output_dict, get_intermediate_features = False):
+        _, _, h, w = clip_feat.shape
+        clip_feat = rearrange(clip_feat, 'b c h w -> b c (h w)')
+        for conv in self.conv_summary_1d:
+            clip_feat = clip_feat + conv(clip_feat)
+        clip_feat = rearrange(clip_feat, 'b c (h w) -> b c h w', h=h, w=w)
+
+        if get_intermediate_features:
+            output_dict['feat']['clip']['conv_1d'] = clip_feat.clone()
+
+        return clip_feat
+
+    def forward_conv_summary(self, clip_feat, output_dict, get_intermediate_features = False):
+        for conv in self.conv_summary:
+            clip_feat = clip_feat + conv(clip_feat)
+
+        if get_intermediate_features:
+            output_dict['feat']['clip']['conv'] = clip_feat.clone()
+
+        return clip_feat
+
+    def extract_rt_feat(self,
+        segment,
+        query,
+        rt_pos_queries = None,
+        **kwargs
+    ):
+        b, t = segment.shape[:2]
+        with self.backbone_context():
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+            rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+            query_feat_dict = self.extract_feature(query)
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c') # [b,1,c]
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+        return rt_pos_queries_cls, query_cls
+
 
     def forward(
         self,
@@ -541,6 +663,8 @@ class ClipMatcher(nn.Module):
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm = False,
         rt_pos_queries = None,
+        rt_pos_top_k = 1,
+        rt_pos_idx = None, # -1 means not gt
         rt_pos = False,
         sim_mode = 'max',
         sim_thr = 0.0,
@@ -562,39 +686,58 @@ class ClipMatcher(nn.Module):
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
-            if rt_pos and random.randint(0, 1) == 1:
-                rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
-                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-                query_feat_dict = self.extract_feature(query)
-                rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
-                query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
-                rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-
-                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-
-                sim_mask = sim > sim_thr # [b,t]
-                sim_mask_num = sim_mask.sum() / b
-                batch_has_valid = sim_mask.any(dim=-1) # [b]
-
-                rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
-                if batch_has_valid.any():
-                    valid_sim_mask = sim_mask.float()  # [b, t]
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-
-                if sim_mode == 'max':
-                    top_sim_idx = sim.argmax(dim=-1) # [b,1]
-                elif sim_mode == 'min':
-                    top_sim_idx = sim.argmin(dim=-1, keepdim=True)  # [b, 1]
-
-                final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
-                rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-
-                if enable_rt_pq_threshold:
-                    query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
-                else:
-                    query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
             query_feat_dict = self.extract_feature(query)
 
+        if rt_pos and (random.randint(0, 1) == 1 or self.debug):
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+            with self.backbone_context():
+                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']  # [b*t,c], [b,c,1]
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+            if get_intermediate_features:
+                output_dict['feat']['rt_pos_query'] = rt_pos_queries_cls.clone()
+                output_dict['feat']['rt_query'] = query_cls.clone()
+
+            valid_gt_mask = rt_pos_idx != -1  # [b,t]
+
+            if self.sim_between == 'positives':  # sim between query and rt_pos_queries
+                _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
+                _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
+                simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
+                sim = []  # [b,t]
+                for bidx in range(b):
+                    sim.append(simmat[bidx, valid_gt_mask[bidx]].mean(dim=0))  # [t]
+                sim = torch.stack(sim)  # [b,t]
+            elif self.sim_between == 'query':  # sim between query and rt_pos_queries
+                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
+
+            sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
+            sim_mask_num = sim_mask.sum() / b
+            batch_has_valid = sim_mask.any(dim=-1) # [b]
+
+            rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
+            if batch_has_valid.any():
+                valid_sim_mask = sim_mask.float()  # [b, t]
+                rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+
+            if sim_mode == 'max':
+                masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
+                top_sim_idx = masked_sim.argmax(dim=-1)  # [b,1]
+            elif sim_mode == 'min':
+                masked_sim = sim.masked_fill(~valid_gt_mask, float('inf'))
+                top_sim_idx = masked_sim.argmin(dim=-1)  # [b,1]
+
+            final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
+            rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+
+            if enable_rt_pq_threshold:
+                query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
+            else:
+                query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
+
+            with self.backbone_context():
+                query_feat_dict = self.extract_feature(query)
 
 
         query_feat = query_feat_dict['feat']
@@ -650,7 +793,8 @@ class ClipMatcher(nn.Module):
         # spatial correspondence
         query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, '(b t) c h w -> b t (h w) c', b=b)
-        clip_feat = clip_feat + self.pe_stx
+        if self.pe_stx is not None:
+            clip_feat = clip_feat + self.pe_stx
         clip_feat = rearrange(clip_feat, 'b t (h w) c -> (b t) (h w) c', b=b, h=h)
 
         for stx_layer in self.CQ_corr_transformer:
@@ -674,29 +818,55 @@ class ClipMatcher(nn.Module):
                 output_dict['feat']['clip']['late_reduce'] = clip_feat.clone()
                 output_dict['feat']['query']['late_reduce'] = query_feat.clone()
 
+
+        ################## after STX ##################
+
+        if self.small_stx is not None:
+            query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> (b t) (h w) c', b=b)
+            clip_feat = self.small_stx.forward(
+                tgt=clip_feat, tgt_mask=stx_tgt_mask,
+                memory=query_feat_expanded, memory_mask=stx_mem_mask)
+            clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
+
         # down-size feature
         for down_head in self.down_heads:
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
                 break
             clip_feat = down_head.forward(clip_feat)
 
+        if self.conv_summary_1d is not None and self.conv_summary_1d_first:
+            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
         if self.conv_summary is not None:
-            for conv in self.conv_summary:
-                clip_feat = clip_feat + conv(clip_feat)
+            clip_feat = self.forward_conv_summary(clip_feat, output_dict, get_intermediate_features)
+        if self.conv_summary_1d is not None and not self.conv_summary_1d_first:
+            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
 
-            if get_intermediate_features:
-                output_dict['feat']['clip']['conv'] = clip_feat.clone()
+        if self.self_stx is not None:
+            _, _, h, w = clip_feat.shape
+            clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
+            clip_feat = rearrange(clip_feat, 'b (t h w) c -> (b t) (h w) c', b=b, t=t, h=h)
+            clip_feat = self.self_stx(clip_feat)
+            clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
 
         if len(self.feat_corr_transformer) > 0:
             clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
-            mask = self.get_vqloc_sttx_mask(clip_feat, t)
-            sttx_src_mask = mask
+            if self.apply_sttx_mask:
+                mask = self.get_vqloc_sttx_mask(clip_feat, t)
+                sttx_src_mask = mask
             for sttx_layer in self.feat_corr_transformer:
                 sttx_layer: nn.TransformerEncoderLayer  # written for pylance
                 clip_feat = sttx_layer.forward(clip_feat, src_mask=sttx_src_mask)
             clip_feat = rearrange(
                 clip_feat, 'b (t h w) c -> (b t) c h w',
                 b=b, t=t, h=self.resolution_transformer, w=self.resolution_transformer)
+
+        if self.stst_transformer is not None:
+            clip_feat = rearrange(clip_feat, '(b nc ts) c h w -> (b nc) (ts h w) c', b=b, nc=nc, ts=ts, h=h, w=w)
+            clip_feat = self.stst_transformer(clip_feat)
+            clip_feat = rearrange(clip_feat, '(b nc) (ts h w) c -> (b nc ts) c h w', b=b, nc=nc, ts=ts, h=h, w=w)
+
+        ################## Detection Head ##################
 
         # refine anchors
         anchors_xyhw = self.anchors_xyhw.to(device)                             # [N,4]

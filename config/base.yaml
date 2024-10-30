@@ -35,6 +35,7 @@ run_type: train  # train, val, test, predict=eval
 trainer:
   ##### directly affects to performance #####
   devices: 'auto'  # maximum available
+  num_nodes: ${eval:'${oc.env:SLURM_JOB_NUM_NODES,1}'}
   max_epochs: 106
   max_steps: ${max_steps}
   accumulate_grad_batches: 1

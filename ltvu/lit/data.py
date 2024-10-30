@@ -107,6 +107,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
             rt_pos_queries = self.normalization(rt_pos_queries)  # [b*#Q, c, h, w]
             rt_pos_queries = rearrange(rt_pos_queries, '(b q) c h w -> b q c h w', b=bsz)
             batch['rt_pos_queries'] = rt_pos_queries
+            batch['rt_pos_idx'] = batch['experiment']['multi_query']['rt_pos_idx']
         return batch
 
     def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
@@ -222,6 +223,22 @@ class LitVQ2DDataModule(L.LightningDataModule):
     def get_val_sample(self, idx):
         """Get a single sample from the validation set as a batch for debugging."""
         ds = VQ2DFitDataset(self.config, split='val')
+        ds.all_anns = ds.all_anns[idx:idx+1]
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=1,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+        return next(iter(dl))
+
+    def get_train_sample(self, idx):
+        """Get a single sample from the validation set as a batch for debugging."""
+        ds = VQ2DFitDataset(self.config, split='train')
         ds.all_anns = ds.all_anns[idx:idx+1]
         dl = torch.utils.data.DataLoader(
             ds,

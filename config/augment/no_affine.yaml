@@ -1,0 +1,9 @@
+segment:
+  apply: false
+  from_iter: 200
+  aug_list:
+
+query:
+  apply: false
+
+strict_bbox_check: true

@@ -24,19 +24,18 @@ type_loggers = WandbLogger | CSVLogger
 class PerSegmentWriter(BasePredictionWriter):
     def __init__(self,
         output_dir,
+        official_anns_dir,
         test_submit = False,
     ):
         super().__init__(write_interval="batch")
-        self.p_tmp_outdir = Path(output_dir) / 'tmp'
-        self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
-        self.p_int_pred = Path(output_dir) / 'intermediate_predictions.pt'
-        self.p_pred = Path(output_dir) / 'predictions.json'
-        self.p_metrics = Path(output_dir) / 'metrics.json'
-        self.p_metrics_log = Path(output_dir) / 'metrics.log'
-        for p_tmp in self.p_tmp_outdir.glob('*'):
-            p_tmp.unlink()
+        self.p_outdir = Path(output_dir)
+        self.p_int_pred = self.p_outdir / 'intermediate_predictions.pt'
+        self.p_pred = self.p_outdir / 'predictions.json'
+        self.p_metrics = self.p_outdir / 'metrics.json'
+        self.p_metrics_log = self.p_outdir / 'metrics.log'
         self.rank_seg_preds = []
         self.test_submit = test_submit
+        self.official_anns_dir = Path(official_anns_dir)
 
         if self.test_submit:
             self.split = 'test_unannotated'
@@ -44,6 +43,22 @@ class PerSegmentWriter(BasePredictionWriter):
             self.p_int_pred = self.p_int_pred.with_name('test_intermediate_predictions.pt')
         else:
             self.split = 'val'
+
+        self.p_tmp_outdir = self.p_outdir / 'tmp' / self.split
+
+    def setup(self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str):
+        if trainer.is_global_zero:
+            print(f'Begin setup... for stage {stage}')
+            print(f'Output directory: {self.p_outdir}')
+            if self.p_tmp_outdir.exists():
+                print(f'Removing existing temporary files in {self.p_tmp_outdir}...')
+                for p_tmp in self.p_tmp_outdir.glob('*'):
+                    p_tmp.unlink()
+            else:
+                print(f'Creating temporary directory... {self.p_tmp_outdir}')
+                self.p_tmp_outdir.mkdir(parents=True, exist_ok=True)
+            print('Setup done.')
+        trainer.strategy.barrier()
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
         for pred_output in prediction:
@@ -66,7 +81,7 @@ class PerSegmentWriter(BasePredictionWriter):
 
         if trainer.is_global_zero:
             # get segmented features
-            print('Getting segmented features...')
+            print('Gathering segmented features...')
             all_seg_preds = {}
             for p_pt in self.p_tmp_outdir.glob('*.pt'):
                 rank_seg_preds = torch.load(p_pt, weights_only=True)
@@ -105,7 +120,7 @@ class PerSegmentWriter(BasePredictionWriter):
             if self.test_submit:
                 # fix the order of the predictions
                 final_preds = fix_predictions_order(
-                    final_preds, '/data/datasets/ego4d_data/v2/annotations/vq_test_unannotated.json')
+                    final_preds, self.official_anns_dir / f'vq_test_unannotated.json')
 
             # write the final predictions to json
             json.dump(final_preds, self.p_pred.open('w'))
@@ -135,6 +150,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         TQDMProgressBar(refresh_rate=1 if enable_progress_bar else 20, leave=True),
         PerSegmentWriter(
             output_dir=runtime_outdir,
+            official_anns_dir=config.dataset.official_anns_dir,
             test_submit=config.dataset.get('test_submit', False),
         ),
     ]

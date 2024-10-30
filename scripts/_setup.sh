@@ -7,9 +7,9 @@ fi
 
 DIR=/local_datasets/ego4d_data/v2/vq2d_frames/320ss
 TARFILES=(
-  outputs/frames/vq2d_pos_and_query_frames_320ss.tar
-  outputs/frames/vq2d_pos_and_query_frames_320ss-val.tar
-  outputs/frames/vq2d_pos_and_query_frames_320ss-test_unannotated.tar
+  ../outputs/frames/vq2d_pos_and_query_frames_320ss.tar
+  ../outputs/frames/vq2d_pos_and_query_frames_320ss-val.tar
+  ../outputs/frames/vq2d_pos_and_query_frames_320ss-test_unannotated.tar
 )
 
 for TARFILE in "${TARFILES[@]}"; do

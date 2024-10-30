@@ -86,7 +86,7 @@ def main(config: DictConfig):
     if config.predict_val or config.predict_test:
         p_ckpt = 'outputs/batch/2024-10-13/130884/epoch=105-iou=0.4454.ckpt'
         p_ckpt = p_ckpt if config.get('debug') else ckpt_callback.best_model_path
-        eval_config = hydra.compose(config_name='eval', overrides=[
+        eval_config = hydra.compose(config_name=config.get('eval_config','eval'), overrides=[
             f'ckpt={str(p_ckpt).replace('=', '\\=')}',
             f'batch_size={config.batch_size}',
             f'num_workers={config.num_workers}',
@@ -94,15 +94,16 @@ def main(config: DictConfig):
         ])
         plm = LitModule.load_from_checkpoint(p_ckpt)
         pdm = LitVQ2DDataModule(eval_config)
-        trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
 
         if config.predict_val:
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
             log_to_console('Evaluating the best model')
             trainer.predict(plm, datamodule=pdm, return_predictions=False)
             log_to_console('\n' + "="*80 + '\n')
 
         if config.predict_test:
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
             log_to_console('Evaluating the best model on test set')
             pdm.test_submit = True
