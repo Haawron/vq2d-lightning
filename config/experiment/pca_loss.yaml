@@ -7,5 +7,5 @@ model:
   weight_singular: 1e-6
   weight_entropy: 1.
   rank_pca: 4
-  singular_include_first: true
-  entropy_include_first: true
+  singular_include_first: false
+  entropy_include_first: false
