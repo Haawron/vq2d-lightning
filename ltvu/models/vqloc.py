@@ -1003,8 +1003,8 @@ class ClipMatcher(nn.Module):
                 'giou': gious,
                 'prob_acc': prob_accuracy,
             })
-            if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
-                log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
+            # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
+            #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
             # not for logging but just in case we need it
             info_dict = {
