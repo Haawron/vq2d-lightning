@@ -9,7 +9,7 @@ trainer:
   logger: []
   overfit_batches: 10
   max_epochs: 10
-  check_val_every_n_epoch: 5
+  check_val_every_n_epoch: 10
 
 model:
   debug: true
