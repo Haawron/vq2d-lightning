@@ -103,10 +103,11 @@ def main(config: DictConfig):
             log_to_console('\n' + "="*80 + '\n')
 
         if config.predict_test:
+            eval_config.test_submit = True
+            pdm.test_submit = True
             trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
             log_to_console('Evaluating the best model on test set')
-            pdm.test_submit = True
             trainer.predict(plm, datamodule=pdm, return_predictions=False)
             log_to_console('\n' + "="*80 + '\n')
 

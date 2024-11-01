@@ -17,88 +17,78 @@ source ./scripts/_setup.sh
 
 
 # Baseline
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    batch_size=3 \
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     batch_size=4 \
 
 ###############################################################
 
-# ST model: conv
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +model.enable_temporal_shift_conv_summary=true \
-    batch_size=3 \
+# # ST model: conv
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +model.enable_temporal_shift_conv_summary=true \
+#     batch_size=4 \
 
-# ST model: global sttx
-python train.py --config-name train_fast \
-    model.late_reduce=true \
-    model.apply_sttx_mask=false \
-    batch_size=3 \
+# # ST model: global sttx
+# python train.py --config-name train_fast \
+#     model.apply_sttx_mask=false \
+#     batch_size=4 \
 
 ###############################################################
 
-# Guide: global (w/o repair)
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[cls_token_score\] \
-    model.cls_norm=false \
-    batch_size=3 \
+# # Guide: global (w/o repair)
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[cls_token_score\] \
+#     model.cls_norm=false \
+#     batch_size=4 \
 
-# Guide: global (w/ repair)
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[cls_token_score\] \
-    model.cls_norm=false \
-    +model.cls_repair_neighbor=true \
-    batch_size=3 \
+# # Guide: global (w/ repair)
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[cls_token_score\] \
+#     model.cls_norm=false \
+#     +model.cls_repair_neighbor=true \
+#     batch_size=4 \
 
-# Guide: Local
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[pca_guide\] \
-    batch_size=3 \
+# # Guide: Local
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[pca_guide\] \
+#     batch_size=4 \
 
 ###############################################################
 
-# HQQ
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[rt_pos_query\] \
-    model.sim_between=positives \
-    batch_size=3 \
+# # HQQ
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[rt_pos_query\] \
+#     model.sim_between=positives \
+#     batch_size=4 \
 
-# HQQ: bottom
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[rt_pos_query\] \
-    model.sim_between=positives \
-    rt_pos_query.mode=hard \
-    batch_size=3 \
+# # HQQ: bottom
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[rt_pos_query\] \
+#     model.sim_between=positives \
+#     rt_pos_query.mode=hard \
+#     batch_size=4 \
 
-# HQQ: Random
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[thr_rt_pos_query\] \
-    model.sim_between=positives \
-    batch_size=3 \
+# # HQQ: Random
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[thr_rt_pos_query\] \
+#     model.sim_between=positives \
+#     batch_size=4 \
 
 ###############################################################
 
-# Ours
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
-    model.sim_between=positives \
-    model.cls_norm=false \
-    +model.cls_repair_neighbor=true \
-    +model.enable_temporal_shift_conv_summary=true \
-    batch_size=3 \
+# # Ours
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+#     model.sim_between=positives \
+#     model.cls_norm=false \
+#     +model.cls_repair_neighbor=true \
+#     +model.enable_temporal_shift_conv_summary=true \
+#     batch_size=4 \
