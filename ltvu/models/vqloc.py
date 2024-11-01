@@ -189,6 +189,8 @@ class ClipMatcher(nn.Module):
         enable_cls_token_score = False,
         cls_norm = False,
         cls_repair_neighbor = False,
+        cls_scaling = 1,
+        cls_scaling_type = 'softmax',
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -263,6 +265,8 @@ class ClipMatcher(nn.Module):
         self.enable_cls_token_score = enable_cls_token_score
         self.cls_norm = cls_norm
         self.cls_repair_neighbor = cls_repair_neighbor
+        self.cls_scaling = cls_scaling
+        self.cls_scaling_type = cls_scaling_type
 
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
@@ -471,7 +475,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def get_cross_cls_attn_score(self, latent_query, latent_clip):
+    def get_cross_cls_attn_score(self, latent_query, latent_clip, scaling_factor=1, cls_scaling_type='softmax'):
         """
         latent_query: [b,1,c]
         latent_clip: [b*t,n,c]
@@ -500,7 +504,13 @@ class ClipMatcher(nn.Module):
 
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
-        attn = F.softmax(attn, dim=-1)  # [b*t,1,n]
+        if cls_scaling_type == 'softmax':
+            attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+        elif cls_scaling_type == 'sigmoid':
+            attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
+        else:
+            attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+            
         if self.cls_norm:
             h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
             attn = rearrange(attn, 'bt 1 (h w) -> bt 1 h w', h=h, w=w)
@@ -782,8 +792,13 @@ class ClipMatcher(nn.Module):
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
             with self.backbone_context():
-                cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls)
+                cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
             stx_tgt_mask = cls_mask
+            
+            if get_intermediate_features:
+                output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
+                output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
+                output_dict['feat']['clip']['cls_mask'] = cls_mask.clone()
 
         # pca guide
         if self.enable_pca_guide:

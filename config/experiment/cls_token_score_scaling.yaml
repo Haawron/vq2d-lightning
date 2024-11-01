@@ -5,7 +5,7 @@
 model:
   enable_cls_token_score: true
   cls_norm: false
-  cls_scaling: 1
+  cls_scaling: 50
   cls_scaling_type: 'softmax'
   # late_reduce: true
 
