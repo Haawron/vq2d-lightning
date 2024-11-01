@@ -938,13 +938,12 @@ class ClipMatcher(nn.Module):
                         S = S[1:]
                     if not self.entropy_include_first:
                         V = V[:, 1:]
-                    # query_feat_proj = torch.matmul(query_feat[bidx], V).abs()  # [h*w,Q]
-                    query_feat_proj = 1. - torch.exp(-1 * query_feat[bidx] ** 2 / 10)  # [b,h2*w2,H]
-                    tmax = query_feat_proj.max(dim=0, keepdim=True)[0]  # [1,Q]
-                    query_feat_proj = query_feat_proj / tmax  # values in [-1,1]
-                    query_feat_proj = F.softmax(query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
+                    _feat = query_feat[bidx] - query_feat[bidx].mean(dim=0, keepdim=True)  # [h*w,c]
+                    query_feat_proj = torch.matmul(_feat, V)  # [h*w,Q]
+                    query_feat_proj = 1. - torch.exp(-1 * query_feat_proj ** 2 / 1000)  # [h*w,Q]
+                    query_feat_proj = F.softmax(5. * query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
                     query_feat_proj = query_feat_proj.clamp(1e-6, 1-1e-6)  # avoid log(0)
-                    self_entropy = -(query_feat_proj * query_feat_proj.log()).sum(dim=0).mean()
+                    self_entropy = -(query_feat_proj * query_feat_proj.log()).sum(dim=0)  # [h*w,Q] -> [Q]
                     loss_entropy = loss_entropy + self_entropy.mean()
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()

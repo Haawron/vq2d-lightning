@@ -17,3 +17,6 @@ dataset:
 
 model:
   debug: true
+
+predict_val: false
+predict_test: false
