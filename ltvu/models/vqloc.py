@@ -819,9 +819,10 @@ class ClipMatcher(nn.Module):
             
             if get_intermediate_features:
                 output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
-
+            
         # pca guide
         if self.enable_pca_guide:
+            self.score_maps_mean, self.score_maps_std = score_maps.mean(dim=-1).mean().item(), score_maps.std(dim=(-1, -2)).mean().item()
             if self.guide_to_stx:
                 stx_mem_mask = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
 
@@ -837,6 +838,7 @@ class ClipMatcher(nn.Module):
             output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
             output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
             output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
+            
             
         for stx_layer in self.CQ_corr_transformer:
             stx_layer: nn.TransformerDecoderLayer  # written for pylance
@@ -1050,6 +1052,9 @@ class ClipMatcher(nn.Module):
                 log_dict.update({'cls_std_before_bn': self.cls_std_before_bn})
                 log_dict.update({'cls_mean_after_bn': self.cls_mean_after_bn})
                 log_dict.update({'cls_std_after_bn': self.cls_std_after_bn})
+            if self.enable_pca_guide:
+                log_dict.update({'score_maps_mean': self.score_maps_mean})
+                log_dict.update({'score_maps_std': self.score_maps_std})
             # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
             #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
