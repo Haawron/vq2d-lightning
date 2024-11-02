@@ -191,6 +191,7 @@ class ClipMatcher(nn.Module):
         cls_repair_neighbor = False,
         cls_scaling = 1,
         cls_scaling_type = 'softmax',
+        cls_learnable_scaling = False,
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -267,6 +268,9 @@ class ClipMatcher(nn.Module):
         self.cls_repair_neighbor = cls_repair_neighbor
         self.cls_scaling = cls_scaling
         self.cls_scaling_type = cls_scaling_type
+        self.cls_learnable_scaling = cls_learnable_scaling
+        if self.enable_cls_token_score and self.cls_learnable_scaling:
+            self.scaling_param = torch.nn.Parameter(torch.ones(1))
 
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
@@ -504,10 +508,14 @@ class ClipMatcher(nn.Module):
 
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
+        if self.cls_learnable_scaling:
+            scaling_factor = self.scaling_param
+        
         if cls_scaling_type == 'softmax':
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
         elif cls_scaling_type == 'sigmoid':
             attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
+            attn = attn.to(latent_query.dtype)
         else:
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
             
@@ -691,7 +699,7 @@ class ClipMatcher(nn.Module):
         '''
         b, t = segment.shape[:2]
         device = segment.device
-        output_dict = {'feat': {'clip': {}, 'query': {}}}
+        output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
 
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
@@ -798,7 +806,7 @@ class ClipMatcher(nn.Module):
             if get_intermediate_features:
                 output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
                 output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
-                output_dict['feat']['clip']['cls_mask'] = cls_mask.clone()
+                output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
 
         # pca guide
         if self.enable_pca_guide:
@@ -812,6 +820,12 @@ class ClipMatcher(nn.Module):
             clip_feat = clip_feat + self.pe_stx
         clip_feat = rearrange(clip_feat, 'b t (h w) c -> (b t) (h w) c', b=b, h=h)
 
+        if get_intermediate_features:
+            output_dict['feat']['clip']['pe_stx'] = clip_feat.clone()
+            output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
+            output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
+            output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
+            
         for stx_layer in self.CQ_corr_transformer:
             stx_layer: nn.TransformerDecoderLayer  # written for pylance
             clip_feat = stx_layer.forward(
