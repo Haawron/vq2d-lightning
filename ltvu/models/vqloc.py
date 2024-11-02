@@ -269,8 +269,13 @@ class ClipMatcher(nn.Module):
         self.cls_scaling = cls_scaling
         self.cls_scaling_type = cls_scaling_type
         self.cls_learnable_scaling = cls_learnable_scaling
-        if self.enable_cls_token_score and self.cls_learnable_scaling:
-            self.scaling_param = torch.nn.Parameter(torch.ones(1))
+        if self.enable_cls_token_score:
+            if self.cls_learnable_scaling:
+                self.scaling_param = torch.nn.Parameter(torch.tensor(float(self.cls_scaling)))
+            if self.cls_scaling_type == 'layernorm':
+                self.cls_scaling_norm = nn.LayerNorm(self.clip_feat_size_fine * self.clip_feat_size_coarse)
+            elif self.cls_scaling_type == 'batchnorm':
+                self.cls_scaling_norm = nn.BatchNorm1d(self.clip_feat_size_fine * self.clip_feat_size_coarse)
 
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
@@ -511,6 +516,7 @@ class ClipMatcher(nn.Module):
         if self.cls_learnable_scaling:
             scaling_factor = self.scaling_param
         
+        self.cls_mean_before_bn, self.cls_std_before_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
         if cls_scaling_type == 'softmax':
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
         elif cls_scaling_type == 'softmax_w_clamp':
@@ -518,8 +524,11 @@ class ClipMatcher(nn.Module):
         elif cls_scaling_type == 'sigmoid':
             attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
             attn = attn.to(latent_query.dtype)
+        elif cls_scaling_type in ['layernorm','batchnorm']:
+            attn = self.cls_scaling_norm(attn)
         else:
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+        self.cls_mean_after_bn, self.cls_std_after_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
             
         if self.cls_norm:
             h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
@@ -801,13 +810,14 @@ class ClipMatcher(nn.Module):
             latent_clip = clip_feat_dict['hidden_states']
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
-            with self.backbone_context():
-                cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
-            stx_tgt_mask = cls_mask
-            
             if get_intermediate_features:
                 output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
                 output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
+                
+            cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
+            stx_tgt_mask = cls_mask
+            
+            if get_intermediate_features:
                 output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
 
         # pca guide
@@ -1033,6 +1043,13 @@ class ClipMatcher(nn.Module):
                 'giou': gious,
                 'prob_acc': prob_accuracy,
             })
+            if self.cls_learnable_scaling:
+                log_dict.update({'scaling_param': self.scaling_param})
+            if self.enable_cls_token_score:
+                log_dict.update({'cls_mean_before_bn': self.cls_mean_before_bn})
+                log_dict.update({'cls_std_before_bn': self.cls_std_before_bn})
+                log_dict.update({'cls_mean_after_bn': self.cls_mean_after_bn})
+                log_dict.update({'cls_std_after_bn': self.cls_std_after_bn})
             # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
             #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
