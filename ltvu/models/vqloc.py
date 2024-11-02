@@ -513,6 +513,8 @@ class ClipMatcher(nn.Module):
         
         if cls_scaling_type == 'softmax':
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+        elif cls_scaling_type == 'softmax_w_clamp':
+            attn = torch.clamp(F.softmax(attn, dim=-1) * scaling_factor, min=0, max=1)  # [b*t,1,n]
         elif cls_scaling_type == 'sigmoid':
             attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
             attn = attn.to(latent_query.dtype)
