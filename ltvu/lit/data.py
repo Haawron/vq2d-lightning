@@ -16,7 +16,7 @@ from einops import rearrange
 from ltvu.dataset import (
     VQ2DFitDataset, VQ2DEvalDataset,
 )
-from ltvu.preprocess import generate_flat_annotations_vq2d
+from ltvu.preprocess import generate_flat_annotations_ego4d
 from ltvu.bbox_ops import check_bbox
 
 
@@ -28,7 +28,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
     # ALL_NUM_CLIPS = 4690  # train + val
     # ALL_NUM_ANNS = [13607, 4504]  # train, val
     ALL_NUM_CLIPS = 5814  # train + val + test_unannotated
-    ALL_NUM_ANNS = [13607, 4504, 4461]  # train, val, test_unannotated
+    # ALL_NUM_ANNS = [13607, 4504, 4461]  # train, val, test_unannotated
+    ALL_NUM_ANNS = [13614, 4512, 4467]  # train, val, test_unannotated
 
     def __init__(self, config):
         super().__init__()
@@ -65,7 +66,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         video_uids, clip_uids = set(), set()
         for split, desired_num_anns in zip(['train', 'val', 'test_unannotated'], self.ALL_NUM_ANNS):
             p_official_ann = self.p_official_anns_dir / f'vq_{split}.json'
-            flat_anns = generate_flat_annotations_vq2d(p_official_ann)
+            flat_anns = generate_flat_annotations_ego4d(p_official_ann)
             assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
             print(f'Found {len(flat_anns)} annotations in {split}.')
             p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
@@ -73,7 +74,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
                 json.dump(flat_anns, p_ann.open('w'))
             for ann in flat_anns:
                 video_uids.add(ann['video_uid'])
-                clip_uids.add(ann['clip_uid'])
+                if 'clip_uid' in ann:
+                    clip_uids.add(ann['clip_uid'])
         assert len(clip_uids) == self.ALL_NUM_CLIPS, f'Expected {self.ALL_NUM_CLIPS} clips, got {len(clip_uids)}'
         p_video_uids = self.p_anns_dir / 'video_uids.txt'
         p_clip_uids = self.p_anns_dir / 'clip_uids.txt'

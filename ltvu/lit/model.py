@@ -105,7 +105,13 @@ class LitModule(L.LightningModule):
                     extra_args['sim_mode']='min'
                 else:
                     extra_args['sim_mode']='max'
-        output_dict = self.model.forward(**batch, compute_loss=True, **extra_args)
+        output_dict = self.model.forward(
+            **batch,
+            compute_loss=True,
+            cur_epoch=self.trainer.current_epoch,
+            max_epochs=self.trainer.max_epochs,
+            **extra_args
+        )
 
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
