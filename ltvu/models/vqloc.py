@@ -515,7 +515,7 @@ class ClipMatcher(nn.Module):
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
         if self.cls_learnable_scaling:
             scaling_factor = self.scaling_param
-        
+
         self.cls_mean_before_bn, self.cls_std_before_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
         if cls_scaling_type == 'softmax':
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
@@ -534,7 +534,7 @@ class ClipMatcher(nn.Module):
         else:
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
         self.cls_mean_after_bn, self.cls_std_after_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
-            
+
         if self.cls_norm:
             h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
             attn = rearrange(attn, 'bt 1 (h w) -> bt 1 h w', h=h, w=w)
@@ -822,13 +822,13 @@ class ClipMatcher(nn.Module):
             if get_intermediate_features:
                 output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
                 output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
-                
+
             cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
             stx_tgt_mask = cls_mask
-            
+
             if get_intermediate_features:
                 output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
-            
+
         # pca guide
         if self.enable_pca_guide:
             self.score_maps_mean, self.score_maps_std = score_maps.mean(dim=-1).mean().item(), score_maps.std(dim=(-1, -2)).mean().item()
@@ -847,8 +847,8 @@ class ClipMatcher(nn.Module):
             output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
             output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
             output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
-            
-            
+
+
         for stx_layer in self.CQ_corr_transformer:
             stx_layer: nn.TransformerDecoderLayer  # written for pylance
             clip_feat = stx_layer.forward(
@@ -985,13 +985,10 @@ class ClipMatcher(nn.Module):
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
-                # entropy_threshold = torch.log(torch.tensor(self.resolution_transformer**2 / 3, dtype=query_feat.dtype, device=device))
-                _qfeat = rearrange(query_feat[..., 1:-1, 1:-1].detach(), 'b c h w -> b (h w) c')  # [b,h*w,c]
-                _cfeat = rearrange(clip_feat_stx[..., 1:-1, 1:-1], '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
+                _qfeat = rearrange(query_feat.detach(), 'b c h w -> b (h w) c')  # [b,h*w,c]
+                _cfeat = rearrange(clip_feat_stx, '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
                 _qfeat = _qfeat - _qfeat.mean(dim=1, keepdim=True)  # [b,h*w,c]
-                # if True:#self.ignore_border:
                 for bidx in range(b):
-                    # U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
                     U, S, V = torch.pca_lowrank(_cfeat[bidx], q=self.rank_pca)  # [t*h*w,Q], [Q], [c,Q]
                     if not self.singular_include_first:
                         S = S[1:]
@@ -1003,12 +1000,13 @@ class ClipMatcher(nn.Module):
                     score_map_norm = score_map_norm.clamp(1e-6, 1-1e-6)
 
                     patchwise_entropy = -(score_map_norm * score_map_norm.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
+                    patchwise_entropy = patchwise_entropy.mean()
 
                     mapwise_entropy = F.softmax(score_map_exp.sum(dim=0) / 100, dim=0)  # [Q]
                     mapwise_entropy = mapwise_entropy.clamp(1e-6, 1-1e-6)
                     mapwise_entropy = -(mapwise_entropy * mapwise_entropy.log()).sum()  # [Q] -> scalar
 
-                    loss_entropy = loss_entropy + patchwise_entropy.mean() - mapwise_entropy
+                    loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
 
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()

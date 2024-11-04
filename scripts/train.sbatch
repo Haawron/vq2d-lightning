@@ -15,80 +15,109 @@ hostname
 source ./scripts/_setup.sh
 
 
-
-# Baseline
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     batch_size=4 \
-
-###############################################################
-
-# # ST model: conv
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +model.enable_temporal_shift_conv_summary=true \
-#     batch_size=4 \
-
-# # ST model: global sttx
-# python train.py --config-name train_fast \
-#     model.apply_sttx_mask=false \
-#     batch_size=4 \
+# Ours
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.sim_between=positives \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
 ###############################################################
 
-# # Guide: global (w/o repair)
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[cls_token_score\] \
-#     model.cls_norm=false \
-#     batch_size=4 \
+# Ours - PCA loss
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    model.sim_between=positives \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
-# # Guide: global (w/ repair)
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[cls_token_score\] \
-#     model.cls_norm=false \
-#     +model.cls_repair_neighbor=true \
-#     batch_size=4 \
+# Ours - PCA loss - HQQ
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
-# # Guide: Local
+# Ours - PCA loss - HQQ - Guide
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    model.late_reduce=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
+
+# # Ours - PCA loss - HQQ - Guide - TAC<-vqloc (이미 했음)
 # python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[pca_guide\] \
-#     batch_size=4 \
+#     model.late_reduce=true \
+#     batch_size=3 돌리지=마세요 \
 
 ###############################################################
 
-# # HQQ
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[rt_pos_query\] \
-#     model.sim_between=positives \
-#     batch_size=4 \
+# No HQQ
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
-# # HQQ: bottom
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[rt_pos_query\] \
-#     model.sim_between=positives \
-#     rt_pos_query.mode=hard \
-#     batch_size=4 \
+# bottom
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.sim_between=positives \
+    rt_pos_query.mode=hard \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
-# # HQQ: Random
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[thr_rt_pos_query\] \
-#     model.sim_between=positives \
-#     batch_size=4 \
+# Random
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
 
 ###############################################################
 
-# # Ours
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
-#     model.sim_between=positives \
-#     model.cls_norm=false \
-#     +model.cls_repair_neighbor=true \
-#     +model.enable_temporal_shift_conv_summary=true \
-#     batch_size=4 \
+# No global guide
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[rt_pos_query,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.sim_between=positives \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
+
+# Global guide (w/o repair)
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=1. \
+    model.sim_between=positives \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.enable_temporal_shift_conv_summary=true \
+    batch_size=3 \
