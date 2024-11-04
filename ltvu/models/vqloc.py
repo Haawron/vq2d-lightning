@@ -524,8 +524,13 @@ class ClipMatcher(nn.Module):
         elif cls_scaling_type == 'sigmoid':
             attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
             attn = attn.to(latent_query.dtype)
+        elif cls_scaling_type == 'sigmoid_mean':
+            attn = F.sigmoid(attn - attn.mean(dim=-1, keepdim=True)) * scaling_factor  # [b*t,1,n]
+            attn = attn.to(latent_query.dtype)
+        elif cls_scaling_type == 'direct':
+            attn = attn * scaling_factor
         elif cls_scaling_type in ['layernorm','batchnorm']:
-            attn = self.cls_scaling_norm(attn)
+            attn = self.cls_scaling_norm(attn) * scaling_factor
         else:
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
         self.cls_mean_after_bn, self.cls_std_after_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
