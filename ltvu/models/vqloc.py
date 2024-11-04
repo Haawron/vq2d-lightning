@@ -953,12 +953,15 @@ class ClipMatcher(nn.Module):
                     score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h*w,Q]
                     score_map_norm = F.softmax(5. * score_map_exp, dim=1)
                     score_map_norm = score_map_norm.clamp(1e-6, 1-1e-6)
+
                     patchwise_entropy = -(score_map_norm * score_map_norm.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
 
                     mapwise_entropy = F.softmax(score_map_exp.sum(dim=0) / 100, dim=0)  # [Q]
                     mapwise_entropy = mapwise_entropy.clamp(1e-6, 1-1e-6)
                     mapwise_entropy = -(mapwise_entropy * mapwise_entropy.log()).sum()  # [Q] -> scalar
+
                     loss_entropy = loss_entropy + patchwise_entropy.mean() - mapwise_entropy
+
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()
                 loss_singular = loss_singular / b

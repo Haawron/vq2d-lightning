@@ -38,7 +38,7 @@ for TARFILE in "${TARFILES[@]}"; do
       exit 1
     fi
     tar -xf $TARFILE -C /local_datasets/ --skip-old-files 2>/dev/null
-    find "$DIR" -maxdepth 1 -type d -exec chmod 1777 {} \;
+    find "$DIR" -maxdepth 1 -type d -exec chmod 1777 {} \; 2>/dev/null
   else
     echo "Directory is up-to-date, skipping extraction."
   fi

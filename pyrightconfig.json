@@ -15,6 +15,7 @@
         "*.sif",
         "notebooks/diffusion/",
         "notebooks/dino_repair/",
+        "notebooks/sample_submission.json",
     ],
     "reportPrivateImportUsage": false,  // pytorch is not familiar with the private import
     "reportCallIssue": "none",  // pyright doesn't consider C-based functions
