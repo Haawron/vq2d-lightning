@@ -515,13 +515,14 @@ class ClipMatcher(nn.Module):
     def compute_pca_score_map(self, guide_feat):
         b = guide_feat.shape[0]
         guide_feat = rearrange(guide_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
+        guide_feat = guide_feat - guide_feat.mean(dim=1, keepdim=True)  # [b,h2*w2,c]
         score_maps = []  # [b,h2*w2,H]
         for bidx in range(b):
             U, S, V = torch.pca_lowrank(guide_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
             score_map = torch.matmul(guide_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
             score_maps.append(score_map)
         score_maps = torch.stack(score_maps)  # [b,h2*w2,H]
-        score_maps = 1. - torch.exp(-1 * score_maps ** 2 / 10)  # [b,h2*w2,H]
+        score_maps = 1. - torch.exp(-1 * score_maps ** 2 / 1000)  # [b,h2*w2,H]
         return score_maps
 
     def extract_feature(self, x) -> dict:
@@ -671,6 +672,7 @@ class ClipMatcher(nn.Module):
         enable_rt_pq_threshold=False,
 
         get_intermediate_features = False,
+        get_rt_pos_queries_idx = False,
         **kwargs
     ):
         '''

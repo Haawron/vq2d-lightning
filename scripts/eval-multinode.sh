@@ -52,6 +52,11 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python eval.py \
         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+<<<<<<< Updated upstream
         ckpt='outputs/batch/2024-10-25/134815/epoch\=44-prob_acc\=0.7937.ckpt'
+=======
+        ckpt='outputs/batch/2024-10-25/134762/epoch\=44-prob_acc\=0.7920.ckpt' \
+       # test_submit=true
+>>>>>>> Stashed changes
 
 exit $?

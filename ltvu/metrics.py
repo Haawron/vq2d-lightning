@@ -91,9 +91,61 @@ def compute_average_precision_dict(
         'precisions': precisions,
         'recalls': recalls,
     }
+    
+def compute_variation_threshold(all_anns, percentile = 70):
+    all_diffs = []
+    for ann in all_anns:
+        
+        if len(ann['response_track']) <= 1:
+            continue
+
+        ori_w = ann['original_width']
+        ori_h = ann['original_height']
+
+        temp_all_diffs = []            
+        for idx in range(len(ann['response_track']) - 1):
+            rt1 = ann['response_track'][idx]
+            rt2 = ann['response_track'][idx + 1]
+            
+            # Extract bounding box coordinates
+            x1, y1, w1, h1 = rt1['x'], rt1['y'], rt1['w'], rt1['h']
+            x2, y2, w2, h2 = rt2['x'], rt2['y'], rt2['w'], rt2['h']
+            
+            # # box area
+            # area1 = w1 * h1
+            # area2 = w2 * h2
+            
+            # # area harmonic mean
+            # area_hm = 2 * area1 * area2 / (area1 + area2 + 1e-6) 
+            
+            
+            # # Normalize changes by image dimensions if applicable
+            # x_diff = (x2 - x1) / (area_hm ** 0.5 + 1e-6)
+            # y_diff = (y2 - y1) / (area_hm ** 0.5 + 1e-6)
+            # w_diff = (w2 - w1) / (area_hm ** 0.5 + 1e-6)
+            # h_diff = (h2 - h1) / (area_hm ** 0.5 + 1e-6)
+            # Normalize changes by image dimensions if applicable
+            x_diff = (x2 - x1) / ori_w
+            y_diff = (y2 - y1) / ori_h
+            w_diff = (w2 - w1) / ori_w
+            h_diff = (h2 - h1) / ori_h
+            
+            position_diff = (x_diff ** 2 + y_diff ** 2) ** 0.5
+            size_diff = (w_diff ** 2 + h_diff ** 2) ** 0.5
+            # size_diff = 0
+            
+            all_diff = position_diff + size_diff
+
+            temp_all_diffs.append(all_diff)
+        
+        all_diffs.append(float(np.mean(temp_all_diffs)))
+        
+    threshold = np.percentile(all_diffs, percentile)
+    
+    return threshold
 
 
-def get_metrics(p_ann_flat, p_pred):
+def get_metrics(p_ann_flat, p_pred, threshold, threshold2, mode = 'default'):
     p_ann_flat = Path(p_ann_flat)
     p_pred = Path(p_pred)
     all_anns_flat = json.load(p_ann_flat.open())
@@ -102,8 +154,55 @@ def get_metrics(p_ann_flat, p_pred):
     quid2pred, quid2pos = defaultdict(list), {}
     for ann in all_anns_flat:
         qset_uuid = f'{ann["annotation_uid"]}_{ann["query_set"]}'
-        ann['bboxes'] = ResponseTrack.from_json(ann)
-        quid2pos[qset_uuid] = ann['bboxes']
+        if mode == 'box_variation':
+            ori_w = ann['original_width']
+            ori_h = ann['original_height']
+            
+
+            all_diffs = []
+
+            for idx in range(len(ann['response_track']) - 1):
+                rt1 = ann['response_track'][idx]
+                rt2 = ann['response_track'][idx + 1]
+                
+                # Extract bounding box coordinates
+                x1, y1, w1, h1 = rt1['x'], rt1['y'], rt1['w'], rt1['h']
+                x2, y2, w2, h2 = rt2['x'], rt2['y'], rt2['w'], rt2['h']
+                
+                # box area
+                # area1 = w1 * h1
+                # area2 = w2 * h2
+                
+                # # area harmonic mean
+                # area_hm = 2 * area1 * area2 / (area1 + area2 + 1e-6) 
+                
+                # # Normalize changes by image dimensions if applicable
+                # x_diff = (x2 - x1) / (area_hm ** 0.5 + 1e-6)
+                # y_diff = (y2 - y1) / (area_hm ** 0.5 + 1e-6)
+                # w_diff = (w2 - w1) / (area_hm ** 0.5 + 1e-6)
+                # h_diff = (h2 - h1) / (area_hm ** 0.5 + 1e-6)
+                
+                # Normalize changes by image dimensions if applicable
+                x_diff = (x2 - x1) / ori_w
+                y_diff = (y2 - y1) / ori_h
+                w_diff = (w2 - w1) / ori_w
+                h_diff = (h2 - h1) / ori_h
+                
+                position_diff = (x_diff ** 2 + y_diff ** 2) ** 0.5
+                size_diff = (w_diff ** 2 + h_diff ** 2) ** 0.5
+                # size_diff = 0
+                
+                all_diff = position_diff + size_diff
+
+                all_diffs.append(all_diff)
+            
+            if threshold < np.mean(all_diffs) <= threshold2:
+                ann['bboxes'] = ResponseTrack.from_json(ann)
+                quid2pos[qset_uuid] = ann['bboxes']
+        else:
+            ann['bboxes'] = ResponseTrack.from_json(ann)
+            quid2pos[qset_uuid] = ann['bboxes']
+        
 
     for pred_video in all_preds_stratified['results']['videos']:
         video_uid = pred_video['video_uid']
@@ -218,7 +317,14 @@ def format_metrics(subset_metrics):
 
 if __name__ == '__main__':
     p_ann = Path("data/vq_v2_val_anno.json")
-    p_pred = Path("notebooks/43634_results.json.gz")
+    # p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/batch/2024-10-23/134100/predictions.json")
+    p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/batch/2024-10-25/134830/predictions.json")
+    # p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/batch/2024-10-28/135395/predictions.json")
+    # p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/ckpts/33596/predictions.json")
     # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
-    subset_metrics = get_metrics(p_ann, p_pred)
+    p_pred = Path("/data/soyeonhong/vq2d/vq2d-lightning/outputs/batch/2024-10-30/135962/predictions.json")
+    p_pred = Path("/data/soyeonhong/vq2d/vq2d-lightning/inference_cache_val_results.json.gz")
+    all_anns = json.load(p_ann.open())
+    threshold = compute_variation_threshold(all_anns, 10)
+    subset_metrics = get_metrics(p_ann, p_pred, threshold, 0, mode = 'default')
     print_metrics(subset_metrics)

@@ -31,3 +31,11 @@ scp.sh
 config/debug/base_jh.yaml
 notebooks/sel_ckps.ipynb
 tem.py
+3cc0550b-666e-42b7-833a-47f8f9b686ae.mp4
+data/DAVIS2016_train.json
+data/DAVIS2016_val.json
+data/egotracks_v1_train.json
+data/egotracks_v1_val.json
+data/LaSOT_test.json
+data/LaSOT_train.json
+resources/move_variation/gt.gif
