@@ -548,14 +548,15 @@ class ClipMatcher(nn.Module):
 
     def compute_pca_score_map(self, guide_feat):
         b = guide_feat.shape[0]
-        guide_feat = rearrange(guide_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
+        _feat = rearrange(guide_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
+        _feat = _feat - _feat.mean(dim=1, keepdim=True)  # [b,h2*w2,c]
         score_maps = []  # [b,h2*w2,H]
         for bidx in range(b):
-            U, S, V = torch.pca_lowrank(guide_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
-            score_map = torch.matmul(guide_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
+            U, S, V = torch.pca_lowrank(_feat[bidx], q=1+self.nhead)  # [h2*w2,1+H], [1+H], [c,1+H]
+            score_map = torch.matmul(_feat[bidx], V[:, 1:])  # [h2*w2,c] @ [c,H] -> [h2*w2,H]
             score_maps.append(score_map)
         score_maps = torch.stack(score_maps)  # [b,h2*w2,H]
-        score_maps = 1. - torch.exp(-1 * score_maps ** 2 / 10)  # [b,h2*w2,H]
+        score_maps = 1. - torch.exp(-1 * score_maps ** 2 / 1000)  # [b,h2*w2,H]
         return score_maps
 
     def extract_feature(self, x) -> dict:
@@ -705,6 +706,9 @@ class ClipMatcher(nn.Module):
         enable_rt_pq_threshold=False,
 
         get_intermediate_features = False,
+
+        max_epochs = None,
+        cur_epoch = None,
         **kwargs
     ):
         '''
@@ -877,6 +881,8 @@ class ClipMatcher(nn.Module):
                 memory=query_feat_expanded, memory_mask=stx_mem_mask)
             clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
 
+        clip_feat_stx = clip_feat
+
         # down-size feature
         for down_head in self.down_heads:
             if list(clip_feat.shape[-2:]) == [self.resolution_transformer]*2:
@@ -967,10 +973,10 @@ class ClipMatcher(nn.Module):
             loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]
             total_loss: torch.Tensor = torch.tensor(0., dtype=torch.float32, device=device, requires_grad=True)
             for loss_name in loss_names:
-                w, l = loss_dict[f'weight_{loss_name}'], loss_dict[f'loss_{loss_name}']
+                ww, l = loss_dict[f'weight_{loss_name}'], loss_dict[f'loss_{loss_name}']
                 if training:
                     assert l.requires_grad, f'{loss_name} should require grad'
-                total_loss = total_loss + w * l
+                total_loss = total_loss + ww * l
 
 
             if self.weight_singular > 0 or self.weight_entropy > 0:
@@ -979,20 +985,28 @@ class ClipMatcher(nn.Module):
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
-                query_feat = rearrange(query_feat, 'b c h w -> b (h w) c')  # [b,h*w,c]
+                # entropy_threshold = torch.log(torch.tensor(self.resolution_transformer**2 / 3, dtype=query_feat.dtype, device=device))
+                _qfeat = rearrange(query_feat[..., 1:-1, 1:-1].detach(), 'b c h w -> b (h w) c')  # [b,h*w,c]
+                _cfeat = rearrange(clip_feat_stx[..., 1:-1, 1:-1], '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
+                _qfeat = _qfeat - _qfeat.mean(dim=1, keepdim=True)  # [b,h*w,c]
+                # if True:#self.ignore_border:
                 for bidx in range(b):
-                    U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
+                    # U, S, V = torch.pca_lowrank(query_feat[bidx], q=self.rank_pca)  # [h*w,Q], [Q], [c,Q]
+                    U, S, V = torch.pca_lowrank(_cfeat[bidx], q=self.rank_pca)  # [t*h*w,Q], [Q], [c,Q]
                     if not self.singular_include_first:
                         S = S[1:]
                     if not self.entropy_include_first:
                         V = V[:, 1:]
-                    _feat = query_feat[bidx] - query_feat[bidx].mean(dim=0, keepdim=True)  # [h*w,c]
-                    query_feat_proj = torch.matmul(_feat, V)  # [h*w,Q]
-                    query_feat_proj = 1. - torch.exp(-1 * query_feat_proj ** 2 / 1000)  # [h*w,Q]
-                    query_feat_proj = F.softmax(5. * query_feat_proj, dim=0)  # each map sums to 1   # [h*w,Q]
-                    query_feat_proj = query_feat_proj.clamp(1e-6, 1-1e-6)  # avoid log(0)
-                    self_entropy = -(query_feat_proj * query_feat_proj.log()).sum(dim=0)  # [h*w,Q] -> [Q]
-                    loss_entropy = loss_entropy + self_entropy.mean()
+                    score_map = torch.matmul(_qfeat[bidx], V)  # [h*w,Q]
+                    score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h*w,Q]
+                    score_map_norm = F.softmax(5. * score_map_exp, dim=1)
+                    score_map_norm = score_map_norm.clamp(1e-6, 1-1e-6)
+                    patchwise_entropy = -(score_map_norm * score_map_norm.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
+
+                    mapwise_entropy = F.softmax(score_map_exp.sum(dim=0) / 100, dim=0)  # [Q]
+                    mapwise_entropy = mapwise_entropy.clamp(1e-6, 1-1e-6)
+                    mapwise_entropy = -(mapwise_entropy * mapwise_entropy.log()).sum()  # [Q] -> scalar
+                    loss_entropy = loss_entropy + patchwise_entropy.mean() - mapwise_entropy
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()
                 loss_singular = loss_singular / b
