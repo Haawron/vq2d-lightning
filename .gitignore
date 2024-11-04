@@ -31,3 +31,4 @@ scp.sh
 config/debug/base_jh.yaml
 notebooks/sel_ckps.ipynb
 tem.py
+scripts/submit.sh

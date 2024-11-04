@@ -5,6 +5,9 @@
 model:
   enable_cls_token_score: true
   cls_norm: false
+  cls_scaling_type: 'softmax'
+  cls_scaling: 1
+  cls_learnable_scaling: false
   # late_reduce: true
 
 # batch_size: 4

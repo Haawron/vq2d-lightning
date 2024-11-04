@@ -189,6 +189,9 @@ class ClipMatcher(nn.Module):
         enable_cls_token_score = False,
         cls_norm = False,
         cls_repair_neighbor = False,
+        cls_scaling = 1,
+        cls_scaling_type = 'softmax',
+        cls_learnable_scaling = False,
 
         # PCA Guide
         enable_pca_guide: bool = False,
@@ -263,6 +266,16 @@ class ClipMatcher(nn.Module):
         self.enable_cls_token_score = enable_cls_token_score
         self.cls_norm = cls_norm
         self.cls_repair_neighbor = cls_repair_neighbor
+        self.cls_scaling = cls_scaling
+        self.cls_scaling_type = cls_scaling_type
+        self.cls_learnable_scaling = cls_learnable_scaling
+        if self.enable_cls_token_score:
+            if self.cls_learnable_scaling:
+                self.scaling_param = torch.nn.Parameter(torch.tensor(float(self.cls_scaling)))
+            if self.cls_scaling_type == 'layernorm':
+                self.cls_scaling_norm = nn.LayerNorm(self.clip_feat_size_fine * self.clip_feat_size_coarse)
+            elif self.cls_scaling_type == 'batchnorm':
+                self.cls_scaling_norm = nn.BatchNorm1d(self.clip_feat_size_fine * self.clip_feat_size_coarse)
 
         self.late_reduce = late_reduce
         self.no_reduce = no_reduce
@@ -471,7 +484,7 @@ class ClipMatcher(nn.Module):
             nn.init.normal_(m.weight, mean=0.0, std=1e-6)
             nn.init.normal_(m.bias, mean=0.0, std=1e-6)
 
-    def get_cross_cls_attn_score(self, latent_query, latent_clip):
+    def get_cross_cls_attn_score(self, latent_query, latent_clip, scaling_factor=1, cls_scaling_type='softmax'):
         """
         latent_query: [b,1,c]
         latent_clip: [b*t,n,c]
@@ -500,7 +513,28 @@ class ClipMatcher(nn.Module):
 
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
-        attn = F.softmax(attn, dim=-1)  # [b*t,1,n]
+        if self.cls_learnable_scaling:
+            scaling_factor = self.scaling_param
+        
+        self.cls_mean_before_bn, self.cls_std_before_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
+        if cls_scaling_type == 'softmax':
+            attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+        elif cls_scaling_type == 'softmax_w_clamp':
+            attn = torch.clamp(F.softmax(attn, dim=-1) * scaling_factor, min=0, max=1)  # [b*t,1,n]
+        elif cls_scaling_type == 'sigmoid':
+            attn = F.sigmoid(attn) * scaling_factor  # [b*t,1,n]
+            attn = attn.to(latent_query.dtype)
+        elif cls_scaling_type == 'sigmoid_mean':
+            attn = F.sigmoid(attn - attn.mean(dim=-1, keepdim=True)) * scaling_factor  # [b*t,1,n]
+            attn = attn.to(latent_query.dtype)
+        elif cls_scaling_type == 'direct':
+            attn = attn * scaling_factor
+        elif cls_scaling_type in ['layernorm','batchnorm']:
+            attn = self.cls_scaling_norm(attn) * scaling_factor
+        else:
+            attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
+        self.cls_mean_after_bn, self.cls_std_after_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
+            
         if self.cls_norm:
             h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
             attn = rearrange(attn, 'bt 1 (h w) -> bt 1 h w', h=h, w=w)
@@ -685,7 +719,7 @@ class ClipMatcher(nn.Module):
         '''
         b, t = segment.shape[:2]
         device = segment.device
-        output_dict = {'feat': {'clip': {}, 'query': {}}}
+        output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
 
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
@@ -785,12 +819,19 @@ class ClipMatcher(nn.Module):
             latent_clip = clip_feat_dict['hidden_states']
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
-            with self.backbone_context():
-                cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls)
+            if get_intermediate_features:
+                output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
+                output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
+                
+            cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
             stx_tgt_mask = cls_mask
-
+            
+            if get_intermediate_features:
+                output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
+            
         # pca guide
         if self.enable_pca_guide:
+            self.score_maps_mean, self.score_maps_std = score_maps.mean(dim=-1).mean().item(), score_maps.std(dim=(-1, -2)).mean().item()
             if self.guide_to_stx:
                 stx_mem_mask = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
 
@@ -801,6 +842,13 @@ class ClipMatcher(nn.Module):
             clip_feat = clip_feat + self.pe_stx
         clip_feat = rearrange(clip_feat, 'b t (h w) c -> (b t) (h w) c', b=b, h=h)
 
+        if get_intermediate_features:
+            output_dict['feat']['clip']['pe_stx'] = clip_feat.clone()
+            output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
+            output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
+            output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
+            
+            
         for stx_layer in self.CQ_corr_transformer:
             stx_layer: nn.TransformerDecoderLayer  # written for pylance
             clip_feat = stx_layer.forward(
@@ -1019,8 +1067,18 @@ class ClipMatcher(nn.Module):
                 'giou': gious,
                 'prob_acc': prob_accuracy,
             })
-            if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
-                log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
+            if self.cls_learnable_scaling:
+                log_dict.update({'scaling_param': self.scaling_param})
+            if self.enable_cls_token_score:
+                log_dict.update({'cls_mean_before_bn': self.cls_mean_before_bn})
+                log_dict.update({'cls_std_before_bn': self.cls_std_before_bn})
+                log_dict.update({'cls_mean_after_bn': self.cls_mean_after_bn})
+                log_dict.update({'cls_std_after_bn': self.cls_std_after_bn})
+            if self.enable_pca_guide:
+                log_dict.update({'score_maps_mean': self.score_maps_mean})
+                log_dict.update({'score_maps_std': self.score_maps_std})
+            # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
+            #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
             # not for logging but just in case we need it
             info_dict = {
