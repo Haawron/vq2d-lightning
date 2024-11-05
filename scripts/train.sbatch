@@ -14,6 +14,19 @@ hostname
 
 source ./scripts/_setup.sh
 
+# # VQLoc w HNM 
+# python train.py --config-name train_fast \
+#     +use_hnm=true \
+#     batch_size=8 \
+
+# # VQLoc w HNM and HQQ
+# python train.py --config-name train_fast \
+#     +experiment=\[rt_pos_query\] \
+#     model.sim_between=positives \
+#     +use_hnm=true \
+#     batch_size=8 \
+
+###############################################################
 
 # Ours
 python train.py --config-name train_fast \
