@@ -134,6 +134,7 @@ def assign_labels(anchors, gt_boxes, iou_threshold=0.5, topk=5):
 def get_losses_with_anchor(
     preds, gts,
     training = True,
+    use_hnm = False,
     positive_threshold = .2,
     positive_topk = 5,
     weight_bbox_center = 1.,
@@ -141,8 +142,8 @@ def get_losses_with_anchor(
     weight_bbox_giou = .3,
     weight_prob = 100.,
 ):
-    # if config.train.use_hnm:
-    #     gts = dataset_utils.replicate_sample_for_hnm(gts)
+    if use_hnm:
+        gts = replicate_sample_for_hnm(gts)
 
     pred_center = preds['center']   # [b,t,N,2]
     pred_hw = preds['hw']           # [b,t,N,2], actually half of hw
@@ -246,3 +247,79 @@ def get_losses_with_anchor(
     }
 
     return loss, pred_top, gts, positive  # gts with hw, center computed
+
+
+def replicate_sample_for_hnm(gts):
+    '''
+        gts = {
+            'clip':                 in [b,t,c,h,w]
+            'clip_rigin':           in [b,t,c,h,w]
+            'clip_with_bbox':       in [b,t]
+            'before_query':         in [b,t]
+            'clip_bbox':            in [b,t,4]
+            'query':                in [b,c,h,w]
+            'query_origin':         in [b,c,h,w]
+            'clip_h':               in [b]
+            'clip_w':               in [b]
+        }
+    '''
+    # clip = gts['clip']
+    # clip_origin = gts['clip_origin']
+    clip_with_bbox = gts['clip_with_bbox']
+    before_query = gts['before_query']
+    clip_bbox = gts['clip_bbox']
+    # query = gts['query']
+    # query_origin = gts['query_origin']
+    # clip_h, clip_w = gts['clip_h'], gts['clip_w']
+
+    b, t = before_query.shape[:2]
+    device = before_query.device
+
+    # new_clip = []
+    # new_clip_origin = []
+    new_clip_with_bbox = []
+    new_before_query = []
+    new_clip_bbox = []
+    # new_query = []
+    # new_query_origin = []
+    # new_clip_h, new_clip_w = [], []
+
+    for i in range(b):
+        for j in range(b):
+            # new_clip.append(clip[i])
+            # new_clip_origin.append(clip_origin[i])
+            # new_query.append(query[j])
+            # new_query_origin.append(query_origin[j])
+            if i == j:
+                new_clip_with_bbox.append(clip_with_bbox[i])
+                new_before_query.append(before_query[i])
+                new_clip_bbox.append(clip_bbox[i])
+            else:
+                new_clip_with_bbox.append(torch.zeros(t).float().to(device))
+                new_before_query.append(torch.ones(t).bool().to(device))
+                new_clip_bbox.append(torch.tensor([[0.0, 0.0, 0.0001, 0.0001]]).repeat(t,1).float().to(device))
+            # new_clip_h.append(clip_h[i])
+            # new_clip_w.append(clip_w[i])
+    
+    # new_clip = torch.stack(new_clip)
+    # new_clip_origin = torch.stack(new_clip_origin)
+    new_clip_with_bbox = torch.stack(new_clip_with_bbox)
+    new_before_query = torch.stack(new_before_query)
+    new_clip_bbox = torch.stack(new_clip_bbox)
+    # new_clip_h = torch.stack(new_clip_h)
+    # new_clip_w = torch.stack(new_clip_w)
+    # new_query = torch.stack(new_query)
+    # new_query_origin = torch.stack(new_query_origin)
+
+    new_gts = {
+            # 'clip': new_clip,                       # in [b^2,t,c,h,w]
+            # 'clip_origin': new_clip_origin,         # in [b^2,t,c,h,w]
+            'clip_with_bbox': new_clip_with_bbox,   # in [b^2,t]
+            'before_query': new_before_query,       # in [b^2,t]
+            'clip_bbox': new_clip_bbox,             # in [b^2,t,4]
+            # 'query': new_query,                     # in [b^2,c,h,w]
+            # 'query_origin': new_query_origin,       # in [b^2,c,h,w]
+            # 'clip_h': new_clip_h,                   # in [b^2]
+            # 'clip_w': new_clip_w,                   # in [b^2]
+        }
+    return new_gts
