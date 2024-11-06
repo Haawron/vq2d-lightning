@@ -972,6 +972,7 @@ class ClipMatcher(nn.Module):
                 weight_bbox_hw=self.weight_bbox_hw,
                 weight_bbox_giou=self.weight_bbox_giou,
                 weight_prob=self.weight_prob,
+                use_hnm=use_hnm,
             )
 
             loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]

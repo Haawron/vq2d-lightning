@@ -79,6 +79,7 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
+        self.use_hnm = config.get('use_hnm', False)
 
         self.rt_pos_query = config.get('rt_pos_query')
 
@@ -87,6 +88,8 @@ class LitModule(L.LightningModule):
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
         extra_args = {}
+        if self.use_hnm is not None:
+            extra_args['use_hnm']=True
         if self.rt_pos_query is not None:
             self.late_epoch_rt_pos = self.rt_pos_query.late_epoch_rt_pos
             self.mode = self.rt_pos_query.mode

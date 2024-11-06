@@ -37,16 +37,16 @@ REPORTED_INVALID_VIDEO_UIDS = {
 }
 
 
-def generate_flat_annotations_ego4d(p_official_ann: Path):
+def generate_flat_annotations_vq2d(p_official_ann: Path):
     """
     Usage
     -----
     
     Basic usage:
     
-        from ltvu.preprocess import generate_flat_annotations_ego4d
+        from ltvu.preprocess import generate_flat_annotations_vq2d
         p_official_ann = Path('SOMEPATH/vq_val.json')
-        flat_anns = generate_flat_annotations_ego4d(p_official_ann)
+        flat_anns = generate_flat_annotations_vq2d(p_official_ann)
     """
 
     def polish_bbox_dict_keys(bbox: dict):
@@ -62,9 +62,6 @@ def generate_flat_annotations_ego4d(p_official_ann: Path):
     count_invalids = 0
     for ann_video in all_anns['videos']:
         video_uid = ann_video['video_uid']
-        if len(ann_video['clips']) == 0:
-            flat_anns.append({'video_uid': video_uid})
-            continue
         for ann_clip in ann_video['clips']:
             clip_uid = ann_clip['clip_uid']
             if clip_uid is None or clip_uid in REPORTED_INVALID_CLIP_UIDS:
@@ -72,9 +69,9 @@ def generate_flat_annotations_ego4d(p_official_ann: Path):
             clip_duration = ann_clip['video_end_sec'] - ann_clip['video_start_sec']
             clip_fps = ann_clip['clip_fps']
             for ann_annots in ann_clip['annotations']:
-                annotation_uid = ann_annots.get('annotation_uid')
+                annotation_uid = ann_annots['annotation_uid']
                 for qset_id, qset in ann_annots['query_sets'].items():
-                    if 'is_valid' in qset and not qset['is_valid']:
+                    if not qset['is_valid']:
                         count_invalids += 1
                         continue
 
@@ -88,18 +85,10 @@ def generate_flat_annotations_ego4d(p_official_ann: Path):
                         'clip_duration': clip_duration,
                         'original_width': ow,
                         'original_height': oh,
-                        'query_frame': qset.get('query_frame', 1000000),
+                        'query_frame': qset['query_frame'],
                         'object_title': qset['object_title'],
                         'visual_crop': polish_bbox_dict_keys(qset['visual_crop']),
                     }
-
-                    if sample['query_frame'] == 1000000:  # egotracks test
-                        del sample['query_frame']
-
-                    if annotation_uid is not None:  # vq2d train/val
-                        sample['uuid_vq2d'] = f'{annotation_uid}_{qset_id}'
-
-                    sample['uuid_ltt'] = f'{clip_uid}_{qset_id}_{qset["object_title"]}'
 
                     if is_annotated:
                         rt = [polish_bbox_dict_keys(bbox) for bbox in qset['response_track']]
@@ -107,18 +96,6 @@ def generate_flat_annotations_ego4d(p_official_ann: Path):
                             'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
                             'response_track': rt,
                         })
-
-                        if 'lt_track' in qset:
-                            ltt = [polish_bbox_dict_keys(bbox) for bbox in qset['lt_track']]
-                            sample['lt_track'] = ltt
-
-                        if 'visual_clip' in qset:
-                            vcl = [polish_bbox_dict_keys(bbox) for bbox in qset['visual_clip']]
-                            sample.update({
-                                'visual_clip_valid_range': [vcl[0]['fno'], vcl[-1]['fno']],
-                                'visual_clip': vcl,
-                            })
-                            assert len(vcl) == vcl[-1]['fno'] - vcl[0]['fno'] + 1
                     flat_anns.append(sample)
     return flat_anns
 
@@ -127,32 +104,19 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         short_side: int,
-        task: str = 'vq2d',
-        split: str = 'train',
+        splits: str | list[str] = ['train', 'val'],
         p_raw_clips_dir = Path('/data/datasets/ego4d_data/v2/clips'),
-        p_ego4d_dir = Path('/data/datasets/ego4d_data/v2'),
         p_tarfiles_dir = Path('./outputs/frames'),
     ):
         super().__init__()
         self.short_side = short_side
         self.p_raw_clips_dir = p_raw_clips_dir  # FPS: any, resolution: Any
 
-        # p_ann = Path(f'./data/vq_v2_{split}_anno.json')
-        # all_anns = json.load(p_ann.open())
-        if task == 'vq2d':
-            if split == 'test':
-                split = 'test_unannotated'
-            p_official_ann = p_ego4d_dir / 'annotations' / f'vq_{split}.json'
-        elif task == 'egotracks':
-            if split == 'test':
-                split = 'challenge_test_unannotated'
-            p_official_ann = p_ego4d_dir / 'egotracks' / f'egotracks_{split}.json'
-
-        all_anns = generate_flat_annotations_ego4d(p_official_ann)
+        splits = [splits] if isinstance(splits, str) else splits
+        p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in splits]
+        all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
         clip2anns = defaultdict(list)
         for ann in all_anns:
-            if 'clip_uid' not in ann:
-                continue
             clip_uid = ann['clip_uid']
             clip2anns[clip_uid].append(ann)
 
@@ -261,18 +225,14 @@ class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileD
         return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
 
 
-def main(
-    short_side = 320,
-    task: str = 'vq2d',
-    split: str = 'train',
-    whole = False, world_size = 1, rank = 0):
+def main(short_side = 520, splits: str | list[str] = ['train', 'val'], whole = False, world_size = 1, rank = 0):
     """
     Usage
     -----
 
     Run preprocessing for training split:
 
-        python -m ltvu.preprocess  # will process both train and val split
+        python -m ltvu.preprocess  # will process both train and val splits
 
     Run preprocessing in parallel for 4 ranks:
 
@@ -282,18 +242,14 @@ def main(
 
     Run preprocessing for validation split for evaluation:
 
-        python -m ltvu.preprocess --split val --whole
-
-    Run preprocessing for egotracks train:
-    
-            python -m ltvu.preprocess --task egotracks --split train --whole
+        python -m ltvu.preprocess --splits val --whole
     """
 
-    print(f'Preprocessing {"VQ2D" if task == 'vq2d' else 'EgoTracks' if task == 'egotracks' else '???'} frames with short_side={short_side}, split={split}')
+    print(f'Preprocessing VQ2D frames with short_side={short_side}, splits={splits}')
     num_workers = os.cpu_count() // 4
     print(f'{num_workers=}, {world_size=}, {rank=}')
     ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if whole else FrameExtractAndSaveAsTarfileDataset
-    ds = ds_class(short_side=short_side, task=task, split=split)
+    ds = ds_class(short_side=short_side, splits=splits)
     length = len(ds)
     sampler = torch.utils.data.distributed.DistributedSampler(
         list(range(length)), num_replicas=world_size, rank=rank,
@@ -323,9 +279,9 @@ def main(
     if rank == 0:
         print('Rank 0: gathering tarfiles...')
         ssdir = f'{short_side}ss' if short_side > 0 else 'raw'
-        filename = f'{task}_pos_and_query_frames_{ssdir}'
-        if isinstance(split, str):
-            filename += f'-{split}'
+        filename = f'vq2d_pos_and_query_frames_{ssdir}'
+        if isinstance(splits, str):
+            filename += f'-{splits}'
         p_tarfile_gathered = p_tarfiles_dir / f'{filename}.tar'
         with tarfile.open(p_tarfile_gathered, 'w') as outtar:
             seen_files = set()
