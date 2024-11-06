@@ -124,7 +124,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return sample
 
     def subsample_anns(self, anns):  # interface
-        anns = [ann for ann in anns if 'clip_uid' in ann]
         return anns
 
     def sample_frame_idxs(self, num_frames: int, frame_interval: int, clip_len: int, gt_ext = None):
