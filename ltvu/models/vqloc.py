@@ -202,6 +202,7 @@ class ClipMatcher(nn.Module):
         singular_include_first: bool = True,
         entropy_include_first: bool = True,
         rank_pca: int = 4,
+        ignore_border: bool = False,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -294,6 +295,7 @@ class ClipMatcher(nn.Module):
         self.rank_pca = rank_pca
         self.singular_include_first = singular_include_first
         self.entropy_include_first = entropy_include_first
+        self.ignore_border = ignore_border
 
         self.enable_temporal_shift_stx = enable_temporal_shift_stx
         self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
@@ -845,8 +847,10 @@ class ClipMatcher(nn.Module):
         if get_intermediate_features:
             output_dict['feat']['clip']['pe_stx'] = clip_feat.clone()
             output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
-            output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
-            output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
+            if stx_tgt_mask is not None:
+                output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
+            if stx_mem_mask is not None:
+                output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
 
 
         for stx_layer in self.CQ_corr_transformer:
@@ -985,8 +989,14 @@ class ClipMatcher(nn.Module):
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
-                _qfeat = rearrange(query_feat.detach(), 'b c h w -> b (h w) c')  # [b,h*w,c]
-                _cfeat = rearrange(clip_feat_stx, '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
+                if self.ignore_border:
+                    _qfeat = query_feat[..., 2:-2, 2:-2].detach()
+                    _cfeat = clip_feat_stx[..., 2:-2, 2:-2]
+                else:
+                    _qfeat = query_feat.detach()
+                    _cfeat = clip_feat_stx
+                _qfeat = rearrange(_qfeat, 'b c h w -> b (h w) c')  # [b,h*w,c]
+                _cfeat = rearrange(_cfeat, '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
                 _qfeat = _qfeat - _qfeat.mean(dim=1, keepdim=True)  # [b,h*w,c]
                 for bidx in range(b):
                     U, S, V = torch.pca_lowrank(_cfeat[bidx], q=self.rank_pca)  # [t*h*w,Q], [Q], [c,Q]
@@ -996,13 +1006,13 @@ class ClipMatcher(nn.Module):
                         V = V[:, 1:]
                     score_map = torch.matmul(_qfeat[bidx], V)  # [h*w,Q]
                     score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h*w,Q]
-                    score_map_norm = F.softmax(5. * score_map_exp, dim=1)
+                    score_map_norm = F.softmax(score_map_exp / .2, dim=1)
                     score_map_norm = score_map_norm.clamp(1e-6, 1-1e-6)
 
                     patchwise_entropy = -(score_map_norm * score_map_norm.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
                     patchwise_entropy = patchwise_entropy.mean()
 
-                    mapwise_entropy = F.softmax(score_map_exp.sum(dim=0) / 100, dim=0)  # [Q]
+                    mapwise_entropy = F.softmax(score_map_exp.mean(dim=0) / .1, dim=0)  # [Q]
                     mapwise_entropy = mapwise_entropy.clamp(1e-6, 1-1e-6)
                     mapwise_entropy = -(mapwise_entropy * mapwise_entropy.log()).sum()  # [Q] -> scalar
 
