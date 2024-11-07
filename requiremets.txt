@@ -20,3 +20,5 @@ av
 opencv-python
 fire
 pims
+pot
+geomloss

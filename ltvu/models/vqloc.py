@@ -1,3 +1,4 @@
+import itertools
 from typing import Iterable, Callable
 from collections import OrderedDict
 
@@ -10,6 +11,7 @@ from tqdm import tqdm
 
 import random
 from transformers import Dinov2Model
+from geomloss import SamplesLoss
 
 from ltvu.loss import get_losses_with_anchor
 from ltvu.bbox_ops import bbox_xyhwToxyxy, generate_anchor_boxes_on_regions
@@ -199,9 +201,11 @@ class ClipMatcher(nn.Module):
         guide_to_stx: bool = False,
         weight_singular: float = 0.,
         weight_entropy: float = 0.,
+        weight_sinkhorn: float = 0.,
         singular_include_first: bool = True,
         entropy_include_first: bool = True,
         rank_pca: int = 4,
+        ignore_border: bool = False,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -291,9 +295,11 @@ class ClipMatcher(nn.Module):
 
         self.weight_singular = weight_singular
         self.weight_entropy = weight_entropy
+        self.weight_sinkhorn = weight_sinkhorn
         self.rank_pca = rank_pca
         self.singular_include_first = singular_include_first
         self.entropy_include_first = entropy_include_first
+        self.ignore_border = ignore_border
 
         self.enable_temporal_shift_stx = enable_temporal_shift_stx
         self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
@@ -476,6 +482,12 @@ class ClipMatcher(nn.Module):
 
         # output head
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+
+        if self.weight_sinkhorn > 0:
+            self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.5)
+        else:
+            self.sinkhorn = None
+
         self.debug = debug
 
     def init_weights_linear(self, m):
@@ -739,7 +751,7 @@ class ClipMatcher(nn.Module):
 
             valid_gt_mask = rt_pos_idx != -1  # [b,t]
 
-            if self.sim_between == 'positives':  # sim between query and rt_pos_queries
+            if self.sim_between in ['positives', 'positives_multinomial']:  # sim between query and rt_pos_queries
                 _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
                 _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
                 simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
@@ -757,7 +769,13 @@ class ClipMatcher(nn.Module):
             rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
             if batch_has_valid.any():
                 valid_sim_mask = sim_mask.float()  # [b, t]
-                rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+                if self.sim_between == 'positives_multinomial':
+                    valid_sim = sim * valid_sim_mask  # [b,t]
+                    valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
+                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
+                else:
+                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
+
 
             if sim_mode == 'max':
                 masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
@@ -980,14 +998,21 @@ class ClipMatcher(nn.Module):
                 total_loss = total_loss + ww * l
 
 
-            if self.weight_singular > 0 or self.weight_entropy > 0:
+            if self.weight_singular > 0 or self.weight_entropy > 0 or self.weight_sinkhorn > 0:
                 # penalize entropy of a normed score map while limiting sigma's
                 # entropy -> activate only specific parts
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
-                _qfeat = rearrange(query_feat.detach(), 'b c h w -> b (h w) c')  # [b,h*w,c]
-                _cfeat = rearrange(clip_feat_stx, '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
+                loss_sinkhorn = torch.tensor(0., dtype=query_feat.dtype, device=device)
+                if self.ignore_border:
+                    _qfeat = query_feat[..., 2:-2, 2:-2].detach()
+                    _cfeat = clip_feat_stx[..., 2:-2, 2:-2]
+                else:
+                    _qfeat = query_feat.detach()
+                    _cfeat = clip_feat_stx
+                _qfeat = rearrange(_qfeat, 'b c h w -> b (h w) c')  # [b,h*w,c]
+                _cfeat = rearrange(_cfeat, '(b t) c h w -> b (t h w) c', b=b)  # [b,t*h*w,c]
                 _qfeat = _qfeat - _qfeat.mean(dim=1, keepdim=True)  # [b,h*w,c]
                 for bidx in range(b):
                     U, S, V = torch.pca_lowrank(_cfeat[bidx], q=self.rank_pca)  # [t*h*w,Q], [Q], [c,Q]
@@ -996,27 +1021,37 @@ class ClipMatcher(nn.Module):
                     if not self.entropy_include_first:
                         V = V[:, 1:]
                     score_map = torch.matmul(_qfeat[bidx], V)  # [h*w,Q]
-                    score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h*w,Q]
-                    score_map_norm = F.softmax(5. * score_map_exp, dim=1)
-                    score_map_norm = score_map_norm.clamp(1e-6, 1-1e-6)
 
-                    patchwise_entropy = -(score_map_norm * score_map_norm.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
-                    patchwise_entropy = patchwise_entropy.mean()
+                    if self.weight_sinkhorn == 0:  # use entropy
+                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 10)  # [h*w,Q]
+                        score_map_normq = F.softmax(score_map_exp / .2, dim=1)
+                        score_map_normq = score_map_normq.clamp(1e-6, 1-1e-6)
+                        score_map_normhw = F.softmax(score_map_exp.mean(dim=0) / .1, dim=0)  # [Q]
+                        score_map_normhw = score_map_normhw.clamp(1e-6, 1-1e-6)
 
-                    mapwise_entropy = F.softmax(score_map_exp.sum(dim=0) / 100, dim=0)  # [Q]
-                    mapwise_entropy = mapwise_entropy.clamp(1e-6, 1-1e-6)
-                    mapwise_entropy = -(mapwise_entropy * mapwise_entropy.log()).sum()  # [Q] -> scalar
-
-                    loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
+                        patchwise_entropy = -(score_map_normq * score_map_normq.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
+                        patchwise_entropy = patchwise_entropy.mean()
+                        mapwise_entropy = -(score_map_normhw * score_map_normhw.log()).sum()  # [Q] -> scalar
+                        loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
+                    else:
+                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
+                        score_map_normhw = F.softmax(score_map_exp / .1, dim=0)  # [h*w,Q]
+                        score_map_normhw = rearrange(score_map_normhw, 'hw Q -> Q hw 1')
+                        idxs = torch.combinations(torch.arange(self.rank_pca, device=device), with_replacement=False)
+                        assert len(idxs) == self.rank_pca * (self.rank_pca - 1) // 2
+                        loss_sinkhorn = loss_sinkhorn - self.sinkhorn.forward(score_map_normhw[idxs[:, 0]], score_map_normhw[idxs[:, 1]]).mean()  # maximize
 
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
-                    loss_singular = loss_singular + -torch.minimum(S[..., 1:], max_sigma).sum()
+                    loss_singular = loss_singular + -torch.minimum(S, max_sigma).sum()
                 loss_singular = loss_singular / b
                 loss_entropy = loss_entropy / b
+                loss_sinkhorn = loss_sinkhorn / b
                 if self.weight_singular > 0:
                     total_loss = total_loss + self.weight_singular * loss_singular
                 if self.weight_entropy > 0:
                     total_loss = total_loss + self.weight_entropy * loss_entropy
+                if self.weight_sinkhorn > 0:
+                    total_loss = total_loss + self.weight_sinkhorn * loss_sinkhorn
                 # print(loss_singular, loss_entropy, loss_dict['loss_prob'])
 
             if self.debug:
@@ -1036,6 +1071,8 @@ class ClipMatcher(nn.Module):
                 log_dict.update({'loss_singular': loss_singular.detach()})
             if self.weight_entropy > 0:
                 log_dict.update({'loss_entropy': loss_entropy.detach()})
+            if self.weight_sinkhorn > 0:
+                log_dict.update({'loss_sinkhorn': loss_sinkhorn.detach()})
 
 
             # for logging - metrics
