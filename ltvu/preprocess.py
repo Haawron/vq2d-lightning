@@ -18,6 +18,8 @@ from decord import VideoReader
 from PIL import Image
 from einops import rearrange
 from tqdm import tqdm
+import decord
+decord.bridge.set_bridge("torch")
 
 from ltvu.dataset import shift_indices_to_clip_range
 
@@ -100,23 +102,138 @@ def generate_flat_annotations_vq2d(p_official_ann: Path):
     return flat_anns
 
 
+def generate_flat_annotations_egotracks(p_official_ann: Path):
+    """
+    Usage
+    -----
+    
+    Basic usage:
+    
+        from ltvu.preprocess import generate_flat_annotations_egotracks
+        p_official_ann = Path('SOMEPATH/vq_val.json')
+        flat_anns = generate_flat_annotations_egotracks(p_official_ann)
+    """
+
+    REPORTED_INVALID_CLIP_UIDS = {
+        # egotracks
+        # https://discuss.ego4d-data.org/t/egotracks-dataset-download-failure/218/28?page=2
+        '59daca91-5433-48a4-92fc-422b406b551f',
+        'db211359-c259-4515-9d6c-be521711b6d0',
+        '87b52dc5-3ac3-47e7-9648-1b719049732f',
+        'b7fc5f98-e5d5-405d-8561-68cbefa75106'
+    }
+
+    def polish_bbox_dict(bbox: dict):
+        key_map = {
+            'frame_number': 'fno',
+            'x': 'x', 'y': 'y', 'width': 'w', 'height': 'h',
+            'original_width': None, 'original_height': None}
+        bbox = {kk: v for k, v in bbox.items() if (kk:=key_map.get(k)) is not None}
+        bbox = {k: round(v, 2) if isinstance(v, float) else v for k, v in bbox.items()}
+        return bbox
+
+    p_official_ann = Path(p_official_ann)
+    all_anns = json.load(p_official_ann.open())
+    is_annotated = 'unannotated' not in p_official_ann.stem
+    flat_anns = []
+    count_invalids = 0
+    for ann_video in all_anns['videos']:
+        video_uid = ann_video['video_uid']
+        if len(ann_video['clips']) == 0:
+            flat_anns.append({'video_uid': video_uid})
+            continue
+        for ann_clip in ann_video['clips']:
+            clip_uid = ann_clip['clip_uid']
+            if clip_uid is None or clip_uid in REPORTED_INVALID_CLIP_UIDS:
+                continue
+            clip_duration = ann_clip['video_end_sec'] - ann_clip['video_start_sec']
+            clip_fps = ann_clip['clip_fps']
+            for ann_annots in ann_clip['annotations']:
+                for qset_id, qset in ann_annots['query_sets'].items():
+                    if 'is_valid' in qset and not qset['is_valid']:
+                        count_invalids += 1
+                        continue
+
+                    oh, ow = qset['visual_crop']['original_height'], qset['visual_crop']['original_width']
+                    sample = {
+                        'video_uid': video_uid,
+                        'clip_uid': clip_uid,
+                        'query_set': qset_id,
+                        'clip_fps': clip_fps,
+                        'clip_duration': clip_duration,
+                        'original_width': ow,
+                        'original_height': oh,
+                        'query_frame': qset.get('query_frame', 1000000),
+                        'object_title': qset['object_title'],
+                        'visual_crop': polish_bbox_dict(qset['visual_crop']),
+                    }
+
+                    if sample['query_frame'] == 1000000:  # egotracks test
+                        del sample['query_frame']
+
+                    sample['uuid_ltt'] = f'{clip_uid}_{qset_id}_{qset["object_title"]}'
+
+                    if is_annotated:  # at most 2 samples will be added
+                        rt = [polish_bbox_dict(bbox) for bbox in qset['response_track']]
+                        flat_anns.append({
+                            **sample,
+                            'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
+                            'response_track': rt,
+                        })
+
+                        if 'lt_track' in qset:
+                            ltt = sorted(
+                                [polish_bbox_dict(bbox) for bbox in qset['lt_track']],
+                                key=lambda x: x['fno'])
+                            if 'visual_clip' in qset:
+                                vcl = sorted(
+                                    [polish_bbox_dict(bbox) for bbox in qset['visual_clip']],
+                                    key=lambda x: x['fno'])
+                                assert len(vcl) == vcl[-1]['fno'] - vcl[0]['fno'] + 1
+                            else:
+                                vcl = []
+
+                            flat_anns.append({
+                                **sample,
+                                'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
+                                'response_track': rt,
+                                'lt_track': ltt,
+                                'visual_clip': vcl,
+                            })
+                    else:
+                        flat_anns.append(sample)
+    return flat_anns
+
+
 class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         short_side: int,
-        splits: str | list[str] = ['train', 'val'],
+        task: str = 'vq2d',
+        split: str = 'train',
         p_raw_clips_dir = Path('/data/datasets/ego4d_data/v2/clips'),
+        p_ego4d_dir = Path('/data/datasets/ego4d_data/v2'),
         p_tarfiles_dir = Path('./outputs/frames'),
     ):
         super().__init__()
         self.short_side = short_side
         self.p_raw_clips_dir = p_raw_clips_dir  # FPS: any, resolution: Any
 
-        splits = [splits] if isinstance(splits, str) else splits
-        p_anns = [Path(f'./data/vq_v2_{split}_anno.json') for split in splits]
-        all_anns = sum([json.load(p_ann.open()) for p_ann in p_anns], [])
+        if task == 'vq2d':
+            if split == 'test':
+                split = 'test_unannotated'
+            p_official_ann = p_ego4d_dir / 'annotations' / f'vq_{split}.json'
+            all_anns = generate_flat_annotations_vq2d(p_official_ann)
+        elif task == 'egotracks':
+            if split == 'test':
+                split = 'challenge_test_unannotated'
+            p_official_ann = p_ego4d_dir / 'egotracks' / f'egotracks_{split}.json'
+            all_anns = generate_flat_annotations_egotracks(p_official_ann)
+
         clip2anns = defaultdict(list)
         for ann in all_anns:
+            if 'clip_uid' not in ann:
+                continue
             clip_uid = ann['clip_uid']
             clip2anns[clip_uid].append(ann)
 
@@ -225,14 +342,20 @@ class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileD
         return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
 
 
-def main(short_side = 520, splits: str | list[str] = ['train', 'val'], whole = False, world_size = 1, rank = 0):
+def main(
+    short_side = 320,
+    task: str = 'vq2d',
+    split: str = 'train',
+    whole = False, world_size = 1, rank = 0,
+    only_gather: bool = False,
+):
     """
     Usage
     -----
 
     Run preprocessing for training split:
 
-        python -m ltvu.preprocess  # will process both train and val splits
+        python -m ltvu.preprocess  # will process both train and val split
 
     Run preprocessing in parallel for 4 ranks:
 
@@ -242,66 +365,90 @@ def main(short_side = 520, splits: str | list[str] = ['train', 'val'], whole = F
 
     Run preprocessing for validation split for evaluation:
 
-        python -m ltvu.preprocess --splits val --whole
+        python -m ltvu.preprocess --split val --whole
+
+    Run preprocessing for egotracks train:
+    
+        python -m ltvu.preprocess --task egotracks --split train --whole
+
+    Run only gathering tarfiles:
+
+        python -m ltvu.preprocess --task egotracks --split train --whole --only_gather
     """
 
-    print(f'Preprocessing VQ2D frames with short_side={short_side}, splits={splits}')
-    num_workers = os.cpu_count() // 4
-    print(f'{num_workers=}, {world_size=}, {rank=}')
-    ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if whole else FrameExtractAndSaveAsTarfileDataset
-    ds = ds_class(short_side=short_side, splits=splits)
-    length = len(ds)
-    sampler = torch.utils.data.distributed.DistributedSampler(
-        list(range(length)), num_replicas=world_size, rank=rank,
-        shuffle=False, drop_last=False)
-    dl = torch.utils.data.DataLoader(
-        ds, batch_size=1, num_workers=num_workers,
-        sampler=sampler,
-        worker_init_fn=FrameExtractAndSaveAsTarfileDataset.worker_init_fn,
-        collate_fn=lambda x: x[0])
+    assert split in ('train', 'val', 'test_unannotated', 'challenge_test_unannotated')
 
-    p_tarfiles_dir = Path('./outputs/frames')
-    p_tarfiles_dir.mkdir(exist_ok=True, parents=True)
+    print(f'Preprocessing {"VQ2D" if task == 'vq2d' else 'EgoTracks' if task == 'egotracks' else '???'} frames with short_side={short_side}, split={split}')
+    p_tarfiles_dir = Path(f'./outputs/frames')
+    p_tarfiles_tmpdir = p_tarfiles_dir / f'tmp/{rank}/'
 
-    pbar = tqdm(dl, total=len(ds), desc=f'Rank {rank}/{world_size}', leave=True)
-    frames_processed, total_frame_count = 0, 0
-    for bidx, (clip_uid, frame_idxs, clip_len, worker_id, p_tarfile) in enumerate(pbar):
-        frames_processed += len(frame_idxs)
-        total_frame_count += clip_len
-        ratio_extracted = frames_processed / total_frame_count
-        tqdm.write(f'Worker {worker_id}: {clip_uid} {len(frame_idxs)} frames out of {clip_len} -> {p_tarfile}')
-        pbar.set_description(f'rank={rank}/{world_size} {ratio_extracted:.1%} = {frames_processed}/{total_frame_count}')
+    if not only_gather:
+        num_workers = os.cpu_count() // 4
+        print(f'{num_workers=}, {world_size=}, {rank=}')
 
-    del ds, dl
-    print('Waiting for all workers to close tarfiles...')
-    time.sleep(10)
+        if p_tarfiles_tmpdir.exists():
+            if rank == 0:
+                for p_tarfile in p_tarfiles_tmpdir.parent.glob('**/worker_*.tar'):
+                    p_tarfile.unlink()
+        else:
+            p_tarfiles_tmpdir.mkdir(exist_ok=True, parents=True)
+
+        ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if whole else FrameExtractAndSaveAsTarfileDataset
+        ds = ds_class(short_side=short_side, task=task, split=split, p_tarfiles_dir=p_tarfiles_tmpdir)
+        length = len(ds)
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            list(range(length)), num_replicas=world_size, rank=rank,
+            shuffle=False, drop_last=False)
+        dl = torch.utils.data.DataLoader(
+            ds, batch_size=1, num_workers=num_workers,
+            sampler=sampler,
+            worker_init_fn=FrameExtractAndSaveAsTarfileDataset.worker_init_fn,
+            collate_fn=lambda x: x[0])
+
+        pbar = tqdm(dl, total=len(sampler), desc=f'Rank {rank}/{world_size}', leave=True)
+        frames_processed, total_frame_count = 0, 0
+        for bidx, (clip_uid, frame_idxs, clip_len, worker_id, p_tarfile) in enumerate(pbar):
+            frames_processed += len(frame_idxs)
+            total_frame_count += clip_len
+            ratio_extracted = frames_processed / total_frame_count
+            tqdm.write(f'Worker {worker_id}: {clip_uid} {len(frame_idxs)} frames out of {clip_len} -> {p_tarfile}')
+            pbar.set_description(f'rank={rank}/{world_size} {ratio_extracted:.1%} = {frames_processed}/{total_frame_count}')
+
+        del ds, dl
+        print('Waiting for all workers to close tarfiles...')
+        time.sleep(600)
 
     if rank == 0:
         print('Rank 0: gathering tarfiles...')
         ssdir = f'{short_side}ss' if short_side > 0 else 'raw'
-        filename = f'vq2d_pos_and_query_frames_{ssdir}'
-        if isinstance(splits, str):
-            filename += f'-{splits}'
+        filename = f'{task}_pos_and_query_frames_{ssdir}-{split}'
         p_tarfile_gathered = p_tarfiles_dir / f'{filename}.tar'
-        with tarfile.open(p_tarfile_gathered, 'w') as outtar:
-            seen_files = set()
-            for p_tarfile in tqdm(list(p_tarfiles_dir.glob('worker_*.tar'))):
-                with tarfile.open(p_tarfile, 'r') as tar:
-                    for member in tar.getmembers():
-                        if not member.isfile(): continue
-                        if member.name in seen_files: continue
-                        file = tar.extractfile(member)
-                        if file is None: continue
-                        file_io = file.read()
-                        tarinfo = tarfile.TarInfo(name=member.name)
-                        tarinfo.size = len(file_io)
-                        tarinfo.uid = tarinfo.gid = os.getuid()
-                        tarinfo.uname = tarinfo.gname = pwd.getpwuid(os.getuid()).pw_name  # user name
-                        tarinfo.mtime = member.mtime
-                        outtar.addfile(tarinfo, io.BytesIO(file_io))
-                        seen_files.add(member.name)
-                p_tarfile.unlink()
+        gather_tarfiles(p_tarfiles_tmpdir, p_tarfile_gathered)
         print(f'Rank 0: gathered tarfiles -> {p_tarfile_gathered}')
+
+
+def gather_tarfiles(
+    p_tarfiles_tmpdir: Path,
+    p_tarfile_gathered: Path,
+):
+    with tarfile.open(p_tarfile_gathered, 'w') as outtar:
+        seen_files = set()
+        for p_tarfile_tmp in tqdm(list(p_tarfiles_tmpdir.parent.glob('**/worker_*.tar'))):
+            with tarfile.open(p_tarfile_tmp, 'r') as tar:
+                for member in tar.getmembers():
+                    if not member.isfile(): continue
+                    if member.name in seen_files: continue
+                    file = tar.extractfile(member)
+                    if file is None: continue
+                    file_io = file.read()
+                    tarinfo = tarfile.TarInfo(name=member.name)
+                    tarinfo.size = len(file_io)
+                    tarinfo.uid = tarinfo.gid = os.getuid()
+                    tarinfo.uname = tarinfo.gname = pwd.getpwuid(os.getuid()).pw_name  # user name
+                    tarinfo.mtime = member.mtime
+                    outtar.addfile(tarinfo, io.BytesIO(file_io))
+                    seen_files.add(member.name)
+            # p_tarfile_tmp.unlink()
 
 
 if __name__ == '__main__':

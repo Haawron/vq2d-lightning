@@ -2,6 +2,7 @@ defaults:
   - _self_
   - augment: base
   - model: vqloc
+  - dataset: vq2d
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
 
@@ -57,27 +58,6 @@ trainer:
       notes: null  # real note, a log string
       save_dir: ${runtime_outdir}  # logs will be saved under THIS/wandb
       log_model: False    # as we use custom checkpointing
-
-dataset:
-  ###### torch #####
-  batch_size: ${batch_size}
-  num_workers: ${num_workers}
-  prefetch_factor: ${prefetch_factor}
-  pin_memory: True
-  persistent_workers: False  # No, our dataset is memory-bound
-  ##### project-related #####
-  # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{1+frame_idx:07d}.jpg
-  # for frames, frame_idxs should be 1-based
-  clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'
-  official_anns_dir: '/data/datasets/ego4d_data/v2/annotations'
-  flat_anns_dir: './data'
-  num_frames: 32
-  frame_interval: 1
-  segment_size: [448, 448]  # height, width
-  query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
-  padding_value: 'zero'  # zero or mean
 
 optim:
   optimizer:

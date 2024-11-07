@@ -180,7 +180,7 @@ def fix_predictions_order(final_preds, p_official_ann):
 
 if __name__ == '__main__':
     from pathlib import Path
-    from ltvu.metrics import get_metrics, print_metrics
+    from ltvu.metrics import get_metrics_vq2d, print_metrics
 
     p_tmp_outdir = Path('outputs/debug/2024-09-25/126347/tmp')
     p_int_pred = p_tmp_outdir.parent / 'intermediate_predictions.pt'
@@ -197,5 +197,5 @@ if __name__ == '__main__':
     json.dump(final_preds, open('/tmp/pred.json', 'w'))
 
     # print metrics
-    subset_metrics = get_metrics('data/vq_v2_val_anno.json', '/tmp/pred.json')
+    subset_metrics = get_metrics_vq2d('data/vq_v2_val_anno.json', '/tmp/pred.json')
     print_metrics(subset_metrics)

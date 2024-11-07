@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -85,15 +86,17 @@ def compute_average_precision_dict(
     recalls = tp.cumsum(axis=1) / num_samples  # [N_ths, N_samples], increasing
     rec_diffs = np.diff(recalls, prepend=0, axis=1)  # [N_ths, N_samples]
     aps = (precisions * rec_diffs).sum(axis=1)  # [N_ths]
+    f1s = 2 * precisions * recalls / (precisions + recalls + 1e-8)  # [N_ths, N_samples]
     return {
         'mAP': aps.mean(),
         'APs': [{'threshold': th, 'AP': ap} for th, ap in zip(thresholds, aps)],
         'precisions': precisions,
         'recalls': recalls,
+        'F1_scores': f1s,
     }
 
 
-def get_metrics(p_ann_flat, p_pred):
+def get_metrics_vq2d(p_ann_flat, p_pred):
     p_ann_flat = Path(p_ann_flat)
     p_pred = Path(p_pred)
     all_anns_flat = json.load(p_ann_flat.open())
@@ -220,5 +223,5 @@ if __name__ == '__main__':
     p_ann = Path("data/vq_v2_val_anno.json")
     p_pred = Path("notebooks/43634_results.json.gz")
     # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
-    subset_metrics = get_metrics(p_ann, p_pred)
+    subset_metrics = get_metrics_vq2d(p_ann, p_pred)
     print_metrics(subset_metrics)
