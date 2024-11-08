@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours-pcaloss-hqq
+#SBATCH --job-name=ours-sink-exp
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -55,9 +55,9 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
         +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
         model.late_reduce=true \
-        +model.weight_entropy=.1 \
-        +model.ignore_border=true \
-        model.sim_between=positives \
+        model.sim_between='positives_multinomial' \
+        +model.weight_sinkhorn=100 \
+        +model.ignore_border=false \
         model.cls_scaling_type='sigmoid_mean' \
         +model.cls_repair_neighbor=true \
         +model.enable_temporal_shift_conv_summary=true \

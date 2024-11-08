@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours
+#SBATCH --job-name=ours-sink-2d
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -14,27 +14,19 @@ hostname
 
 source ./scripts/_setup.sh
 
-# # VQLoc w HNM 
+# # VQLoc w HNM
 # python train.py --config-name train_fast \
 #     +use_hnm=true \
 #     batch_size=8 \
 
-# # VQLoc w HNM and HQQ
-# python train.py --config-name train_fast \
-#     +experiment=\[rt_pos_query\] \
-#     model.sim_between=positives \
-#     +use_hnm=true \
-#     batch_size=8 \
-
-###############################################################
-
+# Ours
 python train.py --config-name train_fast \
     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
     model.late_reduce=true \
-    +model.weight_entropy=.1 \
+    model.sim_between='positives_multinomial' \
+    +model.weight_sinkhorn=1e-6 \
     +model.ignore_border=true \
-    model.sim_between=positives \
     model.cls_scaling_type='sigmoid_mean' \
     +model.cls_repair_neighbor=true \
     +model.enable_temporal_shift_conv_summary=true \
