@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours-sink
+#SBATCH --job-name=ours-sink-2d
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -25,8 +25,8 @@ python train.py --config-name train_fast \
     +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
     model.late_reduce=true \
     model.sim_between='positives_multinomial' \
-    +model.weight_sinkhorn=100 \
-    +model.ignore_border=false \
+    +model.weight_sinkhorn=1e-6 \
+    +model.ignore_border=true \
     model.cls_scaling_type='sigmoid_mean' \
     +model.cls_repair_neighbor=true \
     +model.enable_temporal_shift_conv_summary=true \
