@@ -771,6 +771,7 @@ class ClipMatcher(nn.Module):
                 valid_sim_mask = sim_mask.float()  # [b, t]
                 if self.sim_between == 'positives_multinomial':
                     valid_sim = sim * valid_sim_mask  # [b,t]
+                    # valid_sim = 1 + sim * valid_sim_mask  # [b,t]
                     valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
                 else:
@@ -1036,12 +1037,13 @@ class ClipMatcher(nn.Module):
                         mapwise_entropy = -(score_map_normhw * score_map_normhw.log()).sum()  # [Q] -> scalar
                         loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
                     else:
-                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
-                        score_map_exp = rearrange(score_map_exp, 'hw Q -> Q hw')
+                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 1000)  # [h*w,Q]
+                        score_map_exp_normhw = score_map_exp / score_map_exp.sum(dim=1, keepdim=True)  # [h*w,Q]
+                        score_map_exp_normhw = rearrange(score_map_exp_normhw, 'hw Q -> Q hw')
                         idxs = torch.combinations(torch.arange(self.rank_pca, device=device), with_replacement=False)
-                        hw = score_map_exp.shape[1]
-                        _a, _b = score_map_exp[idxs[:, 0]], score_map_exp[idxs[:, 1]]
-                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device)), dim=-1)
+                        hw = score_map_exp_normhw.shape[1]
+                        _a, _b = score_map_exp_normhw[idxs[:, 0]], score_map_exp_normhw[idxs[:, 1]]
+                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device), indexing='ij'), dim=-1)
                         _xy = rearrange(_xy, 'h w c -> (h w) c')
                         _xy = _xy[None].expand(self.rank_pca * (self.rank_pca - 1) // 2, -1, -1)
                         _xy = _xy.float() / hw ** .5
