@@ -751,7 +751,7 @@ class ClipMatcher(nn.Module):
 
             valid_gt_mask = rt_pos_idx != -1  # [b,t]
 
-            if self.sim_between in ['positives', 'positives_multinomial']:  # sim between query and rt_pos_queries
+            if self.sim_between in ['positives', 'positives_multinomial', 'positives_multinomial_plus1']:  # sim between query and rt_pos_queries
                 _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
                 _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
                 simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
@@ -769,9 +769,11 @@ class ClipMatcher(nn.Module):
             rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
             if batch_has_valid.any():
                 valid_sim_mask = sim_mask.float()  # [b, t]
-                if self.sim_between == 'positives_multinomial':
-                    valid_sim = sim * valid_sim_mask  # [b,t]
-                    # valid_sim = 1 + sim * valid_sim_mask  # [b,t]
+                if self.sim_between in ['positives_multinomial', 'positives_multinomial_plus1']:
+                    if self.sim_between == 'positives_multinomial_plus1':
+                        valid_sim = 1 + sim * valid_sim_mask  # [b,t]
+                    else:
+                        valid_sim = sim * valid_sim_mask  # [b,t]
                     valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
                 else:

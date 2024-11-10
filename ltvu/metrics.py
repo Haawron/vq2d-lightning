@@ -97,6 +97,17 @@ def compute_average_precision_dict(
 
 
 def get_metrics_vq2d(p_ann_flat, p_pred):
+    """
+    Usage:
+    
+        import json
+        from pathlib import Path
+        from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
+        p_ann = Path("data/vq_v2_val_anno.json")
+        p_pred = Path("notebooks/43634_results.json.gz")
+        subset_metrics = get_metrics_vq2d(p_ann, p_pred)
+        print_metrics_vq2d(subset_metrics)
+    """
     p_ann_flat = Path(p_ann_flat)
     p_pred = Path(p_pred)
     all_anns_flat = json.load(p_ann_flat.open())
