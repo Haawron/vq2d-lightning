@@ -2,6 +2,7 @@
     "exclude": [
         "__pycache__",
         "jsons/",
+        "data/",
         "weights/",
         "samples/",
         "*.egg-info/",

@@ -47,7 +47,12 @@ def main(config: DictConfig):
     assert config.ckpt is not None, "Please provide a checkpoint path"
     p_ckpt = Path(config.ckpt)
     plm = LitModule.load_from_checkpoint(p_ckpt)
-    pdm = LitVQ2DDataModule(config)  # eval config
+    match config.dataset.name:
+        case 'vq2d':
+            litdatamodule = LitVQ2DDataModule
+        case 'egotracks':
+            litdatamodule = LitEgoTracksDataModule
+    pdm = litdatamodule(config)  # eval config
 
     log_to_console('\n' + "="*80 + '\n')
     log_to_console(OmegaConf.to_yaml(plm.config.model))
