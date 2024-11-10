@@ -48,7 +48,7 @@ python train.py --config-name train_fast \
     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
     +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
     model.late_reduce=true \
-    +model.weight_entropy=0.0 \
+    +model.weight_entropy=0.1 \
     +model.ignore_border=false \
     model.cls_scaling_type='sigmoid_mean' \
     +model.cls_repair_neighbor=false \
