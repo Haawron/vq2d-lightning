@@ -33,3 +33,4 @@ notebooks/sel_ckps.ipynb
 tem.py
 scripts/submit.sh
 data/egotracks/
+outputs/

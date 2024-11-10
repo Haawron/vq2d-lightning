@@ -7,7 +7,7 @@ import lightning as L
 
 from lightning.pytorch.callbacks import BasePredictionWriter
 
-from ltvu.utils.compute_results import get_final_preds, fix_predictions_order
+from ltvu.utils.compute_results import get_final_preds_vq2d, fix_predictions_order, get_final_preds_egotracks
 from ltvu.metrics import get_metrics_vq2d, format_metrics
 
 
@@ -106,7 +106,7 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds(qset_preds, split=self.split)
+            final_preds = get_final_preds_vq2d(qset_preds, split=self.split)
 
             if self.test_submit:
                 # fix the order of the predictions
@@ -228,6 +228,9 @@ class PerSegmentWriterEgoTracks(BasePredictionWriter):
             self.p_tmp_outdir.rmdir()
 
             # # TODO: Below should be handled by a separate evaluation script
+
+            final_preds = get_final_preds_egotracks(qset_preds, split=self.split)
+            json.dump(final_preds, self.p_pred.open('w'))
 
             # # get final predictions
             # final_preds = get_final_preds(qset_preds, split=self.split)

@@ -3,7 +3,7 @@
 # usage: python train.py +experiment=rt_pos_query
 
 rt_pos_query:
-  rt_pos_query_dir: 'outputs/rt_pos_queries/train'
+  rt_pos_query_dir: 'outputs/rt_pos_queries/${dataset.name}/train'
   late_epoch_rt_pos: 0
   mode: 'easy'
   enable_rt_pq_threshold: False

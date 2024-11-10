@@ -185,7 +185,7 @@ def get_metrics_vq2d(p_ann_flat, p_pred):
     return subset_metrics
 
 
-def print_metrics(subset_metrics):
+def print_metrics_vq2d(subset_metrics):
     for subset_name, subset_info in subset_metrics.items():
         lbd, ubd = subset_info['subset_info']['lbd'], subset_info['subset_info']['ubd']
         max_area_mask = subset_info['subset_info']['max_area_mask']
@@ -213,7 +213,7 @@ def format_metrics(subset_metrics):
     import io, sys
     stdout = sys.stdout
     sys.stdout = io.StringIO()
-    print_metrics(subset_metrics)
+    print_metrics_vq2d(subset_metrics)
     metrics_str = sys.stdout.getvalue()
     sys.stdout = stdout
     return metrics_str
@@ -224,4 +224,4 @@ if __name__ == '__main__':
     p_pred = Path("notebooks/43634_results.json.gz")
     # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
     subset_metrics = get_metrics_vq2d(p_ann, p_pred)
-    print_metrics(subset_metrics)
+    print_metrics_vq2d(subset_metrics)

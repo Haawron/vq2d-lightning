@@ -1036,12 +1036,12 @@ class ClipMatcher(nn.Module):
                         mapwise_entropy = -(score_map_normhw * score_map_normhw.log()).sum()  # [Q] -> scalar
                         loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
                     else:
-                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
+                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 1000)  # [h*w,Q]
                         score_map_exp = rearrange(score_map_exp, 'hw Q -> Q hw')
                         idxs = torch.combinations(torch.arange(self.rank_pca, device=device), with_replacement=False)
                         hw = score_map_exp.shape[1]
                         _a, _b = score_map_exp[idxs[:, 0]], score_map_exp[idxs[:, 1]]
-                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device)), dim=-1)
+                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device), indexing='ij'), dim=-1)
                         _xy = rearrange(_xy, 'h w c -> (h w) c')
                         _xy = _xy[None].expand(self.rank_pca * (self.rank_pca - 1) // 2, -1, -1)
                         _xy = _xy.float() / hw ** .5

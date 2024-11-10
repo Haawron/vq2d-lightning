@@ -214,6 +214,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         p_raw_clips_dir = Path('/data/datasets/ego4d_data/v2/clips'),
         p_ego4d_dir = Path('/data/datasets/ego4d_data/v2'),
         p_tarfiles_dir = Path('./outputs/frames'),
+        clip_uids: list[str] = [],
     ):
         super().__init__()
         self.short_side = short_side
@@ -237,7 +238,8 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
             clip_uid = ann['clip_uid']
             clip2anns[clip_uid].append(ann)
 
-        self.all_anns = all_anns
+        # self.all_anns = all_anns
+        self.clip_fps = all_anns[0]['clip_fps']
         self.clip_uids = sorted(clip2anns.keys())
         self.clip2anns = clip2anns
         self.p_tarfiles_dir = p_tarfiles_dir
@@ -257,8 +259,7 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
         # get video info
         vr = VideoReader(str(p_raw_clip))
         fps_raw = vr.get_avg_fps()  # might be 30
-        fps_ann = anns[0]['clip_fps']  # might be 5
-        stride = round(fps_raw / fps_ann)  # 6
+        stride = round(fps_raw / self.clip_fps)  # 6
 
         # get frame idxs to be extracted
         all_frame_idxs, clip_len = self.get_frame_idxs(anns, len(vr), stride)
@@ -342,12 +343,29 @@ class FrameExtractAndSaveAsTarfileDatasetWholeClip(FrameExtractAndSaveAsTarfileD
         return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
 
 
+class FrameExtractAndSaveAsTarfileDatasetFewClipsAndWhole(FrameExtractAndSaveAsTarfileDataset):
+    def __init__(
+        self,
+        *args,
+        clip_uids: list[str] = [],
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
+        self.clip_uids = clip_uids
+        self.clip2anns = {clip_uid: None for clip_uid in self.clip_uids}
+
+    @override
+    def get_frame_idxs(self, anns, clip_len_raw, frame_interval=6):
+        return np.arange(np.ceil(clip_len_raw / frame_interval).astype(int)), clip_len_raw
+
+
 def main(
-    short_side = 320,
+    short_side: int = 320,
     task: str = 'vq2d',
     split: str = 'train',
     whole = False, world_size = 1, rank = 0,
     only_gather: bool = False,
+    clip_uids: list[str] = [],
 ):
     """
     Usage
@@ -374,6 +392,10 @@ def main(
     Run only gathering tarfiles:
 
         python -m ltvu.preprocess --task egotracks --split train --whole --only_gather
+
+    Run preprocessing for few clips and whole clip:
+
+        python -Bm ltvu.preprocess --task egotracks --whole --clip_uids '["17b73c0a-afda-4944-b2ed-450c9ef97849", "622c1b29-76c6-4845-95df-7e54792687d4", "d1419b9b-2944-421b-ba6f-0ddac32d5521", "ae8727ba-fe6f-4411-b277-48a8b7326a2a", "74130fd9-3e7b-482a-9627-0f53ac672f57", "59daca91-5433-48a4-92fc-422b406b551f", "72f95d60-cf26-4821-8d79-4ec72c748031", "87b52dc5-3ac3-47e7-9648-1b719049732f", "b7fc5f98-e5d5-405d-8561-68cbefa75106", "db211359-c259-4515-9d6c-be521711b6d0", "78a01e40-6ab7-4c4f-b596-b8908eff923"]'
     """
 
     assert split in ('train', 'val', 'test_unannotated', 'challenge_test_unannotated')
@@ -382,8 +404,31 @@ def main(
     p_tarfiles_dir = Path(f'./outputs/frames')
     p_tarfiles_tmpdir = p_tarfiles_dir / f'tmp/{rank}/'
 
+    # determine the frame extraction coverage
+    if not whole:
+        ds_class = FrameExtractAndSaveAsTarfileDataset
+    else:
+        if clip_uids:
+            ds_class = FrameExtractAndSaveAsTarfileDatasetFewClipsAndWhole
+        else:
+            ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip
+
+    # determine the filename
+    ssdir = f'{short_side}ss' if short_side > 0 else 'raw'
+    if clip_uids:
+        filename = f'subsamples-{task}_pos_and_query_frames_{ssdir}-{split}'
+    else:
+        filename = f'{task}_pos_and_query_frames_{ssdir}-{split}'
+    p_tarfile_gathered = p_tarfiles_dir / f'{filename}.tar'
+    print(p_tarfile_gathered)
+
+    if clip_uids:
+        print(f'Preprocessing {len(clip_uids)} clips: {clip_uids}')
+
     if not only_gather:
-        num_workers = os.cpu_count() // 4
+        num_workers = int(os.environ.get('SLURM_CPUS_ON_NODE', 1)) // 4
+        if clip_uids:
+            num_workers = min(num_workers, len(clip_uids))
         print(f'{num_workers=}, {world_size=}, {rank=}')
 
         if p_tarfiles_tmpdir.exists():
@@ -392,9 +437,8 @@ def main(
                     p_tarfile.unlink()
         else:
             p_tarfiles_tmpdir.mkdir(exist_ok=True, parents=True)
+        ds = ds_class(short_side=short_side, task=task, split=split, p_tarfiles_dir=p_tarfiles_tmpdir, clip_uids=clip_uids)
 
-        ds_class = FrameExtractAndSaveAsTarfileDatasetWholeClip if whole else FrameExtractAndSaveAsTarfileDataset
-        ds = ds_class(short_side=short_side, task=task, split=split, p_tarfiles_dir=p_tarfiles_tmpdir)
         length = len(ds)
         sampler = torch.utils.data.distributed.DistributedSampler(
             list(range(length)), num_replicas=world_size, rank=rank,
@@ -416,13 +460,10 @@ def main(
 
         del ds, dl
         print('Waiting for all workers to close tarfiles...')
-        time.sleep(600)
+        time.sleep(0 if clip_uids else 600)
 
     if rank == 0:
         print('Rank 0: gathering tarfiles...')
-        ssdir = f'{short_side}ss' if short_side > 0 else 'raw'
-        filename = f'{task}_pos_and_query_frames_{ssdir}-{split}'
-        p_tarfile_gathered = p_tarfiles_dir / f'{filename}.tar'
         gather_tarfiles(p_tarfiles_tmpdir, p_tarfile_gathered)
         print(f'Rank 0: gathered tarfiles -> {p_tarfile_gathered}')
 

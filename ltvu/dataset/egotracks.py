@@ -5,6 +5,10 @@ from omegaconf import DictConfig
 
 import numpy as np
 import torch
+from torch.nn import functional as F
+import torchvision.transforms.functional as TF
+
+from PIL import Image
 
 from ltvu.dataset import VQ2DFitDataset, shift_indices_to_clip_range
 
@@ -49,6 +53,19 @@ class EgoTracksDataset(VQ2DFitDataset):
 
     def subsample_anns(self, anns):
         anns = [ann for ann in anns if 'clip_uid' in ann]
+        anns = [ann for ann in anns if ann['clip_uid'] not in (
+            '17b73c0a-afda-4944-b2ed-450c9ef97849',  # train, stereo
+            'd1419b9b-2944-421b-ba6f-0ddac32d5521',  # train, stereo
+            '72f95d60-cf26-4821-8d79-4ec72c748031',  # train, stereo
+            '74130fd9-3e7b-482a-9627-0f53ac672f57',  # train, stereo
+
+            'ae8727ba-fe6f-4411-b277-48a8b7326a2a',  # val, hmm...
+
+            '59daca91-5433-48a4-92fc-422b406b551f',  # not exist
+            '87b52dc5-3ac3-47e7-9648-1b719049732f',  # not exist
+            'b7fc5f98-e5d5-405d-8561-68cbefa75106',  # not exist
+            'db211359-c259-4515-9d6c-be521711b6d0',  # not exist
+        )]
         return anns
 
     def get_lt_track(self, ann, frame_idxs):
@@ -58,20 +75,24 @@ class EgoTracksDataset(VQ2DFitDataset):
         fno2bbox = {bbox['fno']: bbox for bbox in lt_track}
 
         fnos = {bbox['fno'] for bbox in lt_track}
-        bboxes = []
+        bboxes, is_pos_frame = [], []
         for fno in frame_idxs:
             if fno in fnos:
                 bbox = fno2bbox[fno]
                 bbox = [bbox['y'], bbox['x'], bbox['y'] + bbox['h'], bbox['x'] + bbox['w']]
                 bboxes.append(bbox)
+                is_pos_frame.append(True)
             else:
                 bboxes.append([0, 0, 1e-5, 1e-5])
+                is_pos_frame.append(False)
 
         # normalize
         bboxes = np.array(bboxes, dtype=np.float32) / [oh, ow, oh, ow]
         bboxes = np.clip(bboxes, 0, 1)
 
-        return bboxes
+        is_pos_frame = np.array(is_pos_frame, dtype=bool)
+
+        return bboxes, is_pos_frame  # [t, 4]
 
 
 
@@ -87,11 +108,11 @@ class EgoTracksFitDataset(EgoTracksDataset):
 
     def __getitem__(self, idx):
         ann = self.all_anns[idx]
-        if 'lt_track' not in ann:
+        if 'lt_track' not in ann:  # only response track
             assert 'response_track' in ann
-            ann['annotation_uid'] = ''  # for compatibility
+            self.all_anns[idx]['annotation_uid'] = ''  # for compatibility
             return super().__getitem__(idx)
-        else:
+        else:  # both response track and LT track but the response track is redundant so we ignore it
             clip_uid = ann['clip_uid']
             lt_track = ann['lt_track']
             clip_len = int(ann['clip_duration'] * ann['clip_fps'])
@@ -103,6 +124,7 @@ class EgoTracksFitDataset(EgoTracksDataset):
             # get inputs
             required_len = (self.num_frames - 1) * self.frame_interval + 1
             lt_track_frame_idxs = np.array([bbox['fno'] for bbox in lt_track])
+            lt_track_frame_idxs = np.clip(lt_track_frame_idxs, 0, clip_len - 1)
             gt_mask = np.zeros(clip_len)
             gt_mask[lt_track_frame_idxs] = 1
             num_forward_gt_frames = np.convolve(gt_mask, np.ones(required_len), mode='valid')
@@ -117,7 +139,7 @@ class EgoTracksFitDataset(EgoTracksDataset):
                 f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
 
             segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
-            gt_ltt = self.get_lt_track(ann, frame_idxs)  # prob as a binary mask
+            gt_ltt, _ = self.get_lt_track(ann, frame_idxs)  # prob as a binary mask
 
             if self.rt_pos_query is not None and self.split == 'train':
                 rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
@@ -156,6 +178,45 @@ class EgoTracksFitDataset(EgoTracksDataset):
 
             return sample
 
+    def get_rt_pos_query(self, ann, frame_idxs):
+        clip_uid = ann['clip_uid']
+        object_title = ann['object_title']
+
+        rt_ann = {}
+        for rt in ann.get('lt_track', ann['response_track']):
+            rt_ann[rt['fno']] = {
+                'w': rt['w'],
+                'h': rt['h'],
+            }
+
+        rt_pos_queries, rt_pos_idx = [], []
+
+        for frame_idx in frame_idxs:
+            p_pos_frame = self.p_rt_pos_query / clip_uid / object_title / f'{clip_uid}_{frame_idx}.jpg'
+            if frame_idx in list(rt_ann.keys()) and p_pos_frame.exists():
+                frame = Image.open(p_pos_frame)
+                frame = TF.pil_to_tensor(frame)
+                frame = frame.float() / 255.
+                if self.query_padding:
+                    bbox_h, bbox_w = rt_ann[frame_idx]['h'], rt_ann[frame_idx]['w']
+                    l, s = max(bbox_h, bbox_w), min(bbox_h, bbox_w)
+                    pad_size = (l - s) // 2
+                    if bbox_h > bbox_w:
+                        pad = (pad_size, l - s - pad_size, 0, 0)
+                    else:
+                        pad = (0, 0, pad_size, l - s - pad_size)
+                    frame = F.pad(frame, pad, value=0)
+                frame = F.interpolate(frame[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+            else:
+                frame = torch.zeros(3, self.query_size[0], self.query_size[1])
+                frame_idx = -1
+            rt_pos_idx.append(frame_idx)
+            rt_pos_queries.append(frame.squeeze(0))
+
+        rt_pos_queries = torch.stack(rt_pos_queries)
+
+        return rt_pos_queries, rt_pos_idx
+
 
 class EgoTracksEvalDataset(EgoTracksDataset):
     def __init__(self, config, split = 'val'):
@@ -167,6 +228,8 @@ class EgoTracksEvalDataset(EgoTracksDataset):
 
         self.all_segments = []
         for ann_idx, ann in enumerate(self.all_anns):
+            if 'lt_track' not in ann:
+                continue
             ltt_uuid = ann['uuid_ltt']
             num_frames_clip = int(ann['clip_duration'] * ann['clip_fps'])
             num_segments = np.ceil(num_frames_clip / self.segment_length).astype(int).item()
@@ -197,11 +260,9 @@ class EgoTracksEvalDataset(EgoTracksDataset):
         query = self.get_query(ann)
         if self.test_submit:
             gt_ltt = np.array([[0, 0, 1e-5, 1e-5]] * t, dtype=np.float32)
-            gt_prob = np.zeros(t, dtype=np.float32)
+            gt_mask = np.zeros(t, dtype=np.float32)
         else:
-            gt_ltt = self.get_lt_track(ann, frame_idxs)
-            gt_prob = None
-            raise NotImplementedError
+            gt_ltt, gt_mask = self.get_lt_track(ann, frame_idxs)
         segment, gt_ltt = self.pad_and_resize(segment, gt_ltt)  # [t, c, s, s], [t, 4]
 
         return {
@@ -211,8 +272,8 @@ class EgoTracksEvalDataset(EgoTracksDataset):
 
             # # GT
             'gt_bboxes': gt_ltt.astype(np.float32),  # [t, 4], yxyx, normalized
-            'gt_probs': gt_prob.astype(np.float32),  # [t], GT prob
-            'before_query_mask': torch.tensor(gt_prob).bool(),  # [t]
+            'gt_probs': gt_mask.astype(np.float32),  # [t], GT prob
+            'before_query_mask': torch.tensor(gt_mask).bool(),  # [t]
 
             # info
             'clip_uid': ann['clip_uid'],

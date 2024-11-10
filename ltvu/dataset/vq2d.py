@@ -138,15 +138,20 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             (4. augment -> not here, GPU accelerated by kornia, done in the training loop, the lit data module)
         """
         p_clip = self.p_clips_dir / ann['clip_uid']
-        num_clip_frames = int(ann['clip_fps'] * ann['clip_duration'])
+        num_clip_frames = int(ann['clip_fps'] * int(ann['clip_duration']))
         frame_idxs = frame_idxs.clip(0, num_clip_frames - 1)
 
         # load - normalize - permute
-        frames = [Image.open(p_clip / f'frame_{idx+1:07d}.jpg') for idx in frame_idxs]
+        last_idx = max([int(p.stem.split('_')[-1]) for p in p_clip.glob('*.jpg')])
+        p_frames = [
+            p if (p := p_clip / f'frame_{idx+1:07d}.jpg').exists() else p_clip / f'frame_{last_idx:07d}.jpg'
+            for idx in frame_idxs
+        ]
+        frames = [Image.open(p) for p in p_frames]
         frames = torch.stack([TF.pil_to_tensor(f) for f in frames])  # [t, c, h, w]
         frames = frames.float() / 255.
         t, c, h, w = frames.shape
-        assert h <= w
+        assert h <= w, f'All the videos in Ego4D are landscape, got {ann["clip_uid"]}, {frames.shape=}'
 
         return frames
 
