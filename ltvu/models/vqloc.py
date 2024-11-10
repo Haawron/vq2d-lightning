@@ -484,7 +484,7 @@ class ClipMatcher(nn.Module):
         self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
 
         if self.weight_sinkhorn > 0:
-            self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.5)
+            self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)
         else:
             self.sinkhorn = None
 
@@ -863,8 +863,10 @@ class ClipMatcher(nn.Module):
         if get_intermediate_features:
             output_dict['feat']['clip']['pe_stx'] = clip_feat.clone()
             output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
-            output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
-            output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
+            if stx_tgt_mask is not None:
+                output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
+            if stx_mem_mask is not None:
+                output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
 
 
         for stx_layer in self.CQ_corr_transformer:
@@ -1035,11 +1037,15 @@ class ClipMatcher(nn.Module):
                         loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
                     else:
                         score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
-                        score_map_normhw = F.softmax(score_map_exp / .1, dim=0)  # [h*w,Q]
-                        score_map_normhw = rearrange(score_map_normhw, 'hw Q -> Q hw 1')
+                        score_map_exp = rearrange(score_map_exp, 'hw Q -> Q hw')
                         idxs = torch.combinations(torch.arange(self.rank_pca, device=device), with_replacement=False)
-                        assert len(idxs) == self.rank_pca * (self.rank_pca - 1) // 2
-                        loss_sinkhorn = loss_sinkhorn - self.sinkhorn.forward(score_map_normhw[idxs[:, 0]], score_map_normhw[idxs[:, 1]]).mean()  # maximize
+                        hw = score_map_exp.shape[1]
+                        _a, _b = score_map_exp[idxs[:, 0]], score_map_exp[idxs[:, 1]]
+                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device)), dim=-1)
+                        _xy = rearrange(_xy, 'h w c -> (h w) c')
+                        _xy = _xy[None].expand(self.rank_pca * (self.rank_pca - 1) // 2, -1, -1)
+                        _xy = _xy.float() / hw ** .5
+                        loss_sinkhorn = loss_sinkhorn - self.sinkhorn.forward(_a, _xy, _b, _xy).mean()  # maximize
 
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S, max_sigma).sum()

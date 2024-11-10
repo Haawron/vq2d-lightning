@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours+pca-loss-ent-cross
+#SBATCH --job-name=ours-sink-exp
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -47,19 +47,20 @@ echo "Setup finished."
 
 
 ################# run training #################
-# ours_base+small_stx
+# Ours - PCA loss - HQQ
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python train.py --config-name train_fast \
         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-        model.late_reduce=true \
         +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
-        model.sim_between=positives \
-        model.cls_norm=false \
+        model.late_reduce=true \
+        model.sim_between='positives_multinomial' \
+        +model.weight_sinkhorn=100 \
+        +model.ignore_border=false \
+        model.cls_scaling_type='sigmoid_mean' \
         +model.cls_repair_neighbor=true \
         +model.enable_temporal_shift_conv_summary=true \
-        +model.weight_entropy=.1 \
         batch_size=3 \
 
 exit $?
