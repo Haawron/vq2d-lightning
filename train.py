@@ -69,6 +69,8 @@ def main(config: DictConfig):
             litdatamodule = LitVQ2DDataModule
         case 'egotracks':
             litdatamodule = LitEgoTracksDataModule
+        case 'lasot':
+            litdatamodule = LitLaSOTDataModule
     pdm = litdatamodule(config)
     trainer, ckpt_callback = get_trainer(config, jid, enable_progress_bar=not within_slurm_batch())
 
@@ -91,8 +93,9 @@ def main(config: DictConfig):
     if config.predict_val or config.predict_test:
         p_ckpt = 'outputs/batch/2024-10-13/130884/epoch=105-iou=0.4454.ckpt'
         p_ckpt = p_ckpt if config.get('debug') else ckpt_callback.best_model_path
-        eval_config = hydra.compose(config_name=config.get('eval_config','eval'), overrides=[
+        eval_config = hydra.compose(config_name=config.get('eval_config', 'eval'), overrides=[
             f'dataset={config.dataset.name}',
+            f'dataset.clips_dir={config.dataset.clips_dir}',
             f'ckpt={str(p_ckpt).replace('=', '\\=')}',
             f'batch_size={config.batch_size}',
             f'num_workers={config.num_workers}',
@@ -108,7 +111,7 @@ def main(config: DictConfig):
             trainer.predict(plm, datamodule=pdm, return_predictions=False)
             log_to_console('\n' + "="*80 + '\n')
 
-        if config.predict_test:
+        if config.predict_test and not config.dataset.name != 'lasot':
             eval_config.test_submit = True
             pdm.test_submit = True
             trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)

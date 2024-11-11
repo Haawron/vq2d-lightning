@@ -16,6 +16,7 @@ from einops import rearrange
 from ltvu.dataset import (
     VQ2DFitDataset, VQ2DEvalDataset,
     EgoTracksFitDataset, EgoTracksEvalDataset,
+    LaSOTFitDataset, LaSOTEvalDataset,
 )
 from ltvu.preprocess import generate_flat_annotations_vq2d, generate_flat_annotations_egotracks
 from ltvu.bbox_ops import check_bbox
@@ -336,6 +337,53 @@ class LitEgoTracksDataModule(LitVQ2DDataModule):
             num_workers=self.num_workers,
             drop_last=False,
         )
+
+
+class LitLaSOTDataModule(LitVQ2DDataModule):
+    ALL_NUM_CLIPS = 1120 + 280  # train + test
+    ALL_NUM_ANNS = [1120, 280]  # train, test
+
+    def prepare_data(self):
+        pass
+
+    def train_dataloader(self, shuffle=True):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='train'),
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def pred_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTEvalDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def test_dataloader(self):
+        raise NotImplementedError
 
 
 if __name__ == '__main__':

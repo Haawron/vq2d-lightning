@@ -26,5 +26,5 @@ trainer:
 
 dataset:
   padding_value: 'mean'  # zero or mean
-  clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'
+  # clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'
   test_submit: ${test_submit}
