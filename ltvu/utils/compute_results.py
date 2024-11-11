@@ -106,7 +106,7 @@ def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7):
     return result
 
 
-def get_final_preds_egotracks(preds, split='val', score_threshold=0.2):
+def get_final_preds_egotracks(preds, split='val'):
     anns = json.load(open(f'data/egotracks/egotracks_{split}_anno.json'))
     result = {}
     for ann in anns:

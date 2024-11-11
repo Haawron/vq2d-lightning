@@ -53,10 +53,9 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
     python train.py --config-name train_fast \
         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-        +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+        +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
         model.late_reduce=true \
-        model.sim_between='positives_multinomial' \
-        +model.weight_sinkhorn=100 \
+        +model.weight_entropy=0.1 \
         +model.ignore_border=false \
         model.cls_scaling_type='sigmoid_mean' \
         +model.cls_repair_neighbor=true \

@@ -7,6 +7,18 @@ import json
 from ltvu.structures import ResponseTrack
 
 
+# frame level
+def compute_iou(xywh1, xywh2):
+    x1, y1, w1, h1 = xywh1
+    x2, y2, w2, h2 = xywh2
+    x1, y1, x2, y2 = max(x1, x2), max(y1, y2), min(x1+w1, x2+w2), min(y1+h1, y2+h2)
+    if x1 >= x2 or y1 >= y2:
+        return 0
+    intersection = (x2 - x1) * (y2 - y1)
+    union = w1 * h1 + w2 * h2 - intersection
+    return intersection / union
+
+
 # clip level
 def compute_tious(all_preds: dict[str, list[ResponseTrack]], all_pos: dict[str, ResponseTrack]):
     """
@@ -220,11 +232,101 @@ def print_metrics_vq2d(subset_metrics):
         print()
 
 
-def format_metrics(subset_metrics):
+def format_metrics_vq2d(subset_metrics):
     import io, sys
     stdout = sys.stdout
     sys.stdout = io.StringIO()
     print_metrics_vq2d(subset_metrics)
+    metrics_str = sys.stdout.getvalue()
+    sys.stdout = stdout
+    return metrics_str
+
+
+def get_metrics_egotracks(p_ann_flat, p_pred):
+    invalid_clip_uids = {
+        '17b73c0a-afda-4944-b2ed-450c9ef97849',  # train, stereo
+        'd1419b9b-2944-421b-ba6f-0ddac32d5521',  # train, stereo
+        '72f95d60-cf26-4821-8d79-4ec72c748031',  # train, stereo
+        '74130fd9-3e7b-482a-9627-0f53ac672f57',  # train, stereo
+
+        'ae8727ba-fe6f-4411-b277-48a8b7326a2a',  # val, hmm...
+
+        '59daca91-5433-48a4-92fc-422b406b551f',  # not exist
+        '87b52dc5-3ac3-47e7-9648-1b719049732f',  # not exist
+        'b7fc5f98-e5d5-405d-8561-68cbefa75106',  # not exist
+        'db211359-c259-4515-9d6c-be521711b6d0',  # not exist
+    }
+    final_preds = json.load(p_pred)
+
+    num_gt_frames = 0
+    ious = []
+    scores = []
+    anns = json.load(p_ann_flat)
+    for ann in anns:
+        if 'uuid_ltt' not in ann:
+            continue
+        if 'lt_track' not in ann:
+            continue
+        if ann['clip_uid'] in invalid_clip_uids:
+            continue
+        uuid_ltt = ann['uuid_ltt']
+        pred = final_preds[uuid_ltt]
+
+        gt_lt = ann['lt_track']
+        fno2gt = {bbox['fno']: bbox for bbox in gt_lt}
+        num_gt_frames += len(gt_lt)
+        for pred_fno, pred_bbox in pred.items():
+            pred_fno = int(round(int(pred_fno) / 6))
+            if pred_fno not in fno2gt:
+                iou, score = 0, pred_bbox[-1]
+            else:
+                gt_bbox = fno2gt[pred_fno]
+                gx1, gy1, gw, gh = gt_bbox['x'], gt_bbox['y'], gt_bbox['w'], gt_bbox['h']
+                iou = compute_iou((gx1, gy1, gw, gh), pred_bbox[:4])
+                iou, score = iou, pred_bbox[-1]
+            ious.append(iou)
+            scores.append(score)
+    ious = np.array(ious)
+    scores = np.array(scores)
+    args = np.argsort(scores)[::-1]
+    ious = ious[args]
+
+    # long-term tracking metrics
+    ious_cumsum = ious.cumsum()
+    pr = ious_cumsum / np.arange(1, len(ious)+1)
+    re = ious_cumsum / num_gt_frames
+    f1 = 2 * pr * re / (pr + re + 1e-6)
+    best_f1_idx = np.argmax(f1)
+    best_f1 = f1[best_f1_idx]
+    best_pr = pr[best_f1_idx]
+    best_re = re[best_f1_idx]
+    best_th = scores[args[best_f1_idx]]
+    metrics = {
+        'best_f1': 100*best_f1,
+        'best_pr': 100*best_pr,
+        'best_re': 100*best_re,
+        'best_th': 100*best_th,
+    }
+    return metrics
+
+
+def print_metrics_egotracks(metrics):
+    best_f1 = metrics['best_f1']
+    best_pr = metrics['best_pr']
+    best_re = metrics['best_re']
+    best_th = metrics['best_th']
+    print('EgoTracks Evaluation')
+    print(f'Best F1:        {best_f1:.3f}')
+    print(f'Best Precision: {best_pr:.3f}')
+    print(f'Best Recall:    {best_re:.3f}')
+    print(f'Best Threshold: {best_th:.3f}')
+
+
+def format_metrics_egotracks(metrics):
+    import io, sys
+    stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    print_metrics_egotracks(metrics)
     metrics_str = sys.stdout.getvalue()
     sys.stdout = stdout
     return metrics_str

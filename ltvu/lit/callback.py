@@ -8,7 +8,7 @@ import lightning as L
 from lightning.pytorch.callbacks import BasePredictionWriter
 
 from ltvu.utils.compute_results import get_final_preds_vq2d, fix_predictions_order, get_final_preds_egotracks
-from ltvu.metrics import get_metrics_vq2d, format_metrics
+from ltvu.metrics import get_metrics_vq2d, format_metrics_vq2d, get_metrics_egotracks, format_metrics_egotracks
 
 
 class PerSegmentWriter(BasePredictionWriter):
@@ -119,7 +119,7 @@ class PerSegmentWriter(BasePredictionWriter):
             if not self.test_submit:
                 # print metrics
                 subset_metrics = get_metrics_vq2d(Path(f'data/vq_v2_val_anno.json'), self.p_pred)
-                metrics_msg = format_metrics(subset_metrics)
+                metrics_msg = format_metrics_vq2d(subset_metrics)
                 print(metrics_msg)
                 self.p_metrics_log.write_text(metrics_msg + '\n')
                 json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
@@ -232,21 +232,9 @@ class PerSegmentWriterEgoTracks(BasePredictionWriter):
             final_preds = get_final_preds_egotracks(qset_preds, split=self.split)
             json.dump(final_preds, self.p_pred.open('w'))
 
-            # # get final predictions
-            # final_preds = get_final_preds(qset_preds, split=self.split)
-
-            # if self.test_submit:
-            #     # fix the order of the predictions
-            #     final_preds = fix_predictions_order(
-            #         final_preds, self.official_anns_dir / f'vq_test_unannotated.json')
-
-            # # write the final predictions to json
-            # json.dump(final_preds, self.p_pred.open('w'))
-
-            # if not self.test_submit:
-            #     # print metrics
-            #     subset_metrics = get_metrics(Path(f'data/vq_v2_val_anno.json'), self.p_pred)
-            #     metrics_msg = format_metrics(subset_metrics)
-            #     print(metrics_msg)
-            #     self.p_metrics_log.write_text(metrics_msg + '\n')
-            #     json.dump({k: v['metrics'] for k, v in subset_metrics.items()}, self.p_metrics.open('w'))
+            if not self.test_submit:
+                metrics = get_metrics_egotracks(Path(f'data/egotracks/egotracks_val_anno.json'), self.p_pred)
+                metrics_msg = format_metrics_egotracks(metrics)
+                print(metrics_msg)
+                self.p_metrics_log.write_text(metrics_msg + '\n')
+                json.dump(metrics, self.p_metrics.open('w'))
