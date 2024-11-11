@@ -256,12 +256,12 @@ def get_metrics_egotracks(p_ann_flat, p_pred):
         'b7fc5f98-e5d5-405d-8561-68cbefa75106',  # not exist
         'db211359-c259-4515-9d6c-be521711b6d0',  # not exist
     }
-    final_preds = json.load(p_pred)
+    final_preds = json.load(p_pred.open())
 
     num_gt_frames = 0
     ious = []
     scores = []
-    anns = json.load(p_ann_flat)
+    anns = json.load(p_ann_flat.open())
     for ann in anns:
         if 'uuid_ltt' not in ann:
             continue
@@ -316,10 +316,10 @@ def print_metrics_egotracks(metrics):
     best_re = metrics['best_re']
     best_th = metrics['best_th']
     print('EgoTracks Evaluation')
-    print(f'Best F1:        {best_f1:.3f}')
-    print(f'Best Precision: {best_pr:.3f}')
-    print(f'Best Recall:    {best_re:.3f}')
-    print(f'Best Threshold: {best_th:.3f}')
+    print(f'Best F1       : {best_f1:6.3f}')
+    print(f'Best Precision: {best_pr:6.3f}')
+    print(f'Best Recall   : {best_re:6.3f}')
+    print(f'Best Threshold: {best_th:6.3f}')
 
 
 def format_metrics_egotracks(metrics):
@@ -338,3 +338,8 @@ if __name__ == '__main__':
     # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
     subset_metrics = get_metrics_vq2d(p_ann, p_pred)
     print_metrics_vq2d(subset_metrics)
+
+    p_ann = Path("data/egotracks/egotracks_val_anno.json")
+    p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/predictions.json")
+    metrics = get_metrics_egotracks(p_ann, p_pred)
+    print_metrics_egotracks(metrics)
