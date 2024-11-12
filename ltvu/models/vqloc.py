@@ -488,7 +488,10 @@ class ClipMatcher(nn.Module):
             self.stst_transformer = None
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+        self.head = Head(
+            in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions,
+            n=len(base_sizes)
+        )
 
         if self.weight_sinkhorn > 0:
             self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)

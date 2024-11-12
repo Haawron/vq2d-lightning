@@ -18,3 +18,4 @@ padding_value: 'zero'  # zero or mean
 
 official_anns_dir: ''
 flat_anns_dir: ''
+num_train_samples: 1120

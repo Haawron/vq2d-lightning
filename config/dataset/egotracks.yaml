@@ -18,3 +18,4 @@ query_size: [448, 448]  # height, width
 query_padding: False
 query_square: True
 padding_value: 'zero'  # zero or mean
+num_train_samples: 26838
