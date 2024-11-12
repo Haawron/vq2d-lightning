@@ -45,6 +45,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
         self.test_submit = ds_config.get('test_submit', False)
+        self.eval_on_train = ds_config.get('eval_on_train', False)
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -194,7 +195,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def pred_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DEvalDataset(self.config, split='val'),
+            VQ2DEvalDataset(self.config, split='train' if self.eval_on_train else 'val'),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,

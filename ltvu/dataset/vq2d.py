@@ -387,6 +387,8 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         self.test_submit = split == 'test_unannotated'
         del self.num_frames  # to avoid confusion
 
+        self.eval_experiemnt = config.dataset.get('eval_experiment')
+
         self.all_segments = []
         for ann_idx, ann in enumerate(self.all_anns):
             annotation_uid = ann['annotation_uid']
@@ -423,6 +425,19 @@ class VQ2DEvalDataset(VQ2DFitDataset):
             gt_rt, gt_prob = np.random.randn(t, 4), np.random.randn(t)
         else:
             gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
+
+            if self.eval_experiemnt is not None:
+                if self.eval_experiemnt == 'hide_objects_random5':
+                    idxs = np.where(gt_prob > 0.5)[0]
+                    if len(idxs) >= 10:
+                        idxs_chosen = np.random.choice(idxs, 5, replace=False)
+                        h, w = segment.shape[-2:]
+                        bboxes = (gt_rt * [h, w, h, w]).astype(int)
+                        for ii in idxs_chosen:
+                            bbox = bboxes[ii]
+                            segment[ii, :, bbox[0]:bbox[2], bbox[1]:bbox[3]] = torch.rand(3, bbox[2] - bbox[0], bbox[3] - bbox[1])
+
+
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
 
         return {

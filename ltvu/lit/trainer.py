@@ -19,7 +19,7 @@ from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSe
 type_loggers = WandbLogger | CSVLogger
 
 
-def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True, ddp_timeout=30):
+def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True, ddp_timeout=300):
     runtime_outdir = Path(config.runtime_outdir)
     trainer_config: DictConfig = config.trainer
     task = config.dataset.name
