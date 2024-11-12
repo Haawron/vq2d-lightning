@@ -1,0 +1,20 @@
+name: 'lasot'
+###### torch #####
+batch_size: ${batch_size}
+num_workers: ${num_workers}
+prefetch_factor: ${prefetch_factor}
+pin_memory: True
+persistent_workers: False  # No, our dataset is memory-bound
+##### project-related #####
+# for frames, frame_idxs should be 1-based
+clips_dir: '/local_datasets/LaSOT'
+num_frames: 32
+frame_interval: 1
+segment_size: [448, 448]  # height, width
+query_size: [448, 448]  # height, width
+query_padding: False
+query_square: True
+padding_value: 'zero'  # zero or mean
+
+official_anns_dir: ''
+flat_anns_dir: ''

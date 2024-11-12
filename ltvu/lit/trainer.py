@@ -13,7 +13,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks
+from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSegmentWriterLaSOT
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -41,6 +41,10 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
             output_dir=runtime_outdir / 'egotracks',
             official_anns_dir=config.dataset.official_anns_dir,
             test_submit=config.dataset.get('test_submit', False)))
+    elif task == 'lasot':
+        callbacks.append(PerSegmentWriterLaSOT(
+            output_dir=runtime_outdir / 'lasot',
+            official_anns_dir=config.dataset.official_anns_dir))
 
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
@@ -77,7 +81,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
     trainer_config = OmegaConf.to_container(trainer_config, resolve=True)
     if 'strategy' not in trainer_config:
         trainer_config['strategy'] = DDPStrategy(
-            timeout=datetime.timedelta(ddp_timeout),
+            timeout=datetime.timedelta(seconds=ddp_timeout),
             find_unused_parameters=True)
     trainer = L.Trainer(
         **trainer_config,
