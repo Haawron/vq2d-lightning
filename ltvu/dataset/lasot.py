@@ -82,7 +82,7 @@ class LaSOTDataset(torch.utils.data.Dataset):
         return gt_st, np.ones(len(frame_idxs))
 
     def get_query(self, segment, gt_stt):
-        if self.split == 'train' and self.random_pos_query:
+        if self.split == 'train' and self.random_pos_query and np.random.rand() < .5:
             idx = np.random.randint(0, len(segment))
         else:
             idx = 0

@@ -52,7 +52,7 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python train.py --config-name train_fast \
         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-        dataset=lasot model.base_sizes=\[16,32,64,128,256\] dataset.clips_dir='/data/datasets/LaSOT' +trainer.check_val_every_n_epoch=10 \
+        dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 trainer.max_epochs=300 \
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
         +experiment=\[random_pos_query,cls_token_score,pca_guide\] \
         model.late_reduce=true \
@@ -68,7 +68,7 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
 #     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
 #     python train.py --config-name train_fast \
 #         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-#         dataset=lasot model.base_sizes=\[16,32,64,128,256\] dataset.clips_dir='/data/datasets/LaSOT' +trainer.check_val_every_n_epoch=10 \
+#         dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 max_epochs=300 \
 #         model.late_reduce=true \
 #         batch_size=3 \
 

@@ -7,7 +7,8 @@ pin_memory: True
 persistent_workers: False  # No, our dataset is memory-bound
 ##### project-related #####
 # for frames, frame_idxs should be 1-based
-clips_dir: '/local_datasets/LaSOT'
+# clips_dir: '/local_datasets/LaSOT'
+clips_dir: '/data/datasets/LaSOT'
 num_frames: 32
 frame_interval: 1
 segment_size: [448, 448]  # height, width

@@ -52,6 +52,8 @@ def main(config: DictConfig):
             litdatamodule = LitVQ2DDataModule
         case 'egotracks':
             litdatamodule = LitEgoTracksDataModule
+        case 'lasot':
+            litdatamodule = LitLaSOTDataModule
     pdm = litdatamodule(config)  # eval config
 
     log_to_console('\n' + "="*80 + '\n')
