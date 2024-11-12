@@ -13,7 +13,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks
+from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSegmentWriterLaSOT
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -42,7 +42,9 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
             official_anns_dir=config.dataset.official_anns_dir,
             test_submit=config.dataset.get('test_submit', False)))
     elif task == 'lasot':
-        pass
+        callbacks.append(PerSegmentWriterLaSOT(
+            output_dir=runtime_outdir / 'lasot',
+            official_anns_dir=config.dataset.official_anns_dir))
 
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
