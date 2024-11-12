@@ -8,7 +8,7 @@ import lightning as L
 from lightning.pytorch.callbacks import BasePredictionWriter
 
 from ltvu.utils.compute_results import get_final_preds_vq2d, fix_predictions_order, get_final_preds_egotracks
-from ltvu.metrics import get_metrics_vq2d, format_metrics_vq2d, get_metrics_egotracks, format_metrics_egotracks
+from ltvu.metrics import get_metrics_vq2d, format_metrics_vq2d, get_metrics_egotracks, format_metrics_egotracks, get_metrics_lasot, format_metrics_lasot
 
 
 class PerSegmentWriter(BasePredictionWriter):
@@ -335,3 +335,10 @@ class PerSegmentWriterLaSOT(BasePredictionWriter):
             # # TODO: Below should be handled by a separate evaluation script
 
             # NOTE: no final results required for LaSOT
+
+            p_clips_dir = Path("/data/datasets/LaSOT")
+            metrics = get_metrics_lasot(p_clips_dir, self.p_int_pred)
+            metrics_msg = format_metrics_lasot(metrics)
+            print(metrics_msg)
+            self.p_metrics_log.write_text(metrics_msg + '\n')
+            json.dump(metrics, self.p_metrics.open('w'))
