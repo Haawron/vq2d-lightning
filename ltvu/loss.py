@@ -134,7 +134,7 @@ def assign_labels(anchors, gt_boxes, iou_threshold=0.5, topk=5):
 def get_losses_with_anchor(
     preds, gts,
     training = True,
-    use_hnm = False,
+    use_hnm: bool = False,
     positive_threshold = .2,
     positive_topk = 5,
     weight_bbox_center = 1.,
@@ -212,6 +212,10 @@ def get_losses_with_anchor(
         iou = torch.tensor(0., requires_grad=req).cuda()
         giou = torch.tensor(0., requires_grad=req).cuda()
 
+    # if use_hnm:
+    #     loss_prob = BCELogitsLoss_with_HNM(pred_prob, gt_prob, positive, gt_before_query, [1.0, 1.0])
+    #     pred_prob = rearrange(pred_prob, 'b t N -> (b t N)')
+    # else:
     pred_prob = rearrange(pred_prob, 'b t N -> (b t N)')
     gt_before_query_replicate = rearrange(gt_before_query.unsqueeze(2).repeat(1,1,N), 'b t N -> (b t N)')
     loss_prob = focal_loss(pred_prob[gt_before_query_replicate.bool()].float(),
@@ -323,3 +327,71 @@ def replicate_sample_for_hnm(gts):
             # 'clip_w': new_clip_w,                   # in [b^2]
         }
     return new_gts
+
+
+def BCELogitsLoss_with_HNM(pred_prob, gt_prob, positive, gt_before_query, weight):
+    '''
+    pred_prob: predicted probability of anchors, in shape [b,t,N], without sigmoid
+    gt_prob: GT probability of frames, in shape [b,t]
+    positive: assigned labels of anchors, in shape [b*t*N]
+    gt_before_query: mask for frames before query frame, in shape [b,t]
+    weight: weights for positive and negative predictions
+    '''
+    b,t,N = pred_prob.shape
+    gt_prob = gt_prob.unsqueeze(-1).repeat(1,1,N)   # [b,t,N]
+
+    pred_prob = rearrange(pred_prob, 'b t N -> (b t N)')                                # [b*t*N]
+    gt_prob = rearrange(gt_prob, 'b t N -> (b t N)')                                    # [b*t*N]
+    BCE_loss = F.binary_cross_entropy_with_logits(pred_prob, gt_prob, reduction='none') # [b*t*N]
+
+    pred_prob = rearrange(pred_prob, '(b t N) -> b t N', b=b, t=t)
+    gt_prob = rearrange(gt_prob, '(b t N) -> b t N', b=b, t=t)
+    BCE_loss = rearrange(BCE_loss, '(b t N) -> b t N', b=b, t=t)
+    positive = rearrange(positive, '(b t N) -> b t N', b=b, t=t)
+
+    loss = HardNegMining(pred_prob, gt_prob, positive, BCE_loss, gt_before_query, weight)
+    return loss.mean()
+
+
+def HardNegMining(pred_prob, gt_prob, positive, BCE_loss, gt_before_query, weight, ratio_neg_pos=3., ratio_hard=0.05):
+    '''
+    Perform frame-level hard negative mining
+    Params:
+        ratio_neg_pos: negative / positive ratio
+        ratio_hard: ratio of negatives from all anchors if no positive anchor is assigned
+        pred_prob, gt_prob, positive, BCE_loss in [b,t,N]
+        gt_before_query: in [b,t]
+        weight: weights for positive and negative predictions
+    Mine the anchor boxes with three type:
+        1. query object doesn't occur and no anchor is assigned as positive
+        2. query object occurs and some anchors are assigned as positive
+        3. query object occurs but no anchor is assigned as positive
+    '''
+    b, t, N = pred_prob.shape
+    b_real = int(b ** 0.5)      # for example, real batch size B will lead to B^2 training batch leveraging cross-video data
+    w_pos, w_neg = weight
+
+    mined_loss = []
+    for i in range(b_real):
+        # get results for each visual query
+        query_idx = [(i + j * b_real) for j in range(b_real)]       # corresponds to how we generate cross-video data
+
+        cur_gt_before_query = gt_before_query[query_idx].bool()     # [b_real, t]
+        
+        cur_positive = positive[query_idx][cur_gt_before_query]     # [M], for all valid anchor box of the query (reject unreliable ones after query time)
+        cur_loss = BCE_loss[query_idx][cur_gt_before_query]         # [M]
+        M = cur_loss.shape[0]
+
+        num_pos = int(torch.sum(cur_positive).item())
+        num_neg = int(ratio_neg_pos * num_pos) if num_pos > 0 else int(ratio_hard * M)
+
+        cur_loss_positives = cur_loss[cur_positive.bool()]          
+        cur_loss_negatives = cur_loss[~cur_positive.bool()]
+        num_neg = num_neg if num_neg < cur_loss_negatives.shape[0] else cur_loss_negatives.shape[0]
+        cur_loss_negatives_hard, _ = torch.topk(cur_loss_negatives, num_neg)
+
+        mined_loss.append(cur_loss_positives * w_pos)
+        mined_loss.append(cur_loss_negatives_hard * w_neg)
+    
+    mined_loss = torch.cat(mined_loss, dim=0)
+    return mined_loss

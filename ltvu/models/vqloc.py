@@ -708,7 +708,7 @@ class ClipMatcher(nn.Module):
         before_query_mask: None | torch.Tensor = None,
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
-        use_hnm = False,
+        use_hnm: bool = False,
         rt_pos_queries = None,
         rt_pos_top_k = 1,
         rt_pos_idx = None, # -1 means not gt
