@@ -162,6 +162,7 @@ class ClipMatcher(nn.Module):
         apply_sttx_mask = True,
         transformer_dropout = 0.,
         fix_backbone = True,
+        base_sizes: torch.Tensor = base_sizes,
 
         # input size
         query_size = 448,
@@ -317,9 +318,15 @@ class ClipMatcher(nn.Module):
 
         self.prob_apply_rt_pos = prob_apply_rt_pos
 
+        if not isinstance(base_sizes, torch.Tensor):
+            if isinstance(base_sizes[0], list):
+                base_sizes = torch.tensor(base_sizes, dtype=torch.float32)
+            elif isinstance(base_sizes[0], int):
+                base_sizes = torch.tensor([base_sizes] * 2, dtype=torch.float32).T
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
-            num_regions=[self.num_anchor_regions, self.num_anchor_regions])
+            num_regions=[self.num_anchor_regions, self.num_anchor_regions],
+            base_sizes=base_sizes)
         self.anchors_xyhw = self.anchors_xyhw / self.clip_size_coarse   # [R^2*N*M,4], value range [0,1], represented by [c_x,c_y,h,w] in torch axis
         self.anchors_xyxy = bbox_xyhwToxyxy(self.anchors_xyhw)  # non-trainable, [R^2*N*M,4]
 
@@ -485,7 +492,10 @@ class ClipMatcher(nn.Module):
             self.stst_transformer = None
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+        self.head = Head(
+            in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions,
+            n=len(base_sizes)
+        )
 
         if self.weight_sinkhorn > 0:
             self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)

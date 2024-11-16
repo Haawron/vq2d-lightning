@@ -1,4 +1,4 @@
-name: 'egotracks'
+name: 'lasot'
 ###### torch #####
 batch_size: ${batch_size}
 num_workers: ${num_workers}
@@ -6,11 +6,9 @@ prefetch_factor: ${prefetch_factor}
 pin_memory: True
 persistent_workers: False  # No, our dataset is memory-bound
 ##### project-related #####
-# clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{1+frame_idx:07d}.jpg
 # for frames, frame_idxs should be 1-based
-clips_dir: '/local_datasets/ego4d_data/v2/vq2d_frames/320ss'
-official_anns_dir: '/data/datasets/ego4d_data/v2/egotracks'
-flat_anns_dir: './data/egotracks'
+# clips_dir: '/local_datasets/LaSOT'
+clips_dir: '/data/datasets/LaSOT'
 num_frames: 32
 frame_interval: 1
 segment_size: [448, 448]  # height, width
@@ -18,4 +16,7 @@ query_size: [448, 448]  # height, width
 query_padding: False
 query_square: True
 padding_value: 'zero'  # zero or mean
-num_train_samples: 26838
+
+official_anns_dir: ''
+flat_anns_dir: ''
+num_train_samples: 1120

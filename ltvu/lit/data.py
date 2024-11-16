@@ -16,6 +16,7 @@ from einops import rearrange
 from ltvu.dataset import (
     VQ2DFitDataset, VQ2DEvalDataset,
     EgoTracksFitDataset, EgoTracksEvalDataset,
+    LaSOTFitDataset, LaSOTEvalDataset,
 )
 from ltvu.preprocess import generate_flat_annotations_vq2d, generate_flat_annotations_egotracks
 from ltvu.bbox_ops import check_bbox
@@ -44,6 +45,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
         self.test_submit = ds_config.get('test_submit', False)
+        self.eval_on_train = ds_config.get('eval_on_train', False)
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -193,7 +195,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def pred_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DEvalDataset(self.config, split='val'),
+            VQ2DEvalDataset(self.config, split='train' if self.eval_on_train else 'val'),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,
@@ -336,6 +338,53 @@ class LitEgoTracksDataModule(LitVQ2DDataModule):
             num_workers=self.num_workers,
             drop_last=False,
         )
+
+
+class LitLaSOTDataModule(LitVQ2DDataModule):
+    ALL_NUM_CLIPS = 1120 + 280  # train + test
+    ALL_NUM_ANNS = [1120, 280]  # train, test
+
+    def prepare_data(self):
+        pass
+
+    def train_dataloader(self, shuffle=True):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='train'),
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def pred_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTEvalDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def test_dataloader(self):
+        raise NotImplementedError
 
 
 if __name__ == '__main__':

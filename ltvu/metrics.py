@@ -1,8 +1,10 @@
-import math
+import json
 from pathlib import Path
 from collections import defaultdict
+
+import torch
 import numpy as np
-import json
+import pandas as pd
 
 from ltvu.structures import ResponseTrack
 
@@ -111,7 +113,7 @@ def compute_average_precision_dict(
 def get_metrics_vq2d(p_ann_flat, p_pred):
     """
     Usage:
-    
+
         import json
         from pathlib import Path
         from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
@@ -343,14 +345,85 @@ def format_metrics_egotracks(metrics):
     return metrics_str
 
 
-if __name__ == '__main__':
-    p_ann = Path("data/vq_v2_val_anno.json")
-    p_pred = Path("notebooks/43634_results.json.gz")
-    # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
-    subset_metrics = get_metrics_vq2d(p_ann, p_pred)
-    print_metrics_vq2d(subset_metrics)
+def get_metrics_lasot(p_clips_dir, p_pred_pt):
+    preds = torch.load(p_pred_pt, weights_only=True)
+    dfs_gt, dfs_pred = [], []
+    for clip_uid, clip_preds in preds.items():
+        class_name = clip_uid.split('-')[0]
+        df_gt = pd.read_csv(p_clips_dir / class_name / clip_uid / 'groundtruth.txt', header=None, names=['x', 'y', 'w', 'h'])
+        df_pred = pd.DataFrame(clip_preds['ret_bboxes'], columns=['x1', 'y1', 'x2', 'y2'])
+        dfs_gt.append(df_gt)
+        dfs_pred.append(df_pred)
+    df_gt = pd.concat(dfs_gt, ignore_index=True)
+    df_pred = pd.concat(dfs_pred, ignore_index=True)
 
-    p_ann = Path("data/egotracks/egotracks_val_anno.json")
-    p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/predictions.json")
-    metrics = get_metrics_egotracks(p_ann, p_pred)
-    print_metrics_egotracks(metrics)
+    df_gt['cx'] = df_gt['x'] + df_gt['w'] / 2
+    df_gt['cy'] = df_gt['y'] + df_gt['h'] / 2
+    df_pred['cx'] = (df_pred['x1'] + df_pred['x2']) / 2
+    df_pred['cy'] = (df_pred['y1'] + df_pred['y2']) / 2
+    df_pred['x'] = df_pred['x1']
+    df_pred['y'] = df_pred['y1']
+    df_pred['w'] = df_pred['x2'] - df_pred['x1']
+    df_pred['h'] = df_pred['y2'] - df_pred['y1']
+    df_pred = df_pred[['x', 'y', 'w', 'h', 'cx', 'cy']]
+
+    xA = np.maximum(df_gt['x'], df_pred['x'])
+    yA = np.maximum(df_gt['y'], df_pred['y'])
+    xB = np.minimum(df_gt['x'] + df_gt['w'], df_pred['x'] + df_pred['w'])
+    yB = np.minimum(df_gt['y'] + df_gt['h'], df_pred['y'] + df_pred['h'])
+    interArea = np.maximum(0, xB - xA) * np.maximum(0, yB - yA)
+    boxAArea = df_gt['w'] * df_gt['h']
+    boxBArea = df_pred['w'] * df_pred['h']
+    ious = interArea / (boxAArea + boxBArea - interArea)
+    suc = ious.mean()
+
+    diag = np.sqrt(df_gt['w']**2 + df_gt['h']**2)
+    cdists_normed = np.sqrt(((df_gt['cx'] - df_pred['cx']) / diag)**2 + ((df_gt['cy'] - df_pred['cy']) / diag)**2)
+    prec_norm = (0.5 - cdists_normed).clip(0, 0.5).mean() / .5
+
+    cdists = np.sqrt((df_gt['cx'] - df_pred['cx'])**2 + (df_gt['cy'] - df_pred['cy'])**2)
+    prec = (cdists < 20).mean()
+
+    return {
+        'suc': 100*suc,
+        'prec_norm': 100*prec_norm,
+        'prec': 100*prec,
+    }
+
+
+def print_metrics_lasot(metrics):
+    suc = metrics['suc']
+    prec = metrics['prec']
+    prec_norm = metrics['prec_norm']
+    print('LaSOT Evaluation')
+    print(f'Success  : {suc:6.3f}')
+    print(f'Prec_norm: {prec_norm:6.3f}')
+    print(f'Prec     : {prec:6.3f}')
+
+
+def format_metrics_lasot(metrics):
+    import io, sys
+    stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    print_metrics_lasot(metrics)
+    metrics_str = sys.stdout.getvalue()
+    sys.stdout = stdout
+    return metrics_str
+
+
+if __name__ == '__main__':
+    # p_ann = Path("data/vq_v2_val_anno.json")
+    # p_pred = Path("notebooks/43634_results.json.gz")
+    # # p_pred = Path("outputs/batch/2024-10-19/133186/predictions0.6.json")
+    # subset_metrics = get_metrics_vq2d(p_ann, p_pred)
+    # print_metrics_vq2d(subset_metrics)
+
+    # p_ann = Path("data/egotracks/egotracks_val_anno.json")
+    # p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/predictions.json")
+    # metrics = get_metrics_egotracks(p_ann, p_pred)
+    # print_metrics_egotracks(metrics)
+
+    p_clips_dir = Path("/data/datasets/LaSOT")
+    p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
+    metrics = get_metrics_lasot(p_clips_dir, p_pred)
+    print_metrics_lasot(metrics)

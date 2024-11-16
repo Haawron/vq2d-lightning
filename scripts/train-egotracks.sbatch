@@ -75,4 +75,13 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
 #         batch_size=3 \
 #         +ckpt_finetune_from='outputs/batch/2024-10-10/130094/epoch\=40-prob_acc\=0.7901.ckpt' max_steps=120000 base_lr=1e-5 \
 
+# # baseline
+# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+#     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+#     python train.py --config-name train_fast \
+#         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+#         dataset=egotracks \
+#         model.late_reduce=true \
+#         batch_size=3 \
+
 exit $?
