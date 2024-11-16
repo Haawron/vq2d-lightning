@@ -364,18 +364,19 @@ def get_metrics_lasot(p_clips_dir, p_pred_pt):
     boxAArea = df_gt['w'] * df_gt['h']
     boxBArea = df_pred['w'] * df_pred['h']
     ious = interArea / (boxAArea + boxBArea - interArea)
-    suc = np.minimum(.5, ious).mean()
+    suc = ious.mean()
+
+    diag = np.sqrt(df_gt['w']**2 + df_gt['h']**2)
+    cdists_normed = np.sqrt(((df_gt['cx'] - df_pred['cx']) / diag)**2 + ((df_gt['cy'] - df_pred['cy']) / diag)**2)
+    prec_norm = (0.5 - cdists_normed).clip(0, 0.5).mean() / .5
 
     cdists = np.sqrt((df_gt['cx'] - df_pred['cx'])**2 + (df_gt['cy'] - df_pred['cy'])**2)
     prec = (cdists < 20).mean()
 
-    cdists_normed = np.sqrt(((df_gt['cx'] - df_pred['cx']) / df_gt['w'])**2 + ((df_gt['cy'] - df_pred['cy']) / df_gt['h'])**2)
-    prec_norm = np.minimum(.5, cdists_normed).mean()
-
     return {
         'suc': 100*suc,
-        'prec': 100*prec,
         'prec_norm': 100*prec_norm,
+        'prec': 100*prec,
     }
 
 
@@ -385,8 +386,8 @@ def print_metrics_lasot(metrics):
     prec_norm = metrics['prec_norm']
     print('LaSOT Evaluation')
     print(f'Success  : {suc:6.3f}')
-    print(f'Prec     : {prec:6.3f}')
     print(f'Prec_norm: {prec_norm:6.3f}')
+    print(f'Prec     : {prec:6.3f}')
 
 
 def format_metrics_lasot(metrics):
@@ -412,6 +413,6 @@ if __name__ == '__main__':
     # print_metrics_egotracks(metrics)
 
     p_clips_dir = Path("/data/datasets/LaSOT")
-    p_pred = Path("outputs/batch/2024-11-12/35013/lasot/intermediate_predictions.pt")
+    p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
     metrics = get_metrics_lasot(p_clips_dir, p_pred)
     print_metrics_lasot(metrics)

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=lasot-ours
+#SBATCH --job-name=lasot-baseline
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -47,29 +47,29 @@ echo "Network interfaces: ${interfaces[@]}"
 
 
 ################# run training #################
-# ours
-MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
-    srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
-    python train.py --config-name train_fast \
-        trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-        dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 trainer.max_epochs=300 \
-        +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-        +experiment=\[random_pos_query,cls_token_score,pca_guide\] \
-        model.late_reduce=true \
-        +model.weight_entropy=0.1 \
-        +model.ignore_border=false \
-        model.cls_scaling_type='sigmoid_mean' \
-        +model.cls_repair_neighbor=true \
-        +model.enable_temporal_shift_conv_summary=true \
-        batch_size=3 \
-
-# # baseline
+# # ours
 # MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
 #     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
 #     python train.py --config-name train_fast \
 #         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-#         dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 max_epochs=300 \
+#         dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 trainer.max_epochs=1500 \
+#         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#         +experiment=\[random_pos_query,cls_token_score,pca_guide\] \
 #         model.late_reduce=true \
+#         +model.weight_entropy=0.1 \
+#         +model.ignore_border=false \
+#         model.cls_scaling_type='sigmoid_mean' \
+#         +model.cls_repair_neighbor=true \
+#         +model.enable_temporal_shift_conv_summary=true \
 #         batch_size=3 \
+
+# baseline
+MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+    srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+    python train.py --config-name train_fast \
+        trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+        dataset=lasot model.base_sizes=\[16,32,64,128,256\] +trainer.check_val_every_n_epoch=10 trainer.max_epochs=1500 \
+        model.late_reduce=true \
+        batch_size=3 \
 
 exit $?
