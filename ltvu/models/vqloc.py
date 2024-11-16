@@ -219,6 +219,8 @@ class ClipMatcher(nn.Module):
         num_layers_short_term_spatio_temporal_transformer: int = 0,
         num_layers_self_spatial_transformer: int = 0,
 
+        prob_apply_rt_pos: float = 0.5,
+
         debug = False,
         **kwargs
     ) -> None:
@@ -312,6 +314,8 @@ class ClipMatcher(nn.Module):
         self.num_layers_small_cq_corr_transformer = num_layers_small_cq_corr_transformer
         self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
         self.num_layers_self_spatial_transformer = num_layers_self_spatial_transformer
+
+        self.prob_apply_rt_pos = prob_apply_rt_pos
 
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
@@ -738,7 +742,7 @@ class ClipMatcher(nn.Module):
             clip_feat_dict = self.extract_feature(segment)
             query_feat_dict = self.extract_feature(query)
 
-        if rt_pos and (random.randint(0, 1) == 1 or self.debug):
+        if rt_pos and (random.random() < self.prob_apply_rt_pos or self.debug):
             rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
             with self.backbone_context():
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)

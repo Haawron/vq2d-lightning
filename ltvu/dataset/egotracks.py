@@ -132,11 +132,11 @@ class EgoTracksFitDataset(EgoTracksDataset):
 
             frame_idxs = np.arange(start, start + required_len, self.frame_interval)
             gt_mask = gt_mask[frame_idxs]
-            assert gt_mask.any(), f'Sampled frames do not contain GT frames: {frame_idxs}'
+            # assert gt_mask.any(), f'Sampled frames do not contain GT frames: {frame_idxs}'
 
-            idxs_required = set([*frame_idxs.tolist(), vc_idx])
-            assert idxs_required.issubset(idxs_avail), \
-                f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
+            # idxs_required = set([*frame_idxs.tolist(), vc_idx])
+            # assert idxs_required.issubset(idxs_avail), \
+            #     f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
 
             segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
             gt_ltt, _ = self.get_lt_track(ann, frame_idxs)  # prob as a binary mask

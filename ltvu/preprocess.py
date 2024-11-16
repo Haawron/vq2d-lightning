@@ -109,8 +109,9 @@ def generate_flat_annotations_egotracks(p_official_ann: Path):
     
     Basic usage:
     
+        from pathlib import Path
         from ltvu.preprocess import generate_flat_annotations_egotracks
-        p_official_ann = Path('SOMEPATH/vq_val.json')
+        p_official_ann = Path('data/egotracks/egotracks_val_anno.json')
         flat_anns = generate_flat_annotations_egotracks(p_official_ann)
     """
 

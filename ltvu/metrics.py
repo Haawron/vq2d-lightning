@@ -243,6 +243,17 @@ def format_metrics_vq2d(subset_metrics):
 
 
 def get_metrics_egotracks(p_ann_flat, p_pred):
+    """
+    Usage:
+    
+        import json
+        from pathlib import Path
+        from ltvu.metrics import get_metrics_egotracks, print_metrics_egotracks
+        p_ann = Path("data/egotracks/egotracks_val_anno.json")
+        p_pred = Path("outputs/batch/2024-11-11/142312/egotracks/predictions.json")
+        metrics = get_metrics_egotracks(p_ann, p_pred)
+        print_metrics_egotracks(metrics)
+    """
     invalid_clip_uids = {
         '17b73c0a-afda-4944-b2ed-450c9ef97849',  # train, stereo
         'd1419b9b-2944-421b-ba6f-0ddac32d5521',  # train, stereo

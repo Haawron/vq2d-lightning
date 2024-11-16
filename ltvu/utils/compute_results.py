@@ -107,11 +107,28 @@ def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7):
 
 
 def get_final_preds_egotracks(preds, split='val'):
+    """Convert whole-clip predictions to submittable format.
+    
+    Usage:
+    
+        import torch, json
+        from pathlib import Path
+        from ltvu.utils.compute_results import get_final_preds_egotracks
+        p_preds = Path('SOMEPATH/intermediate_predictions.pt')
+        preds = torch.load(p_preds, weights_only=True)
+        results = get_final_preds_egotracks(preds)
+        json.dump(results, p_preds.with_name('predictions.json').open('w'))
+    """
     anns = json.load(open(f'data/egotracks/egotracks_{split}_anno.json'))
     result = {}
     for ann in anns:
         if 'uuid_ltt' not in ann:
             continue
+        if split == 'val':
+            if 'lt_track' not in ann:
+                continue
+            if 'ae8727ba' in ann['clip_uid']:
+                continue
 
         result[ann['uuid_ltt']] = {}
 
