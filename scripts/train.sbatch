@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours-guide-repair
+#SBATCH --job-name=ours-check
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
@@ -8,6 +8,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem-per-gpu=43G
+#SBATCH -x ariel-k[1,2],ariel-m1
 
 
 hostname
@@ -16,41 +17,19 @@ source ./scripts/_setup.sh
 
 
 # Ours
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
-#     model.late_reduce=true \
-#     +model.weight_entropy=0.1 \
-#     +model.ignore_border=false \
-#     model.cls_scaling_type='sigmoid_mean' \
-#     +model.cls_repair_neighbor=true \
-#     +model.enable_temporal_shift_conv_summary=true \
-#     batch_size=3 \
-
-########################################################################################
-
-# # - PCA loss
-# python train.py --config-name train_fast \
-#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#     +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
-#     model.late_reduce=true \
-#     +model.weight_entropy=0.0 \
-#     +model.ignore_border=false \
-#     model.cls_scaling_type='sigmoid_mean' \
-#     +model.cls_repair_neighbor=true \
-#     +model.enable_temporal_shift_conv_summary=true \
-#     batch_size=3 \
-
-########################################################################################
-
-# - Guide without repair
 python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
-    model.late_reduce=true \
-    +model.weight_entropy=0.1 \
-    +model.ignore_border=false \
-    model.cls_scaling_type='sigmoid_mean' \
-    +model.cls_repair_neighbor=false \
-    +model.enable_temporal_shift_conv_summary=true \
-    batch_size=3 \
+    +experiment=random_pos_query \
+    model=match \
+    # model.backbone_type='vitl14' \
+
+
+# CLIP ViT-L/14
+python train.py --config-name train_fast \
+    +experiment=random_pos_query \
+    model=match \
+    model.backbone_name='clip-hf' \
+    model.backbone_type='vitl14' \
+    dataset.segment_size=\[336,336\] \
+    dataset.query_size=\[336,336\] \
+    model.resolution_transformer=24 \
+    model.num_anchor_regions=24

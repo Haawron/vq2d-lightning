@@ -47,6 +47,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.query_size: tuple[int] = tuple(ds_config.query_size)  # H, W, desired
         self.query_square: bool = ds_config.query_square
         self.query_padding: bool = ds_config.query_padding
+        self.random_pos_query: bool = ds_config.get('random_pos_query')
         if ds_config.padding_value == 'mean':
             self.padding_value = .5
         elif ds_config.padding_value == 'zero':
@@ -87,8 +88,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.rt_pos_query is not None and self.split == 'train':
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
+        query = self.get_query(ann, frame_idxs)
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
-        query = self.get_query(ann)
 
         sample = {
             # inputs
@@ -181,8 +182,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         return frames, bboxes
 
-    def get_query(self, ann):
-        vc = ann['visual_crop']
+    def get_query(self, ann, frame_idxs=None):
+        if self.split == 'train' and self.random_pos_query and np.random.rand() < .5:
+            fidx = np.random.choice(frame_idxs)
+            gt_rt = ann['response_track']
+            vc = gt_rt[fidx - ann['response_track_valid_range'][0]]
+        else:
+            vc = ann['visual_crop']
+
         oh, ow = ann['original_height'], ann['original_width']
         num_clip_frames = int(ann['clip_fps'] * ann['clip_duration'])
         fno = min(vc['fno'], num_clip_frames - 1)
