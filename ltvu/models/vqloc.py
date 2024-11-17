@@ -53,9 +53,19 @@ def build_backbone(backbone_name, backbone_type):
         else:
             raise NotImplementedError
     elif backbone_name == 'dinov2-hf':  # why not torch.hub? => just because I prefer huggingface
-        backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
         down_rate = 14
-        backbone_dim = 768
+        if backbone_type == 'vitb14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
+            backbone_dim = 768
+        elif backbone_type == 'vits14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-small')
+            backbone_dim = 384
+        elif backbone_type == 'vitl14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-large')
+            backbone_dim = 1024
+        elif backbone_type == 'vitg14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-giant')
+            backbone_dim = 1536
     else:
         raise NotImplementedError
     return backbone, down_rate, backbone_dim
