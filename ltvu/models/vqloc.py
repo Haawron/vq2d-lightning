@@ -737,7 +737,7 @@ class ClipMatcher(nn.Module):
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
             if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random':
-                valid_indices = (rt_pos_idx != -1).nonzero(as_tuple=True)
+                valid_indices = rt_pos_idx != -1
                 random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
                 query = rt_pos_queries[torch.arange(b), random_idx]
             query_feat_dict = self.extract_feature(query)
