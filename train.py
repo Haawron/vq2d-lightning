@@ -106,7 +106,6 @@ def main(config: DictConfig):
 
         if config.dataset.get('movement', "") in ['slow', 'medium', 'fast']:
             for eval_movement in ['slow', 'medium', 'fast']:
-                eval_config.dataset.movement = eval_movement
                 pdm.movement = eval_movement
                 trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
                 log_to_console('\n' + "="*80 + '\n')
@@ -115,7 +114,6 @@ def main(config: DictConfig):
                 log_to_console('\n' + "="*80 + '\n')
         elif config.dataset.get('movement', "") in ['slow2', 'medium2', 'fast2']:
             for eval_movement in ['slow2', 'medium2', 'fast2']:
-                eval_config.dataset.movement = eval_movement
                 pdm.movement = eval_movement
                 trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
                 log_to_console('\n' + "="*80 + '\n')
