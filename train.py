@@ -113,6 +113,15 @@ def main(config: DictConfig):
                 log_to_console(f'Evaluating the best model in {eval_movement} movement')
                 trainer.predict(plm, datamodule=pdm, return_predictions=False)
                 log_to_console('\n' + "="*80 + '\n')
+        elif config.dataset.get('movement', "") in ['slow2', 'medium2', 'fast2']:
+            for eval_movement in ['slow2', 'medium2', 'fast2']:
+                eval_config.dataset.movement = eval_movement
+                pdm.dataset.movement = eval_movement
+                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+                log_to_console('\n' + "="*80 + '\n')
+                log_to_console(f'Evaluating the best model in {eval_movement} movement')
+                trainer.predict(plm, datamodule=pdm, return_predictions=False)
+                log_to_console('\n' + "="*80 + '\n')
         else:
             if config.predict_val:
                 trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)

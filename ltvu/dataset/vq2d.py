@@ -58,7 +58,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.split = split
         self.movement = movement
         if movement != "":
-            assert movement in ['slow', 'medium', 'fast'], f'Invalid movement: {movement}'
+            assert movement in ['slow', 'medium', 'fast', 'slow2', 'medium2', 'fast2'], f'Invalid movement: {movement}'
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
         else:
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
