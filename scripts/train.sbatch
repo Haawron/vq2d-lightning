@@ -82,6 +82,25 @@ source ./scripts/_setup.sh
 #     model.resolution_transformer=28 \
 #     model.num_anchor_regions=28 \
 #     batch_size=5 \
+
+
+# OURS CLIP-vitl14
+python train.py --config-name train_fast \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
+    model.late_reduce=true \
+    +model.weight_entropy=0.1 \
+    +model.ignore_border=false \
+    model.cls_scaling_type='sigmoid_mean' \
+    +model.cls_repair_neighbor=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    model.backbone_name='clip-hf' \
+    model.backbone_type='vitl14' \
+    dataset.segment_size=\[336,336\] \
+    dataset.query_size=\[336,336\] \
+    model.resolution_transformer=24 \
+    model.num_anchor_regions=24
+
 ########################################################################################
 
 
@@ -122,24 +141,33 @@ source ./scripts/_setup.sh
 #     model.num_anchor_regions=28 \
 #     batch_size=3 \
 
-########################################################################################
-
-
-
-# Ours -slow
+# Baseline CLIP-vitl14
 python train.py --config-name train_fast \
     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
     model.late_reduce=true \
-    +model.weight_entropy=0.1 \
-    +model.ignore_border=false \
-    model.cls_scaling_type='sigmoid_mean' \
-    +model.cls_repair_neighbor=true \
-    +model.enable_temporal_shift_conv_summary=true \
-    +dataset.movement='slow' \
-    predict_val=false \
-    predict_test=false \
-    batch_size=3 \
+    model.backbone_name='clip-hf' \
+    model.backbone_type='vitl14' \
+    dataset.segment_size=\[336,336\] \
+    dataset.query_size=\[336,336\] \
+    model.resolution_transformer=24 \
+    model.num_anchor_regions=24 \
+
+########################################################################################
+
+# # Ours -slow
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
+#     model.late_reduce=true \
+#     +model.weight_entropy=0.1 \
+#     +model.ignore_border=false \
+#     model.cls_scaling_type='sigmoid_mean' \
+#     +model.cls_repair_neighbor=true \
+#     +model.enable_temporal_shift_conv_summary=true \
+#     +dataset.movement='slow' \
+#     predict_val=false \
+#     predict_test=false \
+#     batch_size=3 \
 
 # # Ours -medium
 # python train.py --config-name train_fast \

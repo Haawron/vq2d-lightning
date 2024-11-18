@@ -10,7 +10,7 @@ import math
 from tqdm import tqdm
 
 import random
-from transformers import Dinov2Model, ViTModel
+from transformers import Dinov2Model, ViTModel, CLIPModel
 from geomloss import SamplesLoss
 
 from ltvu.loss import get_losses_with_anchor
@@ -76,6 +76,16 @@ def build_backbone(backbone_name, backbone_type):
         elif backbone_type == 'vits16':
             backbone = ViTModel.from_pretrained('facebook/dino-vits16')
             backbone_dim = 384
+    elif backbone_name == 'clip-hf':
+        if backbone_type == 'vitb16':
+            backbone_path = 'openai/clip-vit-base-patch16'
+            backbone_dim = 512
+            down_rate = 16
+        elif backbone_type == 'vitl14':
+            backbone_path = 'openai/clip-vit-large-patch14-336'
+            backbone_dim = 1024
+            down_rate = 14
+        backbone = CLIPModel.from_pretrained(backbone_path).vision_model
     else:
         raise NotImplementedError
     return backbone, down_rate, backbone_dim
@@ -553,9 +563,15 @@ class ClipMatcher(nn.Module):
             neighbor_mean = rearrange(neighbor_mean, 'b t 1 c -> (b t) 1 c')
             latent_clip[:, [0, 1, w, w+1]] = neighbor_mean
 
-        last_layer = self.backbone.encoder.layer[-1]
-        Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
-        K_clip = last_layer.attention.attention.key(latent_clip)  # [b*t,n,c]
+        e = self.backbone.encoder
+        if 'dino' in self.backbone_name:
+            last_layer = e.layer[-1]
+            Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
+            K_clip = last_layer.attention.attention.key(latent_clip)  # [b*t,n,c]
+        elif 'clip' in self.backbone_name:
+            last_layer = e.layers[-1]
+            Q_query = last_layer.self_attn.q_proj(latent_query)  # [b,1,c]
+            K_clip = last_layer.self_attn.k_proj(latent_clip)
 
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
@@ -640,6 +656,18 @@ class ClipMatcher(nn.Module):
                 feat, cls_token = self.backbone.get_intermediate_layers(x, n=1, return_class_token=True)
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
+            dim = feat.shape[-1]
+            feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
+
+        elif self.backbone_name == 'clip-hf':
+            b, _, h_origin, w_origin = x.shape
+            x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
+            feat = x_forward_outs.last_hidden_state
+            hidden_states = x_forward_outs.hidden_states[-1]
+            cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
+            feat = feat[:, 1:, :]
+            h = int(h_origin / self.down_rate)
+            w = int(w_origin / self.down_rate)
             dim = feat.shape[-1]
             feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
 
