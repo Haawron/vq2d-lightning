@@ -10,7 +10,7 @@ import math
 from tqdm import tqdm
 
 import random
-from transformers import Dinov2Model, ViTModel
+from transformers import Dinov2Model, ViTModel, CLIPModel
 from geomloss import SamplesLoss
 
 from ltvu.loss import get_losses_with_anchor
@@ -76,6 +76,16 @@ def build_backbone(backbone_name, backbone_type):
         elif backbone_type == 'vits16':
             backbone = ViTModel.from_pretrained('facebook/dino-vits16')
             backbone_dim = 384
+    elif backbone_name == 'clip-hf':
+        if backbone_type == 'vitb16':
+            backbone_path = 'openai/clip-vit-base-patch16'
+            backbone_dim = 512
+            down_rate = 16
+        elif backbone_type == 'vitl14':
+            backbone_path = 'openai/clip-vit-large-patch14-336'
+            backbone_dim = 1024
+            down_rate = 14
+        backbone = CLIPModel.from_pretrained(backbone_path).vision_model
     else:
         raise NotImplementedError
     return backbone, down_rate, backbone_dim
@@ -182,6 +192,7 @@ class ClipMatcher(nn.Module):
         apply_sttx_mask = True,
         transformer_dropout = 0.,
         fix_backbone = True,
+        base_sizes: torch.Tensor = base_sizes,
 
         # input size
         query_size = 448,
@@ -240,6 +251,8 @@ class ClipMatcher(nn.Module):
         num_layers_small_cq_corr_transformer: int = 0,
         num_layers_short_term_spatio_temporal_transformer: int = 0,
         num_layers_self_spatial_transformer: int = 0,
+
+        prob_apply_rt_pos: float = 0.5,
 
         debug = False,
         **kwargs
@@ -337,9 +350,17 @@ class ClipMatcher(nn.Module):
         self.num_layers_short_term_spatio_temporal_transformer = num_layers_short_term_spatio_temporal_transformer
         self.num_layers_self_spatial_transformer = num_layers_self_spatial_transformer
 
+        self.prob_apply_rt_pos = prob_apply_rt_pos
+
+        if not isinstance(base_sizes, torch.Tensor):
+            if isinstance(base_sizes[0], list):
+                base_sizes = torch.tensor(base_sizes, dtype=torch.float32)
+            elif isinstance(base_sizes[0], int):
+                base_sizes = torch.tensor([base_sizes] * 2, dtype=torch.float32).T
         self.anchors_xyhw = generate_anchor_boxes_on_regions(
             image_size=[self.clip_size_coarse, self.clip_size_coarse],
-            num_regions=[self.num_anchor_regions, self.num_anchor_regions])
+            num_regions=[self.num_anchor_regions, self.num_anchor_regions],
+            base_sizes=base_sizes)
         self.anchors_xyhw = self.anchors_xyhw / self.clip_size_coarse   # [R^2*N*M,4], value range [0,1], represented by [c_x,c_y,h,w] in torch axis
         self.anchors_xyxy = bbox_xyhwToxyxy(self.anchors_xyhw)  # non-trainable, [R^2*N*M,4]
 
@@ -505,7 +526,10 @@ class ClipMatcher(nn.Module):
             self.stst_transformer = None
 
         # output head
-        self.head = Head(in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions)
+        self.head = Head(
+            in_dim=256, in_res=self.resolution_transformer, out_res=self.num_anchor_regions,
+            n=len(base_sizes)
+        )
 
         if self.weight_sinkhorn > 0:
             self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)
@@ -543,9 +567,15 @@ class ClipMatcher(nn.Module):
             neighbor_mean = rearrange(neighbor_mean, 'b t 1 c -> (b t) 1 c')
             latent_clip[:, [0, 1, w, w+1]] = neighbor_mean
 
-        last_layer = self.backbone.encoder.layer[-1]
-        Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
-        K_clip = last_layer.attention.attention.key(latent_clip)  # [b*t,n,c]
+        e = self.backbone.encoder
+        if 'dino' in self.backbone_name:
+            last_layer = e.layer[-1]
+            Q_query = last_layer.attention.attention.query(latent_query)  # [b,1,c]
+            K_clip = last_layer.attention.attention.key(latent_clip)  # [b*t,n,c]
+        elif 'clip' in self.backbone_name:
+            last_layer = e.layers[-1]
+            Q_query = last_layer.self_attn.q_proj(latent_query)  # [b,1,c]
+            K_clip = last_layer.self_attn.k_proj(latent_clip)
 
         Q_query = repeat(Q_query, 'b 1 c -> (b t) 1 c', t=T)
         attn = torch.bmm(Q_query, K_clip.transpose(1, 2)) / C ** 0.5  # [b*t,1,n]
@@ -630,6 +660,18 @@ class ClipMatcher(nn.Module):
                 feat, cls_token = self.backbone.get_intermediate_layers(x, n=1, return_class_token=True)
                 h = int(h_origin / self.backbone.patch_embed.patch_size[0])
                 w = int(w_origin / self.backbone.patch_embed.patch_size[1])
+            dim = feat.shape[-1]
+            feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
+
+        elif self.backbone_name == 'clip-hf':
+            b, _, h_origin, w_origin = x.shape
+            x_forward_outs = self.backbone.forward(x, output_hidden_states=True)
+            feat = x_forward_outs.last_hidden_state
+            hidden_states = x_forward_outs.hidden_states[-1]
+            cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
+            feat = feat[:, 1:, :]
+            h = int(h_origin / self.down_rate)
+            w = int(w_origin / self.down_rate)
             dim = feat.shape[-1]
             feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)  # [b,c,h,w]
 
@@ -788,7 +830,7 @@ class ClipMatcher(nn.Module):
 
             valid_gt_mask = rt_pos_idx != -1  # [b,t]
 
-            if self.sim_between in ['positives', 'positives_multinomial']:  # sim between query and rt_pos_queries
+            if self.sim_between in ['positives', 'positives_multinomial', 'positives_multinomial_plus1']:  # sim between query and rt_pos_queries
                 _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
                 _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
                 simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
@@ -806,8 +848,11 @@ class ClipMatcher(nn.Module):
             rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
             if batch_has_valid.any():
                 valid_sim_mask = sim_mask.float()  # [b, t]
-                if self.sim_between == 'positives_multinomial':
-                    valid_sim = sim * valid_sim_mask  # [b,t]
+                if self.sim_between in ['positives_multinomial', 'positives_multinomial_plus1']:
+                    if self.sim_between == 'positives_multinomial_plus1':
+                        valid_sim = 1 + sim * valid_sim_mask  # [b,t]
+                    else:
+                        valid_sim = sim * valid_sim_mask  # [b,t]
                     valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
                     rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
                 else:
@@ -1073,12 +1118,13 @@ class ClipMatcher(nn.Module):
                         mapwise_entropy = -(score_map_normhw * score_map_normhw.log()).sum()  # [Q] -> scalar
                         loss_entropy = loss_entropy + self.weight_entropy_tokenwise * patchwise_entropy - self.weight_entropy_map * mapwise_entropy
                     else:
-                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
-                        score_map_exp = rearrange(score_map_exp, 'hw Q -> Q hw')
+                        score_map_exp = 1. - torch.exp(-1 * score_map ** 2 / 1000)  # [h*w,Q]
+                        score_map_exp_normhw = score_map_exp / score_map_exp.sum(dim=1, keepdim=True)  # [h*w,Q]
+                        score_map_exp_normhw = rearrange(score_map_exp_normhw, 'hw Q -> Q hw')
                         idxs = torch.combinations(torch.arange(self.rank_pca, device=device), with_replacement=False)
-                        hw = score_map_exp.shape[1]
-                        _a, _b = score_map_exp[idxs[:, 0]], score_map_exp[idxs[:, 1]]
-                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device)), dim=-1)
+                        hw = score_map_exp_normhw.shape[1]
+                        _a, _b = score_map_exp_normhw[idxs[:, 0]], score_map_exp_normhw[idxs[:, 1]]
+                        _xy = torch.stack(torch.meshgrid(torch.arange(int(hw**.5), device=device), torch.arange(int(hw**.5), device=device), indexing='ij'), dim=-1)
                         _xy = rearrange(_xy, 'h w c -> (h w) c')
                         _xy = _xy[None].expand(self.rank_pca * (self.rank_pca - 1) // 2, -1, -1)
                         _xy = _xy.float() / hw ** .5

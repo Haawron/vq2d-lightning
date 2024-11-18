@@ -1,0 +1,87 @@
+#!/bin/bash
+
+#SBATCH --job-name=egotracks-ours-34597
+#SBATCH --output=logs/slurm/%j--%x.log
+#SBATCH --error=logs/slurm/%j--%x.err
+#SBATCH --time=4-0
+#SBATCH --partition=batch_grad
+#SBATCH -N 2
+#SBATCH --gres=gpu:6
+#SBATCH --ntasks-per-node=6
+#SBATCH --cpus-per-task=8
+#SBATCH --mem-per-gpu=43G
+#SBATCH -x ariel-k[1,2],ariel-m1,ariel-g[2]
+
+set -e  # exit on error
+
+hostname
+
+sshopt="-o UserKnownHostsFile=/data/$USER/.ssh/known_hosts -i /data/$USER/.ssh/id_rsa"
+
+################# get batch host info and network interfaces #################
+batchhost=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n1)
+batchhostip=$(getent hosts $batchhost | head -n1 | awk '{print $1}')
+batchhostport=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
+interfaces=()
+for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
+    echo $host
+    hostip=$(ssh $sshopt $host hostname -i | awk '{print $1}')
+    interfaces+=($(ssh $sshopt $host bash -c "ifconfig | grep -B1 $hostip | head -n1 | awk '{print \$1}' | sed 's/:\$//'"))
+done
+interfaces=$(echo "${interfaces[@]}" | tr ' ' ',')  # string join
+
+echo "SLURM_JOB_NODELIST: $SLURM_JOB_NODELIST"
+echo "Batch host: $batchhost"
+echo "Batch host IP: $batchhostip"
+echo "Batch host port: $batchhostport"
+echo "Network interfaces: ${interfaces[@]}"
+
+
+################# setup #################
+for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
+    # ssh -t $sshopt $host bash -c 'tar -xf outputs/frames/vq2d_pos_and_query_frames_320ss-train-whole.tar -C /local_datasets --skip-old-files' 2>/dev/null &
+    ssh -t $sshopt $host bash -c 'tar -xf ./outputs/frames/subsamples-egotracks_pos_and_query_frames_320ss-train.tar -C /local_datasets' 2>/dev/null &
+done
+echo "Waiting for setup to finish..."
+wait
+echo "Setup finished."
+
+
+################# run training #################
+# ours
+MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+    srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+    python train.py --config-name train_fast \
+        trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+        dataset=egotracks \
+        +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+        +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
+        model.late_reduce=true \
+        +model.weight_entropy=0.1 \
+        +model.ignore_border=false \
+        model.cls_scaling_type='sigmoid_mean' \
+        +model.cls_repair_neighbor=true \
+        +model.enable_temporal_shift_conv_summary=true \
+        batch_size=3 \
+        +ckpt_finetune_from='outputs/ckpts/34597/epoch\=47-prob_acc\=0.7977.ckpt' +model.prob_apply_rt_pos=.8 max_steps=120000 base_lr=1e-5 \
+
+# # baseline
+# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+#     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+#     python train.py --config-name train_fast \
+#         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+#         dataset=egotracks \
+#         model.late_reduce=true \
+#         batch_size=3 \
+#         +ckpt_finetune_from='outputs/batch/2024-10-10/130094/epoch\=40-prob_acc\=0.7901.ckpt' max_steps=120000 base_lr=1e-5 \
+
+# # baseline
+# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+#     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+#     python train.py --config-name train_fast \
+#         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+#         dataset=egotracks \
+#         model.late_reduce=true \
+#         batch_size=3 \
+
+exit $?

@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours-sink-exp
+#SBATCH --job-name=ours-large
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
 #SBATCH --partition=batch_grad
 #SBATCH -N 2
-#SBATCH --gres=gpu:4
-#SBATCH --ntasks-per-node=4
+#SBATCH --gres=gpu:8
+#SBATCH --ntasks-per-node=8
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-gpu=43G
 #SBATCH -x ariel-k[1,2],ariel-m1
@@ -47,20 +47,30 @@ echo "Setup finished."
 
 
 ################# run training #################
-# Ours - PCA loss - HQQ
+# Ours - large
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python train.py --config-name train_fast \
         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-        +experiment=\[rt_pos_query,cls_token_score,pca_guide\] \
+        +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
         model.late_reduce=true \
-        model.sim_between='positives_multinomial' \
-        +model.weight_sinkhorn=100 \
+        +model.weight_entropy=0.1 \
         +model.ignore_border=false \
         model.cls_scaling_type='sigmoid_mean' \
         +model.cls_repair_neighbor=true \
         +model.enable_temporal_shift_conv_summary=true \
-        batch_size=3 \
+        model.backbone_type='vitl14' \
+
+
+# # Baseline - large
+# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
+#     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
+#     python train.py --config-name train_fast \
+#         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
+#         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#         model.late_reduce=true \
+#         model.backbone_type='vitl14' \
+
 
 exit $?

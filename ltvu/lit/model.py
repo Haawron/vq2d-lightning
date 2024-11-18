@@ -129,12 +129,6 @@ class LitModule(L.LightningModule):
         if 'log_dict' in output_dict:
             log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
             self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
-            # if self.sample_step > 0:  # after sanity check done
-            #     if batch_idx % 50 == 0:
-            #       try:
-            #           self.print_outputs(batch, output_dict, bidxs=[0])
-            #       except Exception as e:
-            #           print(f"Error in {batch['clip_uid']} print_outputs: {e}")
             self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):

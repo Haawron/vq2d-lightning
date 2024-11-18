@@ -15,8 +15,10 @@ from einops import rearrange
 
 from ltvu.dataset import (
     VQ2DFitDataset, VQ2DEvalDataset,
+    EgoTracksFitDataset, EgoTracksEvalDataset,
+    LaSOTFitDataset, LaSOTEvalDataset,
 )
-from ltvu.preprocess import generate_flat_annotations_vq2d
+from ltvu.preprocess import generate_flat_annotations_vq2d, generate_flat_annotations_egotracks
 from ltvu.bbox_ops import check_bbox
 
 
@@ -43,6 +45,8 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
         self.test_submit = ds_config.get('test_submit', False)
+        self.eval_on_train = ds_config.get('eval_on_train', False)
+        self.movement = ds_config.get('movement', "")
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -168,7 +172,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def train_dataloader(self, shuffle=True):
         return torch.utils.data.DataLoader(
-            VQ2DFitDataset(self.config, split='train'),
+            VQ2DFitDataset(self.config, split='train', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=shuffle,
             pin_memory=self.pin_memory,
@@ -180,7 +184,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DFitDataset(self.config, split='val'),
+            VQ2DFitDataset(self.config, split='val', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,
@@ -192,7 +196,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def pred_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DEvalDataset(self.config, split='val'),
+            VQ2DEvalDataset(self.config, split='train' if self.eval_on_train else 'val', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,
@@ -251,6 +255,137 @@ class LitVQ2DDataModule(L.LightningDataModule):
             drop_last=False,
         )
         return next(iter(dl))
+
+
+class LitEgoTracksDataModule(LitVQ2DDataModule):
+    ALL_NUM_CLIPS = 3537 + 1157 + 66  # train + val + challenge_test_unannotated
+    ALL_NUM_ANNS = [13129 + 13619, 4468 + 4504, 1 + 244]  # train, val, challenge_test_unannotated
+
+    def prepare_data(self):
+        """Calls generate_flat_annotations_vq2d to save the flat annotations.
+        And report the number of video uids and clip uids.
+        """
+        print('Preparing data...')
+        video_uids, clip_uids = set(), set()
+        for split, desired_num_anns in zip(['train', 'val', 'challenge_test_unannotated'], self.ALL_NUM_ANNS):
+            p_ann = self.p_anns_dir / f'egotracks_{split}_anno.json'
+            p_official_ann = self.p_official_anns_dir / f'egotracks_{split}.json'
+            if p_ann.exists():
+                flat_anns = json.load(p_ann.open())
+            else:
+                flat_anns = generate_flat_annotations_egotracks(p_official_ann)
+            assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
+            print(f'Found {len(flat_anns)} annotations in {split}.')
+            if not p_ann.exists():
+                json.dump(flat_anns, p_ann.open('w'))
+            for ann in flat_anns:
+                video_uids.add(ann['video_uid'])
+                if 'clip_uid' in ann:
+                    clip_uids.add(ann['clip_uid'])
+        assert len(clip_uids) == self.ALL_NUM_CLIPS, f'Expected {self.ALL_NUM_CLIPS} clips, got {len(clip_uids)}'
+        p_video_uids = self.p_anns_dir / 'video_uids.txt'
+        p_clip_uids = self.p_anns_dir / 'clip_uids.txt'
+        p_video_uids.write_text(' '.join(sorted(video_uids)))
+        p_clip_uids.write_text(' '.join(sorted(clip_uids)))
+        print(f'Found {len(video_uids)} video uids and {len(clip_uids)} clip uids.')
+        print(f'Video uids are saved in {p_video_uids}')
+        print(f'Clip uids are saved in {p_clip_uids}')
+        print('Data preparation done.')
+
+    def train_dataloader(self, shuffle=True):
+        return torch.utils.data.DataLoader(
+            EgoTracksFitDataset(self.config, split='train'),
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            EgoTracksFitDataset(self.config, split='val'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def pred_dataloader(self):
+        return torch.utils.data.DataLoader(
+            EgoTracksEvalDataset(self.config, split='val'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def test_dataloader(self):
+        return torch.utils.data.DataLoader(
+            EgoTracksEvalDataset(self.config, split='challenge_test_unannotated'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+
+class LitLaSOTDataModule(LitVQ2DDataModule):
+    ALL_NUM_CLIPS = 1120 + 280  # train + test
+    ALL_NUM_ANNS = [1120, 280]  # train, test
+
+    def prepare_data(self):
+        pass
+
+    def train_dataloader(self, shuffle=True):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='train'),
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=True,
+        )
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTFitDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def pred_dataloader(self):
+        return torch.utils.data.DataLoader(
+            LaSOTEvalDataset(self.config, split='test'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+
+    def test_dataloader(self):
+        raise NotImplementedError
 
 
 if __name__ == '__main__':
