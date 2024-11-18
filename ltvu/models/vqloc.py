@@ -10,7 +10,7 @@ import math
 from tqdm import tqdm
 
 import random
-from transformers import Dinov2Model
+from transformers import Dinov2Model, ViTModel
 from geomloss import SamplesLoss
 
 from ltvu.loss import get_losses_with_anchor
@@ -53,15 +53,29 @@ def build_backbone(backbone_name, backbone_type):
         else:
             raise NotImplementedError
     elif backbone_name == 'dinov2-hf':  # why not torch.hub? => just because I prefer huggingface
-        backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
+        assert backbone_type in ['vits14', 'vitb14', 'vitl14', 'vitg14']
         down_rate = 14
         if backbone_type == 'vitb14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-base')
             backbone_dim = 768
         elif backbone_type == 'vits14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-small')
             backbone_dim = 384
         elif backbone_type == 'vitl14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-large')
             backbone_dim = 1024
-        backbone_dim = 768
+        elif backbone_type == 'vitg14':
+            backbone = Dinov2Model.from_pretrained('facebook/dinov2-giant')
+            backbone_dim = 1536
+    elif backbone_name == 'dino-hf':
+        assert backbone_type in ['vits16', 'vitb16']
+        down_rate = 16
+        if backbone_type == 'vitb16':
+            backbone = ViTModel.from_pretrained('facebook/dino-vitb16')
+            backbone_dim = 768
+        elif backbone_type == 'vits16':
+            backbone = ViTModel.from_pretrained('facebook/dino-vits16')
+            backbone_dim = 384
     else:
         raise NotImplementedError
     return backbone, down_rate, backbone_dim
@@ -594,12 +608,21 @@ class ClipMatcher(nn.Module):
     def extract_feature(self, x) -> dict:
         hidden_states = {}
 
-        if self.backbone_name == 'dino':
+        if self.backbone_name in ['dino', 'dino-hf']:
             b, _, h_origin, w_origin = x.shape
-            feat = self.backbone.get_intermediate_layers(x, n=1)[0]
-            cls_token = feat[:, :1, :]  # [b,1,c]
-            feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
-            h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
+            if 'hf' in self.backbone_name:
+                x_forward_outs = self.backbone.forward(x, output_hidden_states=True, interpolate_pos_encoding=True)
+                feat = x_forward_outs.last_hidden_state
+                hidden_states = x_forward_outs.hidden_states[-2]
+                cls_token = rearrange(feat[:, :1, :], 'b 1 c -> b c 1')
+                feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
+                h = int(h_origin / self.down_rate)
+                w = int(w_origin / self.down_rate)
+            else:
+                feat = self.backbone.get_intermediate_layers(x, n=1)[0]
+                cls_token = feat[:, :1, :]  # [b,1,c]
+                feat = feat[:, 1:, :]  # we discard the [CLS] token   # [b, h*w, c]
+                h, w = int(h_origin / self.backbone.patch_embed.patch_size), int(w_origin / self.backbone.patch_embed.patch_size)
             dim = feat.shape[-1]
             feat = feat.reshape(b, h, w, dim).permute(0,3,1,2)
 
@@ -728,7 +751,7 @@ class ClipMatcher(nn.Module):
         before_query_mask: None | torch.Tensor = None,
         gt_probs: None | torch.Tensor = None,
         gt_bboxes: None | torch.Tensor = None,  # yxyx
-        use_hnm = False,
+        use_hnm: bool = False,
         rt_pos_queries = None,
         rt_pos_top_k = 1,
         rt_pos_idx = None, # -1 means not gt
@@ -756,9 +779,13 @@ class ClipMatcher(nn.Module):
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
+            if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random':
+                valid_indices = rt_pos_idx != -1
+                random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
+                query = rt_pos_queries[torch.arange(b), random_idx]
             query_feat_dict = self.extract_feature(query)
 
-        if rt_pos and (random.random() < self.prob_apply_rt_pos or self.debug):
+        if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
             rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
             with self.backbone_context():
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)

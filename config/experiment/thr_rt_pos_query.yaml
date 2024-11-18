@@ -10,4 +10,4 @@ rt_pos_query:
   sim_thr: 0.0
 
 model:
-  sim_between: 'query'
+  sim_between: 'random'
