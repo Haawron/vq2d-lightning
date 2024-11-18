@@ -226,6 +226,8 @@ class ClipMatcher(nn.Module):
         entropy_include_first: bool = True,
         rank_pca: int = 4,
         ignore_border: bool = False,
+        weight_entropy_mapwise: float = 1.,
+        weight_entropy_tokenwise: float = 1.,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -320,6 +322,8 @@ class ClipMatcher(nn.Module):
         self.singular_include_first = singular_include_first
         self.entropy_include_first = entropy_include_first
         self.ignore_border = ignore_border
+        self.weight_entropy_tokenwise = weight_entropy_mapwise
+        self.weight_entropy_token = weight_entropy_tokenwise
 
         self.enable_temporal_shift_stx = enable_temporal_shift_stx
         self.enable_temporal_shift_conv_summary = enable_temporal_shift_conv_summary
@@ -1067,7 +1071,7 @@ class ClipMatcher(nn.Module):
                         patchwise_entropy = -(score_map_normq * score_map_normq.log()).sum(dim=1)  # [h*w,Q] -> [h*w]
                         patchwise_entropy = patchwise_entropy.mean()
                         mapwise_entropy = -(score_map_normhw * score_map_normhw.log()).sum()  # [Q] -> scalar
-                        loss_entropy = loss_entropy + patchwise_entropy - mapwise_entropy
+                        loss_entropy = loss_entropy + self.weight_entropy_tokenwise * patchwise_entropy - self.weight_entropy_map * mapwise_entropy
                     else:
                         score_map_exp = 1. - torch.exp(-1 * score_map ** 2)  # [h*w,Q]
                         score_map_exp = rearrange(score_map_exp, 'hw Q -> Q hw')
