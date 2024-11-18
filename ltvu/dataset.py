@@ -37,7 +37,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         'response_track_valid_range',   # both inclusive
         'response_track']
 
-    def __init__(self, config: DictConfig, split: str = 'train'):
+    def __init__(self, config: DictConfig, split: str = 'train', movement: str = ""):
         super().__init__()
         self.config = config
         ds_config = config.dataset
@@ -58,7 +58,12 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
         self.split = split
-        self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
+        self.movement = movement
+        if movement is not "":
+            assert movement in ['slow', 'medium', 'fast'], f'Invalid movement: {movement}'
+            self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
+        else:
+            self.p_ann = self.p_anns_dir / f'vq_v2_{split}_anno.json'
         self.all_anns = json.load(self.p_ann.open())
         self.all_anns = self.subsample_anns(self.all_anns)
 
@@ -375,8 +380,8 @@ def shift_indices_to_clip_range(
 
 
 class VQ2DEvalDataset(VQ2DFitDataset):
-    def __init__(self, config, split = 'val'):
-        super().__init__(config, split)
+    def __init__(self, config, split = 'val', movement = ""):
+        super().__init__(config, split, movement)
         self.num_frames_per_segment = self.num_frames
         self.segment_length = self.frame_interval * self.num_frames_per_segment  # trailing stride is considered as occupied
         self.test_submit = split == 'test_unannotated'

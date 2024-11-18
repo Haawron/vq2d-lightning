@@ -43,6 +43,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.prefetch_factor = ds_config.prefetch_factor
         self.persistent_workers = ds_config.persistent_workers
         self.test_submit = ds_config.get('test_submit', False)
+        self.movement = ds_config.get('movement', "")
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -168,7 +169,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def train_dataloader(self, shuffle=True):
         return torch.utils.data.DataLoader(
-            VQ2DFitDataset(self.config, split='train'),
+            VQ2DFitDataset(self.config, split='train', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=shuffle,
             pin_memory=self.pin_memory,
@@ -180,7 +181,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def val_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DFitDataset(self.config, split='val'),
+            VQ2DFitDataset(self.config, split='val', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,
@@ -192,7 +193,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
     def pred_dataloader(self):
         return torch.utils.data.DataLoader(
-            VQ2DEvalDataset(self.config, split='val'),
+            VQ2DEvalDataset(self.config, split='val', movement=self.movement),
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,

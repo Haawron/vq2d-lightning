@@ -94,7 +94,17 @@ def main(config: DictConfig):
         ])
         plm = LitModule.load_from_checkpoint(p_ckpt)
         pdm = LitVQ2DDataModule(eval_config)
-
+        
+        if config.dataset.get('movement', "") in ['slow', 'medium', 'fast']:
+            for eval_movement in ['slow', 'medium', 'fast']:
+                eval_config.dataset.movement = eval_movement
+                pdm.dataset.movement = eval_movement
+                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+                log_to_console('\n' + "="*80 + '\n')
+                log_to_console(f'Evaluating the best model in {eval_movement} movement')
+                trainer.predict(plm, datamodule=pdm, return_predictions=False)
+                log_to_console('\n' + "="*80 + '\n')
+                
         if config.predict_val:
             trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
             log_to_console('\n' + "="*80 + '\n')
