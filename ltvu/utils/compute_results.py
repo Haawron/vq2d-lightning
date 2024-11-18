@@ -43,7 +43,7 @@ def compute_response_track(preds, plateau_threshold_ratio=0.7):
     return preds['ret_bboxes'][last_plateau_idx1:last_plateau_idx2].numpy(), last_plateau_idx1, last_plateau_idx2
 
 
-def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7):
+def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7, movement=""):
     """Convert whole-clip predictions to submittable format.
     
     Usage:
@@ -63,8 +63,10 @@ def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7):
             ]
         }
     }
-
-    anns = json.load(open(f'data/vq_v2_{split}_anno.json'))
+    if movement != "":
+        anns = json.load(open(f'data/vq_v2_{split}_{movement}_anno.json'))
+    else:
+        anns = json.load(open(f'data/vq_v2_{split}_anno.json'))
     pred_tree = {}  # video_uid -> clip_uid -> annotation_uid -> qset_id -> prediction
     for ann in anns:
         video_uid = ann['video_uid']

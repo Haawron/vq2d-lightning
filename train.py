@@ -108,7 +108,7 @@ def main(config: DictConfig):
             for eval_movement in ['slow', 'medium', 'fast']:
                 eval_config.dataset.movement = eval_movement
                 pdm.movement = eval_movement
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
                 log_to_console('\n' + "="*80 + '\n')
                 log_to_console(f'Evaluating the best model in {eval_movement} movement')
                 trainer.predict(plm, datamodule=pdm, return_predictions=False)
@@ -117,7 +117,7 @@ def main(config: DictConfig):
             for eval_movement in ['slow2', 'medium2', 'fast2']:
                 eval_config.dataset.movement = eval_movement
                 pdm.movement = eval_movement
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
                 log_to_console('\n' + "="*80 + '\n')
                 log_to_console(f'Evaluating the best model in {eval_movement} movement')
                 trainer.predict(plm, datamodule=pdm, return_predictions=False)

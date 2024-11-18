@@ -16,6 +16,7 @@ class PerSegmentWriter(BasePredictionWriter):
         output_dir,
         official_anns_dir,
         test_submit = False,
+        movement = "",
     ):
         super().__init__(write_interval="batch")
         self.p_outdir = Path(output_dir)
@@ -26,6 +27,7 @@ class PerSegmentWriter(BasePredictionWriter):
         self.rank_seg_preds = []
         self.test_submit = test_submit
         self.official_anns_dir = Path(official_anns_dir)
+        self.movement = movement
 
         if self.test_submit:
             self.split = 'test_unannotated'
@@ -106,7 +108,7 @@ class PerSegmentWriter(BasePredictionWriter):
             # TODO: Below should be handled by a separate evaluation script
 
             # get final predictions
-            final_preds = get_final_preds_vq2d(qset_preds, split=self.split)
+            final_preds = get_final_preds_vq2d(qset_preds, split=self.split, movement=self.movement)
 
             if self.test_submit:
                 # fix the order of the predictions
@@ -118,7 +120,8 @@ class PerSegmentWriter(BasePredictionWriter):
 
             if not self.test_submit:
                 # print metrics
-                subset_metrics = get_metrics_vq2d(Path(f'data/vq_v2_val_anno.json'), self.p_pred)
+                anno = f'data/vq_v2_val_{self.movement}_anno.json' if self.movement != "" else 'data/vq_v2_val_anno.json'
+                subset_metrics = get_metrics_vq2d(Path(anno), self.p_pred)
                 metrics_msg = format_metrics_vq2d(subset_metrics)
                 print(metrics_msg)
                 self.p_metrics_log.write_text(metrics_msg + '\n')
