@@ -9,6 +9,62 @@ from scipy.signal import find_peaks, medfilt
 
 
 def compute_response_track(preds, plateau_threshold_ratio=0.7):
+    """
+    Computes the response track by identifying a bounding box region corresponding to the last plateau 
+    in the predicted probabilities. Plateaus are determined based on a ratio of the probability at the 
+    last valid peak.
+
+    Parameters
+    ----------
+    preds : dict
+        Dictionary containing prediction outputs with the following keys:
+        - 'ret_scores' : torch.Tensor
+            Predicted logits for the bounding box scores, shape `[T]`.
+        - 'ret_bboxes' : torch.Tensor
+            Bounding box predictions corresponding to the scores, shape `[T, 4]`.
+    plateau_threshold_ratio : float, optional
+        Ratio of the probability at the last valid peak to use as the threshold for detecting the plateau, 
+        by default 0.7.
+
+    Returns
+    -------
+    tuple
+        - np.ndarray : Extracted bounding box predictions corresponding to the plateau, shape `[N, 4]`.
+        - int : Index of the start of the last plateau.
+        - int : Index of the end of the last plateau.
+
+    Notes
+    -----
+    - The function first converts logits (`ret_scores`) to probabilities using a sigmoid activation.
+    - A 1D median filter is applied to smooth the probabilities.
+    - Peaks are identified in the smoothed probabilities, and the last valid peak is chosen based on a 
+      threshold (80% of the maximum peak probability).
+    - A plateau is detected before and after the last valid peak using a threshold (plateau_threshold_ratio).
+    - If no valid peaks or plateaus are found, fallback indices are used.
+
+    Examples
+    --------
+    >>> preds = {
+    ...     'ret_scores': torch.tensor([0.1, 0.2, 0.8, 0.9, 0.85, 0.5, 0.4, 0.2]),
+    ...     'ret_bboxes': torch.tensor([
+    ...         [0, 0, 1, 1],
+    ...         [0, 0, 2, 2],
+    ...         [0, 0, 3, 3],
+    ...         [0, 0, 4, 4],
+    ...         [0, 0, 5, 5],
+    ...         [0, 0, 6, 6],
+    ...         [0, 0, 7, 7],
+    ...         [0, 0, 8, 8]
+    ...     ])
+    ... }
+    >>> bbox, start, end = compute_response_track(preds, plateau_threshold_ratio=0.7)
+    >>> bbox
+    array([[0., 0., 4., 4.], [0., 0., 5., 5.]])
+    >>> start
+    3
+    >>> end
+    5
+    """
     # logit to prob
     probs = torch.sigmoid(preds['ret_scores']).numpy()
 

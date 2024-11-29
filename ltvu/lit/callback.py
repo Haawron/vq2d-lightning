@@ -12,12 +12,58 @@ from ltvu.utils.metrics import get_metrics_vq2d, format_metrics_vq2d, get_metric
 
 
 class PerSegmentWriter(BasePredictionWriter):
+    """
+    Callback to handle per-segment prediction writing during prediction epochs.
+    This callback merges predictions from distributed ranks, processes them, and writes
+    the results to intermediate and final JSON files.
+
+    Attributes
+    ----------
+    output_dir : str or pathlib.Path
+        Path to the directory where prediction results will be stored.
+    official_anns_dir : str or pathlib.Path
+        Path to the directory containing official annotations.
+    test_submit : bool
+        Whether the predictions are for test submission.
+    movement : str
+        Additional identifier for movement-related settings.
+    split : str
+        Dataset split being processed ('val' or 'test_unannotated').
+    p_outdir : pathlib.Path
+        Path to the main output directory.
+    p_tmp_outdir : pathlib.Path
+        Path to the temporary directory for storing intermediate rank outputs.
+    p_pred : pathlib.Path
+        Path to the final predictions JSON file.
+    p_int_pred : pathlib.Path
+        Path to the intermediate predictions file.
+    p_metrics : pathlib.Path
+        Path to the metrics JSON file.
+    p_metrics_log : pathlib.Path
+        Path to the metrics log file.
+    rank_seg_preds : list
+        List of predictions collected from the current rank.
+    """
     def __init__(self,
         output_dir,
         official_anns_dir,
         test_submit = False,
         movement = "",
     ):
+        """
+        Initialize the PerSegmentWriter callback.
+
+        Parameters
+        ----------
+        output_dir : str or pathlib.Path
+            Path to the output directory.
+        official_anns_dir : str or pathlib.Path
+            Path to the official annotations directory.
+        test_submit : bool, optional
+            Whether the predictions are for test submission, by default False.
+        movement : str, optional
+            Additional identifier for movement-related settings, by default "".
+        """
         super().__init__(write_interval="batch")
         self.p_outdir = Path(output_dir)
         self.p_int_pred = self.p_outdir / 'intermediate_predictions.pt'
@@ -39,7 +85,18 @@ class PerSegmentWriter(BasePredictionWriter):
         self.p_tmp_outdir = self.p_outdir / 'tmp' / self.split
 
     def setup(self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str):
-        """Setup temporary directories for per-rank segmented predictions."""
+        """
+        Setup temporary directories for segmented predictions.
+
+        Parameters
+        ----------
+        trainer : lightning.pytorch.Trainer
+            Lightning trainer instance.
+        pl_module : lightning.pytorch.LightningModule
+            The Lightning module being trained or evaluated.
+        stage : str
+            The stage of the training process ('fit', 'validate', 'test', or 'predict').
+        """
         if trainer.is_global_zero:
             print(f'Begin setup... for stage {stage}')
             print(f'Output directory: {self.p_outdir}')
@@ -54,6 +111,26 @@ class PerSegmentWriter(BasePredictionWriter):
         trainer.strategy.barrier()
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
+        """
+        Store predictions from the current batch and save checkpointed results periodically.
+
+        Parameters
+        ----------
+        trainer : lightning.pytorch.Trainer
+            Lightning trainer instance.
+        pl_module : lightning.pytorch.LightningModule
+            The Lightning module being trained or evaluated.
+        prediction : list of dict
+            List of predictions from the batch.
+        batch_indices : list
+            Indices of the samples in the batch.
+        batch : dict
+            The input batch data.
+        batch_idx : int
+            Index of the current batch.
+        dataloader_idx : int
+            Index of the dataloader.
+        """
         for pred_output in prediction:
             qset_uuid = pred_output['qset_uuid']
             seg_idx = pred_output['seg_idx']
@@ -65,8 +142,16 @@ class PerSegmentWriter(BasePredictionWriter):
             torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
 
     def on_predict_epoch_end(self, trainer, pl_module):
-        """Merge segmented features and write to json."""
+        """
+        Merge segmented predictions across ranks and save results.
 
+        Parameters
+        ----------
+        trainer : lightning.pytorch.Trainer
+            Lightning trainer instance.
+        pl_module : lightning.pytorch.LightningModule
+            The Lightning module being trained or evaluated.
+        """
         self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
         torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
         if trainer.world_size > 1:

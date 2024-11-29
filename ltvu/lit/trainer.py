@@ -20,6 +20,38 @@ type_loggers = WandbLogger | CSVLogger
 
 
 def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=True, ddp_timeout=300, movement=""):
+    """
+    Constructs and returns a PyTorch Lightning Trainer configured for the specified task.
+
+    Parameters
+    ----------
+    config : omegaconf.DictConfig
+        The configuration object containing settings for the trainer, dataset, and callbacks.
+    jid : str
+        Job ID used for logger versioning and file naming.
+    enable_progress_bar : bool, optional
+        If True, enables a detailed progress bar during training and validation, by default False.
+    enable_checkpointing : bool, optional
+        If True, enables checkpointing based on validation metrics, by default True.
+    ddp_timeout : int, optional
+        Timeout (in seconds) for initializing DDP (Distributed Data Parallel) strategy, by default 300.
+    movement : str, optional
+        Additional movement string to append to the PerSegmentWriter configuration, by default "".
+
+    Returns
+    -------
+    tuple
+        - trainer : lightning.pytorch.Trainer
+            Configured PyTorch Lightning Trainer instance.
+        - ckpt_callback_prob : lightning.pytorch.callbacks.ModelCheckpoint or None
+            Checkpoint callback monitoring the 'Val/prob_acc' metric, or None if checkpointing is disabled.
+
+    Notes
+    -----
+    - The function creates a Trainer instance and attaches task-specific callbacks and loggers.
+    - Supports 'vq2d' and 'lasot' tasks with appropriate PerSegmentWriter callbacks.
+    - Configures DDPStrategy for distributed training with timeout and unused parameter detection.
+    """
     runtime_outdir = Path(config.runtime_outdir)
     trainer_config: DictConfig = config.trainer
     task = config.dataset.name

@@ -22,6 +22,11 @@ class LitModule(L.LightningModule):
     """
     https://lightning.ai/docs/pytorch/stable/common/trainer.html#under-the-hood
 
+    LightningModule for video-query-based localization tasks.
+
+    This module integrates the VQLoC model and implements training, validation,
+    and prediction loops using PyTorch Lightning hooks.
+
     # Pseudo code for training loop
 
     ```python
@@ -66,8 +71,40 @@ class LitModule(L.LightningModule):
         all_preds.append(pred)  # -> will be stacked and returned in `trainer.predict`
     ```
 
+    Attributes
+    ----------
+    config : omegaconf.DictConfig
+        Configuration object for the model, optimizer, and dataset settings.
+    model : VQLoC
+        The instantiated VQLoC model.
+    fix_backbone : bool
+        Whether to freeze the backbone during training.
+    use_hnm : bool
+        Whether to use hard negative mining during training.
+    rt_pos_query : dict, optional
+        Real-time positional query configuration, if available.
+
+    Methods
+    -------
+    training_step(batch, batch_idx)
+        Implements the training step for a single batch.
+    validation_step(batch, batch_idx)
+        Implements the validation step for a single batch.
+    predict_step(batch, batch_idx, dataloader_idx=None)
+        Generates predictions for a batch during inference.
+    configure_optimizers()
+        Configures the optimizer and learning rate scheduler.
+
     """
     def __init__(self, config):
+        """
+        Initialize the LitModule with a configuration.
+
+        Parameters
+        ----------
+        config : omegaconf.DictConfig or dict
+            Configuration object or dictionary containing model and training settings.
+        """
         super().__init__()
         if isinstance(config, dict):  # eval.py, config from a checkpoint, for backward compatibility
             config = OmegaConf.create(config)
@@ -86,6 +123,21 @@ class LitModule(L.LightningModule):
     ############ major hooks ############
 
     def training_step(self, batch, batch_idx):
+        """
+        Perform a single training step.
+
+        Parameters
+        ----------
+        batch : dict
+            Batch of training data with keys like 'segment', 'query', 'gt_bboxes', etc.
+        batch_idx : int
+            Index of the batch in the current epoch.
+
+        Returns
+        -------
+        torch.Tensor
+            Loss value for the current batch.
+        """
         bsz = batch['segment'].shape[0]
         extra_args = {}
         extra_args['use_hnm'] = self.use_hnm
@@ -124,6 +176,20 @@ class LitModule(L.LightningModule):
         return output_dict['loss']
 
     def validation_step(self, batch, batch_idx):
+        """
+        Perform a single validation step.
+
+        Parameters
+        ----------
+        batch : dict
+            Batch of validation data.
+        batch_idx : int
+            Index of the batch in the current validation epoch.
+
+        Returns
+        -------
+        None
+        """
         bsz = batch['segment'].shape[0]
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
         if 'log_dict' in output_dict:
@@ -135,6 +201,23 @@ class LitModule(L.LightningModule):
         pass
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
+        """
+        Perform a prediction step on a batch.
+
+        Parameters
+        ----------
+        batch : dict
+            Batch of data for prediction.
+        batch_idx : int
+            Index of the batch.
+        dataloader_idx : int, optional
+            Index of the dataloader, by default None.
+
+        Returns
+        -------
+        list of dict
+            A list of prediction dictionaries containing bounding boxes, scores, and metadata.
+        """
         bsz = batch['segment'].shape[0]
         device = batch['segment'].device
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
@@ -167,6 +250,14 @@ class LitModule(L.LightningModule):
         return pred_outputs
 
     def configure_optimizers(self):
+        """
+        Configure the optimizer and learning rate scheduler.
+
+        Returns
+        -------
+        dict or torch.optim.Optimizer
+            Optimizer or dictionary containing the optimizer and scheduler.
+        """
         optim_config = self.config.optim
         all_params = list(filter(lambda p: p.requires_grad, self.parameters()))
         optimizer: torch.optim.Optimizer = hydra.utils.instantiate(optim_config.optimizer, params=all_params)

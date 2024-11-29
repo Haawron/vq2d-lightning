@@ -177,6 +177,85 @@ class InferenceContext:
 
 
 class ClipMatcher(nn.Module):
+    """
+    ClipMatcher is a neural network module designed for multi-scale and spatio-temporal 
+    object tracking and matching tasks. It integrates transformer-based attention, 
+    backbone feature extraction, and anchor-based prediction.
+
+    Parameters
+    ----------
+    compile_backbone : bool, optional
+        Whether to compile the backbone network for optimization, by default True.
+    backbone_precision : str, optional
+        Precision for backbone computation, one of {'bf16', 'fp32', 'fp16'}, by default 'bf16'.
+    backbone_fp32_mm_precision : str, optional
+        Precision setting for matrix multiplication in FP32, by default 'medium'.
+    backbone_name : str
+        Name of the backbone model. Supported values include 'dinov2', 'clip-hf'.
+    backbone_type : str
+        Type of the backbone model, specifying architecture variant (e.g., 'vitb14').
+    window_transformer : int
+        Size of the temporal window for the transformer in seconds.
+    resolution_transformer : int
+        Resolution of features used in transformer layers.
+    num_anchor_regions : int
+        Number of anchor regions per frame for predictions.
+    num_layers_st_transformer : int
+        Number of spatial-temporal transformer layers.
+    apply_sttx_mask : bool
+        Whether to apply masking in spatio-temporal transformers.
+    transformer_dropout : float
+        Dropout rate for transformer layers.
+    fix_backbone : bool
+        Whether to freeze the backbone weights during training.
+    base_sizes : torch.Tensor
+        Base sizes for anchor generation.
+    query_size : int
+        Resolution of the query frame.
+    clip_size_fine : int
+        Fine-resolution size for the input video clips.
+    clip_size_coarse : int
+        Coarse-resolution size for the input video clips.
+    clip_num_frames : int
+        Number of frames in the video clip input.
+    positive_threshold : float
+        Threshold for classifying positive matches in loss calculation.
+    logit_scale : float
+        Scaling factor for logits in classification.
+    weight_bbox_center : float
+        Weight for the loss term related to bounding box center prediction.
+    weight_bbox_hw : float
+        Weight for the loss term related to bounding box size prediction.
+    weight_bbox_giou : float
+        Weight for the loss term related to generalized IoU loss.
+    weight_prob : float
+        Weight for the classification loss term.
+    late_reduce : bool
+        Whether to reduce features late in the pipeline.
+    num_layers_cq_corr_transformer : int
+        Number of transformer layers used for cross-query correspondence.
+    enable_cls_token_score : bool
+        Whether to enable scoring with the classification token.
+    enable_pca_guide : bool
+        Whether to use PCA-based guidance for attention maps.
+    enable_temporal_shift_stx : bool
+        Whether to enable temporal shifting in spatio-temporal transformers.
+    enable_temporal_shift_conv_summary : bool
+        Whether to apply temporal shifting in convolutional summary layers.
+    debug : bool, optional
+        Enable debugging mode for additional outputs, by default False.
+
+    Other Parameters
+    ----------------
+    kwargs : dict
+        Additional keyword arguments for customization.
+
+    Notes
+    -----
+    This class is designed for tasks involving object tracking in video using a 
+    combination of spatio-temporal transformers and CNNs.
+    """
+
     def __init__(self,
         compile_backbone = True,
         backbone_precision = 'bf16',
@@ -544,8 +623,26 @@ class ClipMatcher(nn.Module):
 
     def get_cross_cls_attn_score(self, latent_query, latent_clip, scaling_factor=1, cls_scaling_type='softmax'):
         """
-        latent_query: [b,1,c]
-        latent_clip: [b*t,n,c]
+        Compute attention scores between the query classification token and 
+        latent features from the video clip.
+
+        Parameters
+        ----------
+        latent_query : torch.Tensor
+            Latent features for the query, of shape [batch_size, 1, channels].
+        latent_clip : torch.Tensor
+            Latent features for the video clip, of shape [batch_size * num_frames, num_tokens, channels].
+        scaling_factor : float, optional
+            Scaling factor for attention scores, by default 1.
+        cls_scaling_type : str, optional
+            Type of scaling to apply to the classification scores. 
+            Options include 'softmax', 'sigmoid', 'direct', 'layernorm', and 'batchnorm', 
+            by default 'softmax'.
+
+        Returns
+        -------
+        torch.Tensor
+            Attention scores of shape [batch_size * num_frames * num_heads, num_tokens, num_tokens].
         """
         BT, N, C = latent_clip.shape
         B = latent_query.shape[0]
@@ -611,6 +708,20 @@ class ClipMatcher(nn.Module):
         return attn
 
     def compute_pca_score_map(self, guide_feat):
+        """
+        Compute PCA-based score maps for guiding attention.
+
+        Parameters
+        ----------
+        guide_feat : torch.Tensor
+            Guide feature tensor of shape [batch_size, channels, height, width].
+
+        Returns
+        -------
+        torch.Tensor
+            PCA score maps of shape [batch_size, height * width, num_heads].
+            Each score represents the relative importance of spatial regions.
+        """
         b = guide_feat.shape[0]
         _feat = rearrange(guide_feat, 'b c h w -> b (h w) c')  # [b,h2*w2,c]
         _feat = _feat - _feat.mean(dim=1, keepdim=True)  # [b,h2*w2,c]
@@ -624,6 +735,24 @@ class ClipMatcher(nn.Module):
         return score_maps
 
     def extract_feature(self, x) -> dict:
+        """
+        Extract multi-scale features from an input image or video frame.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape [batch_size, channels, height, width].
+
+        Returns
+        -------
+        dict
+            Extracted features containing:
+            - 'feat': torch.Tensor, processed feature map of shape [batch_size, channels, height, width].
+            - 'cls': torch.Tensor, classification token of shape [batch_size, channels, 1].
+            - 'h': int, height of the feature map.
+            - 'w': int, width of the feature map.
+            - 'hidden_states': torch.Tensor, backbone's hidden states (optional).
+        """
         hidden_states = {}
 
         if self.backbone_name in ['dino', 'dino-hf']:
@@ -688,6 +817,22 @@ class ClipMatcher(nn.Module):
 
 
     def get_vqloc_sttx_mask(self, src, t):
+        """
+        Generate a spatio-temporal attention mask for transformer layers.
+
+        Parameters
+        ----------
+        src : torch.Tensor
+            Input feature tensor of shape [batch_size * num_frames, num_tokens, channels].
+        t : int
+            Number of frames in the video segment.
+
+        Returns
+        -------
+        torch.Tensor
+            Attention mask of shape [num_tokens * num_frames, num_tokens * num_frames], 
+            with masked regions set to -inf and unmasked regions set to 0.
+        """
         if not torch.is_tensor(self.temporal_mask):
             device = src.device
             hw = src.shape[1] // t
@@ -705,10 +850,22 @@ class ClipMatcher(nn.Module):
         return self.temporal_mask
 
     def replicate_for_hnm(self, query_feat, clip_feat):
-        '''
-        query_feat in shape [b,c,h,w]
-        clip_feat in shape [b*t,c,h,w]
-        '''
+        """
+        Replicate query and clip features to enable hard negative mining (HNM).
+
+        Parameters
+        ----------
+        query_feat : torch.Tensor
+            Query feature tensor of shape [batch_size, channels, height, width].
+        clip_feat : torch.Tensor
+            Clip feature tensor of shape [batch_size * num_frames, channels, height, width].
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            - Replicated clip features of shape [(batch_size ** 2) * num_frames, channels, height, width].
+            - Replicated query features of shape [batch_size ** 2, channels, height, width].
+        """
         b = query_feat.shape[0]
         bt = clip_feat.shape[0]
         t = bt // b
@@ -744,27 +901,23 @@ class ClipMatcher(nn.Module):
         return clip_feat
 
     def forward_conv_summary(self, clip_feat):
+        """
+        Pass clip features through convolutional summary layers.
+
+        Parameters
+        ----------
+        clip_feat : torch.Tensor
+            Clip features of shape [batch_size * num_frames, channels, height, width].
+
+        Returns
+        -------
+        torch.Tensor
+            Processed features after convolutional summary layers, of the same shape as input.
+        """
         for conv in self.conv_summary:
             clip_feat = clip_feat + conv(clip_feat)
 
         return clip_feat
-
-    def extract_rt_feat(self,
-        segment,
-        query,
-        rt_pos_queries = None,
-        **kwargs
-    ):
-        b, t = segment.shape[:2]
-        with self.backbone_context():
-            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
-            rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-            query_feat_dict = self.extract_feature(query)
-            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
-            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c') # [b,1,c]
-            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-        return rt_pos_queries_cls, query_cls
-
 
     def forward(
         self,
@@ -782,6 +935,31 @@ class ClipMatcher(nn.Module):
 
         **kwargs
     ):
+        """
+        Forward pass of the ClipMatcher model for tracking and matching.
+
+        Parameters
+        ----------
+        segment : torch.Tensor
+            Video segment input of shape [batch_size, num_frames, channels, height, width].
+        query : torch.Tensor
+            Query frame input of shape [batch_size, channels, height, width].
+        compute_loss : bool, optional
+            Whether to compute the loss during the forward pass, by default False.
+        training : bool, optional
+            Whether the model is in training mode, by default True.
+
+        Other Parameters
+        ----------------
+        kwargs : dict
+            Additional parameters for customization, such as ground-truth labels.
+
+        Returns
+        -------
+        dict
+            A dictionary containing outputs such as predictions, loss values, 
+            and intermediate features for debugging or visualization.
+        """
         b, t = segment.shape[:2]
         device = segment.device
         output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}

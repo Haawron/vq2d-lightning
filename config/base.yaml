@@ -20,13 +20,13 @@ backbone_fp32_mm_precision: 'highest'  # medium or high or highest
 
 
 # runtime parameters
-jid: ${oc.env:SLURM_JOB_ID}
+jid: ${oc.env:SLURM_JOB_ID,1234}
 job_type: ${job_type:}  # debug or batch
 YY: ${now:%Y}
 mm: ${now:%m}  # month
 dd: ${now:%d}  # day
 runtime_outdir: ${runtime_outdir:}
-total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE} * ${oc.env:SLURM_JOB_NUM_NODES,1}'}
+total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE,8} * ${oc.env:SLURM_JOB_NUM_NODES,1}'}
 max_steps: ${eval:'${trainer.max_epochs} * ${dataset.num_train_samples} // ${total_bsz} + 1'}
 
 
@@ -49,11 +49,11 @@ trainer:
   log_every_n_steps: 1
   logger:
     - _target_: lightning.pytorch.loggers.WandbLogger
-      project: 'ltvu++'
-      entity: 'team-khu'
+      project: 'YOURPROJECT'  # wandb project name
+      entity: 'YOURENTITY'  # wandb entity name
       group: 'base'  # for grouping runs (does not mean an organization)
       job_type: ${job_type}  # debug or batch
-      name: hg-${jid}  # displayname
+      name: ${jid}  # displayname
       tags: []  # for filtering
       notes: null  # real note, a log string
       save_dir: ${runtime_outdir}  # logs will be saved under THIS/wandb

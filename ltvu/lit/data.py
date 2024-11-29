@@ -27,6 +27,62 @@ STD = [0.229, 0.224, 0.225]
 
 
 class LitVQ2DDataModule(L.LightningDataModule):
+    """
+    Lightning DataModule for the VQ2D dataset. It handles data preparation, augmentation,
+    normalization, and loading for training, validation, and testing phases.
+
+    Attributes
+    ----------
+    config : omegaconf.DictConfig
+        Configuration object containing dataset and augmentation settings.
+    batch_size : int
+        Number of samples per batch.
+    num_workers : int
+        Number of worker processes for data loading.
+    pin_memory : bool
+        Whether to pin memory during data loading.
+    prefetch_factor : int
+        Number of batches to prefetch in the data loader.
+    persistent_workers : bool
+        Whether to keep workers alive between epochs.
+    test_submit : bool
+        Flag to determine if the test dataloader is for submission.
+    eval_on_train : bool
+        If True, evaluates on training split during validation.
+    segment_aug : bool
+        Whether to apply augmentation to video segments.
+    strict_bbox_check : bool
+        Whether to apply strict bounding box validation during augmentation.
+    rt_pos_query : Any
+        Configuration for real-time positional queries, if provided.
+
+    Methods
+    -------
+    prepare_data()
+        Prepares data by generating flat annotations and saving metadata.
+    on_after_batch_transfer(batch, dataloader_idx)
+        Applies GPU-accelerated preprocessing to the batch.
+    augment(segments, gt_bboxes)
+        Augments video segments and bounding boxes using Kornia augmentations.
+    normalize(segment, query)
+        Normalizes input video segments and query frames.
+    denormalize(segment, query)
+        Denormalizes input video segments and query frames.
+    train_dataloader(shuffle=True)
+        Returns the dataloader for the training split.
+    val_dataloader()
+        Returns the dataloader for the validation split.
+    pred_dataloader()
+        Returns the dataloader for prediction on the validation or training split.
+    test_dataloader()
+        Returns the dataloader for the test split.
+    predict_dataloader()
+        Returns the appropriate dataloader for prediction or test submission.
+    get_val_sample(idx)
+        Fetches a single sample from the validation split for debugging.
+    get_train_sample(idx)
+        Fetches a single sample from the training split for debugging.
+    """
     ALL_NUM_CLIPS = 5814  # train + val + test_unannotated
     ALL_NUM_ANNS = [13607, 4504, 4461]  # train, val, test_unannotated
 
@@ -60,8 +116,14 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.transform_clip: K.AugmentationSequential = instantiate(aug_config.segment.aug_list)
 
     def prepare_data(self):
-        """Calls generate_flat_annotations_vq2d to save the flat annotations.
-        And report the number of video uids and clip uids.
+        """
+        Generates and saves flat annotations for the dataset, ensuring consistency
+        in the number of annotations and clips.
+
+        Raises
+        ------
+        AssertionError
+            If the number of annotations or clips is inconsistent with expectations.
         """
         print('Preparing data...')
         video_uids, clip_uids = set(), set()
@@ -87,7 +149,23 @@ class LitVQ2DDataModule(L.LightningDataModule):
         print('Data preparation done.')
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
-        """GPU accelerated data preprocessing"""
+        """
+        Applies GPU-accelerated preprocessing to the batch, including normalization
+        and augmentation for training mode.
+
+        Parameters
+        ----------
+        batch : dict
+            A dictionary containing batch data, including 'segment', 'query', 
+            'gt_bboxes', and 'gt_probs'.
+        dataloader_idx : int
+            Index of the dataloader being used.
+
+        Returns
+        -------
+        dict
+            Updated batch with preprocessed and normalized data.
+        """
         segment, query, gt_bboxes, gt_probs = batch['segment'], batch['query'], batch['gt_bboxes'], batch['gt_probs']
         if self.trainer is not None:
             if self.trainer.training:
@@ -112,23 +190,25 @@ class LitVQ2DDataModule(L.LightningDataModule):
             batch['rt_pos_idx'] = batch['experiment']['multi_query']['rt_pos_idx']
         return batch
 
-    def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static
-        """Augment the segment and gt_bboxes.
-        Ensure both segment and gt_bboxes are normalized. And an input bbox of the augment op should be in pixel space. Be aware that `segment` don't have to be in pixel space, only its shape matters. `kornia.augmentation.AugmentationSequential` takes `[B, C, H, W]` for segments and `[B, N, 4]` for bboxes as input. Each augmentation is applied to both segment and gt_bboxes simultaneously. So, the bounding boxes are consistent with the augmented segment.
+    def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):
+        """
+        Augments video segments and bounding boxes using Kornia augmentations.
 
         Parameters
         ----------
-        segment : torch.Tensor
-            Normalized segment of shape `[b, t, c, h, w]`.
+        segments : torch.Tensor
+            Normalized video segments of shape [batch_size, num_frames, channels, height, width].
         gt_bboxes : torch.Tensor
-            Normalized bounding boxes of shape `[b, t, 4]`, format yxyx.
+            Normalized ground truth bounding boxes of shape [batch_size, num_frames, 4], 
+            in yxyx format.
 
         Returns
         -------
-        Tuple[torch.Tensor, torch.Tensor]
-            Augmented segment and gt_bboxes.
+        tuple
+            - Augmented video segments (torch.Tensor).
+            - Augmented ground truth bounding boxes (torch.Tensor).
+            - Update mask indicating valid bounding boxes (torch.Tensor).
         """
-        _, _, _, h, w = segments.shape
         device = segments.device
 
         # setup
@@ -149,7 +229,23 @@ class LitVQ2DDataModule(L.LightningDataModule):
 
         return segments_aug, gt_bboxes, gt_probs_update
 
-    def normalize(self, segment, query):  # TODO: static
+    def normalize(self, segment, query):
+        """
+        Normalizes video segments and query frames using ImageNet statistics.
+
+        Parameters
+        ----------
+        segment : torch.Tensor
+            Video segments of shape [batch_size, num_frames, channels, height, width].
+        query : torch.Tensor
+            Query frames of shape [batch_size, channels, height, width].
+
+        Returns
+        -------
+        tuple
+            - Normalized segments (torch.Tensor).
+            - Normalized query frames (torch.Tensor).
+        """
         bsz = segment.shape[0]
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         segment = self.normalization(segment)  # [b,t,c,h,w]
@@ -157,7 +253,24 @@ class LitVQ2DDataModule(L.LightningDataModule):
         query = self.normalization(query)  # [b,c,h,w]
         return segment, query
 
-    def denormalize(self, segment, query):  # TODO: static
+    def denormalize(self, segment, query):
+        """
+        Denormalizes video segments and query frames to their original pixel values.
+        This method is for visualization purposes only.
+
+        Parameters
+        ----------
+        segment : torch.Tensor
+            Normalized video segments of shape [batch_size, num_frames, channels, height, width].
+        query : torch.Tensor
+            Normalized query frames of shape [batch_size, channels, height, width].
+
+        Returns
+        -------
+        tuple
+            - Denormalized segments (torch.Tensor).
+            - Denormalized query frames (torch.Tensor).
+        """
         bsz = segment.shape[0]
         denorm = kornia.enhance.Denormalize(
             mean=torch.tensor(MEAN, device=segment.device, dtype=segment.dtype),
@@ -221,38 +334,6 @@ class LitVQ2DDataModule(L.LightningDataModule):
             return self.test_dataloader()
         else:
             return self.pred_dataloader()
-
-    def get_val_sample(self, idx):
-        """Get a single sample from the validation set as a batch for debugging."""
-        ds = VQ2DFitDataset(self.config, split='val')
-        ds.all_anns = ds.all_anns[idx:idx+1]
-        dl = torch.utils.data.DataLoader(
-            ds,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=1,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
-        return next(iter(dl))
-
-    def get_train_sample(self, idx):
-        """Get a single sample from the validation set as a batch for debugging."""
-        ds = VQ2DFitDataset(self.config, split='train')
-        ds.all_anns = ds.all_anns[idx:idx+1]
-        dl = torch.utils.data.DataLoader(
-            ds,
-            batch_size=1,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=1,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
-        return next(iter(dl))
 
 
 class LitLaSOTDataModule(LitVQ2DDataModule):
