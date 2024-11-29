@@ -1,16 +1,15 @@
 #!/bin/bash
 
-#SBATCH --job-name=ours-large
+#SBATCH --job-name=ours
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0
-#SBATCH --partition=batch_grad
+#SBATCH --partition=PARTITION
 #SBATCH -N 2
-#SBATCH --gres=gpu:8
-#SBATCH --ntasks-per-node=8
+#SBATCH --gres=gpu:4
+#SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-gpu=43G
-#SBATCH -x ariel-k[1,2],ariel-m1
 
 set -e  # exit on error
 
@@ -38,16 +37,16 @@ echo "Network interfaces: ${interfaces[@]}"
 
 
 ################# setup #################
-for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
-    ssh $sshopt $host bash $(realpath ./scripts/_setup.sh) &
-done
-echo "Waiting for setup to finish..."
-wait
-echo "Setup finished."
+# for host in $(scontrol show hostnames $SLURM_JOB_NODELIST); do
+#     ssh $sshopt $host bash $(realpath ./scripts/_setup.sh) &
+# done
+# echo "Waiting for setup to finish..."
+# wait
+# echo "Setup finished."
 
 
 ################# run training #################
-# Ours - large
+# Ours
 MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
     python train.py --config-name train_fast \
@@ -57,20 +56,5 @@ MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfac
         model.late_reduce=true \
         +model.weight_entropy=0.1 \
         +model.ignore_border=false \
-        model.cls_scaling_type='sigmoid_mean' \
-        +model.cls_repair_neighbor=true \
-        +model.enable_temporal_shift_conv_summary=true \
-        model.backbone_type='vitl14' \
-
-
-# # Baseline - large
-# MASTER_ADDR=$batchhostip MASTER_PORT=$batchhostport NCCL_SOCKET_IFNAME=$interfaces \
-#     srun -N $SLURM_NNODES --exclusive --open-mode=append --cpus-per-task=8 \
-#     python train.py --config-name train_fast \
-#         trainer.num_nodes=$SLURM_NNODES trainer.devices=$SLURM_NTASKS_PER_NODE \
-#         +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-#         model.late_reduce=true \
-#         model.backbone_type='vitl14' \
-
 
 exit $?

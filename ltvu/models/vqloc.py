@@ -13,8 +13,8 @@ import random
 from transformers import Dinov2Model, ViTModel, CLIPModel
 from geomloss import SamplesLoss
 
-from ltvu.loss import get_losses_with_anchor
-from ltvu.bbox_ops import bbox_xyhwToxyxy, generate_anchor_boxes_on_regions
+from ltvu.utils.loss import get_losses_with_anchor
+from ltvu.utils.bbox_ops import bbox_xyhwToxyxy, generate_anchor_boxes_on_regions
 
 
 base_sizes = torch.tensor([[16, 16], [32, 32], [64, 64], [128, 128]], dtype=torch.float32)    # 4 types of size
@@ -370,9 +370,7 @@ class ClipMatcher(nn.Module):
             self.backbone.eval()  # also done in the trainer
         layer_ids = []
         if enable_cls_token_score:
-            # check layer names by printing `list(dict([*backbone.named_modules()]).keys())`
             layer_ids.append('encoder.layer.10.layer_scale2')
-        # self.hidden_state_extractor = IntermediateFeatureExtractor(self.backbone, layer_ids)
         if compile_backbone:
             self.backbone = torch.compile(self.backbone)
             self.get_cross_cls_attn_score = torch.compile(self.get_cross_cls_attn_score)
@@ -582,7 +580,7 @@ class ClipMatcher(nn.Module):
         if self.cls_learnable_scaling:
             scaling_factor = self.scaling_param
 
-        self.cls_mean_before_bn, self.cls_std_before_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
+        self.cls_mean_before_bn, self.cls_std_before_bn = attn.detach().mean(dim=-1).mean().item(), attn.detach().std(dim=-1).mean().item()
         if cls_scaling_type == 'softmax':
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
         elif cls_scaling_type == 'softmax_w_clamp':
@@ -599,7 +597,7 @@ class ClipMatcher(nn.Module):
             attn = self.cls_scaling_norm(attn) * scaling_factor
         else:
             attn = F.softmax(attn, dim=-1) * scaling_factor  # [b*t,1,n]
-        self.cls_mean_after_bn, self.cls_std_after_bn = attn.mean(dim=-1).mean().item(), attn.std(dim=-1).mean().item()
+        self.cls_mean_after_bn, self.cls_std_after_bn = attn.detach().mean(dim=-1).mean().item(), attn.detach().std(dim=-1).mean().item()
 
         if self.cls_norm:
             h, w = self.clip_feat_size_fine, self.clip_feat_size_coarse
@@ -736,24 +734,18 @@ class ClipMatcher(nn.Module):
             self.backbone_dtype,
             self.fix_backbone)
 
-    def forward_conv_summary_1d(self, clip_feat, output_dict, get_intermediate_features = False):
+    def forward_conv_summary_1d(self, clip_feat):
         _, _, h, w = clip_feat.shape
         clip_feat = rearrange(clip_feat, 'b c h w -> b c (h w)')
         for conv in self.conv_summary_1d:
             clip_feat = clip_feat + conv(clip_feat)
         clip_feat = rearrange(clip_feat, 'b c (h w) -> b c h w', h=h, w=w)
 
-        if get_intermediate_features:
-            output_dict['feat']['clip']['conv_1d'] = clip_feat.clone()
-
         return clip_feat
 
-    def forward_conv_summary(self, clip_feat, output_dict, get_intermediate_features = False):
+    def forward_conv_summary(self, clip_feat):
         for conv in self.conv_summary:
             clip_feat = clip_feat + conv(clip_feat)
-
-        if get_intermediate_features:
-            output_dict['feat']['clip']['conv'] = clip_feat.clone()
 
         return clip_feat
 
@@ -785,25 +777,11 @@ class ClipMatcher(nn.Module):
         gt_bboxes: None | torch.Tensor = None,  # yxyx
         use_hnm: bool = False,
         rt_pos_queries = None,
-        rt_pos_top_k = 1,
         rt_pos_idx = None, # -1 means not gt
         rt_pos = False,
-        sim_mode = 'max',
-        sim_thr = 0.0,
-        enable_rt_pq_threshold=False,
 
-        get_intermediate_features = False,
-
-        max_epochs = None,
-        cur_epoch = None,
         **kwargs
     ):
-        '''
-        clip: in shape [b,t,c,h,w]
-        query: in shape [b,c,h2,w2]
-        before_query_mask:
-        gt_bboxes:
-        '''
         b, t = segment.shape[:2]
         device = segment.device
         output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
@@ -817,74 +795,9 @@ class ClipMatcher(nn.Module):
                 query = rt_pos_queries[torch.arange(b), random_idx]
             query_feat_dict = self.extract_feature(query)
 
-        if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
-            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
-            with self.backbone_context():
-                rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']  # [b*t,c], [b,c,1]
-            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
-            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
-            if get_intermediate_features:
-                output_dict['feat']['rt_pos_query'] = rt_pos_queries_cls.clone()
-                output_dict['feat']['rt_query'] = query_cls.clone()
-
-            valid_gt_mask = rt_pos_idx != -1  # [b,t]
-
-            if self.sim_between in ['positives', 'positives_multinomial', 'positives_multinomial_plus1']:  # sim between query and rt_pos_queries
-                _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
-                _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
-                simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
-                sim = []  # [b,t]
-                for bidx in range(b):
-                    sim.append(simmat[bidx, valid_gt_mask[bidx]].mean(dim=0))  # [t]
-                sim = torch.stack(sim)  # [b,t]
-            elif self.sim_between == 'query':  # sim between query and rt_pos_queries
-                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-
-            sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
-            sim_mask_num = sim_mask.sum() / b
-            batch_has_valid = sim_mask.any(dim=-1) # [b]
-
-            rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
-            if batch_has_valid.any():
-                valid_sim_mask = sim_mask.float()  # [b, t]
-                if self.sim_between in ['positives_multinomial', 'positives_multinomial_plus1']:
-                    if self.sim_between == 'positives_multinomial_plus1':
-                        valid_sim = 1 + sim * valid_sim_mask  # [b,t]
-                    else:
-                        valid_sim = sim * valid_sim_mask  # [b,t]
-                    valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
-                else:
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-
-
-            if sim_mode == 'max':
-                masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
-                top_sim_idx = masked_sim.argmax(dim=-1)  # [b,1]
-            elif sim_mode == 'min':
-                masked_sim = sim.masked_fill(~valid_gt_mask, float('inf'))
-                top_sim_idx = masked_sim.argmin(dim=-1)  # [b,1]
-
-            final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
-            rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
-
-            if enable_rt_pq_threshold:
-                query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
-            else:
-                query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
-
-            with self.backbone_context():
-                query_feat_dict = self.extract_feature(query)
-
-
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
-
-        if get_intermediate_features:
-            output_dict['feat']['clip']['backbone'] = clip_feat.clone()
-            output_dict['feat']['query']['backbone'] = query_feat.clone()
 
         if self.enable_pca_guide and self.guide_from == 'backbone':
             score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
@@ -894,10 +807,6 @@ class ClipMatcher(nn.Module):
             all_feat = torch.cat([query_feat, clip_feat], dim=0)
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
-
-            if get_intermediate_features:
-                output_dict['feat']['clip']['reduce'] = clip_feat.clone()
-                output_dict['feat']['query']['reduce'] = query_feat.clone()
 
         if self.enable_pca_guide and self.guide_from == 'reduce':
             score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
@@ -911,7 +820,6 @@ class ClipMatcher(nn.Module):
         stx_tgt_mask = None   # [b*t*H,h*w,h*w], Q, K
         stx_mem_mask = None   # [b*t*H,h1*w1,h2*w2]
         sttx_src_mask = None  # [b*t*H,h*w,h*w]
-        # stst_mem_mask = None  # [b*H,ts*h1*w1,h2*w2]  # h1*w1 for clip(Q), h2*w2 for query(K)
 
         # cls token score
         if self.enable_cls_token_score:
@@ -919,19 +827,13 @@ class ClipMatcher(nn.Module):
             latent_clip = clip_feat_dict['hidden_states']
             latent_query_cls = latent_query[:, :1]  # [b,1,c]
             latent_clip_non_cls = latent_clip[:, 1:]  # [b*t,n,c]
-            if get_intermediate_features:
-                output_dict['feat']['clip']['latent_clip_non_cls'] = latent_clip_non_cls.clone()
-                output_dict['feat']['query']['latent_query_cls'] = latent_query_cls.clone()
 
             cls_mask = self.get_cross_cls_attn_score(latent_query_cls, latent_clip_non_cls, self.cls_scaling, self.cls_scaling_type)
             stx_tgt_mask = cls_mask
 
-            if get_intermediate_features:
-                output_dict['feat']['guide']['cls_mask'] = cls_mask.clone()
-
         # pca guide
         if self.enable_pca_guide:
-            self.score_maps_mean, self.score_maps_std = score_maps.mean(dim=-1).mean().item(), score_maps.std(dim=(-1, -2)).mean().item()
+            self.score_maps_mean, self.score_maps_std = score_maps.detach().mean(dim=-1).mean().item(), score_maps.detach().std(dim=(-1, -2)).mean().item()
             if self.guide_to_stx:
                 stx_mem_mask = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
 
@@ -942,14 +844,6 @@ class ClipMatcher(nn.Module):
             clip_feat = clip_feat + self.pe_stx
         clip_feat = rearrange(clip_feat, 'b t (h w) c -> (b t) (h w) c', b=b, h=h)
 
-        if get_intermediate_features:
-            output_dict['feat']['clip']['pe_stx'] = clip_feat.clone()
-            output_dict['feat']['query']['pe_stx'] = query_feat_expanded.clone()
-            if stx_tgt_mask is not None:
-                output_dict['feat']['guide']['stx_tgt_mask'] = stx_tgt_mask.clone()
-            if stx_mem_mask is not None:
-                output_dict['feat']['guide']['stx_mem_mask'] = stx_mem_mask.clone()
-
 
         for stx_layer in self.CQ_corr_transformer:
             stx_layer: nn.TransformerDecoderLayer  # written for pylance
@@ -959,18 +853,10 @@ class ClipMatcher(nn.Module):
             )
         clip_feat = rearrange(clip_feat, 'b (h w) c -> b c h w', h=h, w=w)  # [b*t,c,h,w]
 
-        if get_intermediate_features:
-            output_dict['feat']['clip']['stx'] = clip_feat.clone()
-            output_dict['feat']['query']['stx'] = query_feat.clone()
-
         if self.late_reduce and not self.no_reduce:
             all_feat = torch.cat([query_feat, clip_feat], dim=0)
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
-
-            if get_intermediate_features:
-                output_dict['feat']['clip']['late_reduce'] = clip_feat.clone()
-                output_dict['feat']['query']['late_reduce'] = query_feat.clone()
 
 
         ################## after STX ##################
@@ -992,11 +878,11 @@ class ClipMatcher(nn.Module):
             clip_feat = down_head.forward(clip_feat)
 
         if self.conv_summary_1d is not None and self.conv_summary_1d_first:
-            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
+            clip_feat = self.forward_conv_summary_1d(clip_feat)
         if self.conv_summary is not None:
-            clip_feat = self.forward_conv_summary(clip_feat, output_dict, get_intermediate_features)
+            clip_feat = self.forward_conv_summary(clip_feat)
         if self.conv_summary_1d is not None and not self.conv_summary_1d_first:
-            clip_feat = self.forward_conv_summary_1d(clip_feat, output_dict, get_intermediate_features)
+            clip_feat = self.forward_conv_summary_1d(clip_feat)
 
         if self.self_stx is not None:
             _, _, h, w = clip_feat.shape
@@ -1202,8 +1088,6 @@ class ClipMatcher(nn.Module):
             if self.enable_pca_guide:
                 log_dict.update({'score_maps_mean': self.score_maps_mean})
                 log_dict.update({'score_maps_std': self.score_maps_std})
-            # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
-            #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
             # not for logging but just in case we need it
             info_dict = {

@@ -6,3 +6,4 @@
 
 model:
   conv_summary_layers: 2
+  enable_temporal_shift_conv_summary: true

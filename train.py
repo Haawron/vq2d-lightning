@@ -67,8 +67,6 @@ def main(config: DictConfig):
     match config.dataset.name:
         case 'vq2d':
             litdatamodule = LitVQ2DDataModule
-        case 'egotracks':
-            litdatamodule = LitEgoTracksDataModule
         case 'lasot':
             litdatamodule = LitLaSOTDataModule
     pdm = litdatamodule(config)
@@ -104,38 +102,21 @@ def main(config: DictConfig):
         plm = LitModule.load_from_checkpoint(p_ckpt)
         pdm = litdatamodule(eval_config)
 
-        if config.dataset.get('movement', "") in ['slow', 'medium', 'fast']:
-            for eval_movement in ['slow', 'medium', 'fast']:
-                pdm.movement = eval_movement
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
-                log_to_console('\n' + "="*80 + '\n')
-                log_to_console(f'Evaluating the best model in {eval_movement} movement')
-                trainer.predict(plm, datamodule=pdm, return_predictions=False)
-                log_to_console('\n' + "="*80 + '\n')
-        elif config.dataset.get('movement', "") in ['slow2', 'medium2', 'fast2']:
-            for eval_movement in ['slow2', 'medium2', 'fast2']:
-                pdm.movement = eval_movement
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600, movement=eval_movement)
-                log_to_console('\n' + "="*80 + '\n')
-                log_to_console(f'Evaluating the best model in {eval_movement} movement')
-                trainer.predict(plm, datamodule=pdm, return_predictions=False)
-                log_to_console('\n' + "="*80 + '\n')
-        else:
-            if config.predict_val:
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
-                log_to_console('\n' + "="*80 + '\n')
-                log_to_console('Evaluating the best model')
-                trainer.predict(plm, datamodule=pdm, return_predictions=False)
-                log_to_console('\n' + "="*80 + '\n')
+        if config.predict_val:
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model')
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
 
-            if config.predict_test and not config.dataset.name != 'lasot':
-                eval_config.test_submit = True
-                pdm.test_submit = True
-                trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
-                log_to_console('\n' + "="*80 + '\n')
-                log_to_console('Evaluating the best model on test set')
-                trainer.predict(plm, datamodule=pdm, return_predictions=False)
-                log_to_console('\n' + "="*80 + '\n')
+        if config.predict_test and not config.dataset.name != 'lasot':
+            eval_config.test_submit = True
+            pdm.test_submit = True
+            trainer, _ = get_trainer(eval_config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, ddp_timeout=600)
+            log_to_console('\n' + "="*80 + '\n')
+            log_to_console('Evaluating the best model on test set')
+            trainer.predict(plm, datamodule=pdm, return_predictions=False)
+            log_to_console('\n' + "="*80 + '\n')
 
 
 if __name__ == '__main__':

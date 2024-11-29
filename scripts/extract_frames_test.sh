@@ -13,10 +13,10 @@
 hostname
 
 # # raw
-# python -Bm ltvu.preprocess --splits 'test_unannotated' --short-side 0
+# python -Bm ltvu.preprocess.extract_frames --splits 'test_unannotated' --short-side 0
 
 # # 520ss
-# python -Bm ltvu.preprocess --splits 'test_unannotated' --short-side 520 --whole
+# python -Bm ltvu.preprocess.extract_frames --splits 'test_unannotated' --short-side 520 --whole
 
 # 320ss
-python -Bm ltvu.preprocess --splits 'test_unannotated' --short-side 320 --whole
+python -Bm ltvu.preprocess.extract_frames --splits 'test_unannotated' --short-side 320 --whole

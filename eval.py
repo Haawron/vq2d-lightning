@@ -50,34 +50,15 @@ def main(config: DictConfig):
     match config.dataset.name:
         case 'vq2d':
             litdatamodule = LitVQ2DDataModule
-        case 'egotracks':
-            litdatamodule = LitEgoTracksDataModule
         case 'lasot':
             litdatamodule = LitLaSOTDataModule
     pdm = litdatamodule(config)  # eval config
-    
-    if config.dataset.get('movement', "") in ['slow', 'medium', 'fast']:
-        for eval_movement in ['slow', 'medium', 'fast']:
-            pdm.movement = eval_movement
-            trainer, _ = get_trainer(config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, movement=eval_movement)
-            log_to_console('\n' + "="*80 + '\n')
-            log_to_console(f'Evaluating the best model in {eval_movement} movement')
-            trainer.predict(plm, datamodule=pdm, return_predictions=False)
-            log_to_console('\n' + "="*80 + '\n')
-    elif config.dataset.get('movement', "") in ['slow2', 'medium2', 'fast2']:
-        for eval_movement in ['slow2', 'medium2', 'fast2']:
-            pdm.movement = eval_movement
-            trainer, _ = get_trainer(config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False, movement=eval_movement)
-            log_to_console('\n' + "="*80 + '\n')
-            log_to_console(f'Evaluating the best model in {eval_movement} movement')
-            trainer.predict(plm, datamodule=pdm, return_predictions=False)
-            log_to_console('\n' + "="*80 + '\n')
-    else:
-        log_to_console('\n' + "="*80 + '\n')
-        log_to_console(OmegaConf.to_yaml(plm.config.model))
-        log_to_console("="*80 + '\n')
 
-        trainer.predict(plm, datamodule=pdm, return_predictions=False)
+    log_to_console('\n' + "="*80 + '\n')
+    log_to_console(OmegaConf.to_yaml(plm.config.model))
+    log_to_console("="*80 + '\n')
+
+    trainer.predict(plm, datamodule=pdm, return_predictions=False)
 
 
 if __name__ == '__main__':

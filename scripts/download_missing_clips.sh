@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # usage example:
-    # ./scripts/download_missing_clips.sh 5fa34c39-f030-4fca-89c6-d7182dddce0e a1de92a4-b41f-47c3-8f85-0107fd2baf57
+#   ./scripts/download_missing_clips.sh 5fa34c39-f030-4fca-89c6-d7182dddce0e a1de92a4-b41f-47c3-8f85-0107fd2baf57
 
 set -e
 

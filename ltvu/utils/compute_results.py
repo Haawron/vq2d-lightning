@@ -108,51 +108,6 @@ def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7, moveme
     return result
 
 
-def get_final_preds_egotracks(preds, split='val'):
-    """Convert whole-clip predictions to submittable format.
-    
-    Usage:
-    
-        import torch, json
-        from pathlib import Path
-        from ltvu.utils.compute_results import get_final_preds_egotracks
-        p_preds = Path('SOMEPATH/intermediate_predictions.pt')
-        preds = torch.load(p_preds, weights_only=True)
-        results = get_final_preds_egotracks(preds)
-        json.dump(results, p_preds.with_name('predictions.json').open('w'))
-    """
-    anns = json.load(open(f'data/egotracks/egotracks_{split}_anno.json'))
-    result = {}
-    for ann in anns:
-        if 'uuid_ltt' not in ann:
-            continue
-        if split == 'val':
-            if 'lt_track' not in ann:
-                continue
-            if 'ae8727ba' in ann['clip_uid']:
-                continue
-
-        result[ann['uuid_ltt']] = {}
-
-        for fnol in range(0, math.ceil(30*ann['clip_duration']), 6):
-            fnor = fnol // 6
-            if any(clip_uid in ann['clip_uid'] for clip_uid in ('f532b434', 'b2d890a1', 'fa2d871e')):
-                fnol -= 1
-            elif 'cb45277e' in ann['clip_uid']:
-                fnol += 1
-
-            uuid_ltt = ann['uuid_ltt']
-            pred = preds[uuid_ltt]
-            bboxes = pred['ret_bboxes']
-            scores = pred['ret_scores'].sigmoid()
-            if fnor == len(bboxes):
-                fnor -= 1
-            score = scores[fnor].item()
-            result[uuid_ltt][fnol] = bboxes[fnor].tolist() + [score]
-
-    return result
-
-
 def fix_predictions_order(final_preds, p_official_ann):
     # Load the ground truth and predictions
     with open(p_official_ann, "r") as fp:
@@ -230,7 +185,7 @@ def fix_predictions_order(final_preds, p_official_ann):
 
 if __name__ == '__main__':
     from pathlib import Path
-    from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
+    from ltvu.utils.metrics import get_metrics_vq2d, print_metrics_vq2d
 
     p_tmp_outdir = Path('outputs/debug/2024-09-25/126347/tmp')
     p_int_pred = p_tmp_outdir.parent / 'intermediate_predictions.pt'
