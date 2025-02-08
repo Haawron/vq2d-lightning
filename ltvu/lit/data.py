@@ -293,8 +293,11 @@ class LitEgoTracksDataModule(LitVQ2DDataModule):
         print('Data preparation done.')
 
     def train_dataloader(self, shuffle=True):
+        dataset1 = EgoTracksFitDataset(self.config, split='train')
+        dataset2 = LaSOTFitDataset(self.config, split='train')
+        dataset = torch.utils.data.ConcatDataset([dataset1, dataset2])
         return torch.utils.data.DataLoader(
-            EgoTracksFitDataset(self.config, split='train'),
+            dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
             pin_memory=self.pin_memory,
