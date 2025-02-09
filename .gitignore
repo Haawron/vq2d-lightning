@@ -43,3 +43,4 @@ config/train_sy.yaml
 config/debug/base_sy.yaml
 ltvu/_metrics.py
 scripts/ttrain-multinode.sbatch
+scripts/eeval-multinode.sh

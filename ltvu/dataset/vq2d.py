@@ -55,7 +55,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.rt_pos_query = config.get('rt_pos_query')
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
-            self.occlusion = self.rt_pos_query.occlusion
+            self.occlusion = self.rt_pos_query.get('occlusion', None)
+        else:
+            self.occlusion = None
         self.split = split
         self.movement = movement
         if movement != "":
