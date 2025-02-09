@@ -95,6 +95,8 @@ class LitModule(L.LightningModule):
             self.sim_thr = self.rt_pos_query.sim_thr
             extra_args['sim_thr']=self.sim_thr
             extra_args['enable_rt_pq_threshold']=self.rt_pos_query.enable_rt_pq_threshold
+            extra_args['occlusion']=self.rt_pos_query.occlusion
+            extra_args['late_epoch_rt_pos']=self.late_epoch_rt_pos
 
             if self.current_epoch >= self.late_epoch_rt_pos:
                 extra_args['rt_pos']=True

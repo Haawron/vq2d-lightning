@@ -53,6 +53,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
         self.rt_pos_query = config.get('rt_pos_query')
+        
+        if self.rt_pos_query is not None:
+            self.occlusion = self.rt_pos_query.occlusion
 
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
@@ -112,6 +115,13 @@ class LitVQ2DDataModule(L.LightningDataModule):
             rt_pos_queries = rearrange(rt_pos_queries, '(b q) c h w -> b q c h w', b=bsz)
             batch['rt_pos_queries'] = rt_pos_queries
             batch['rt_pos_idx'] = batch['experiment']['multi_query']['rt_pos_idx']
+            
+            if self.occlusion:
+                occlusion = batch['experiment']['multi_query']['occlusion']
+                occlusion = rearrange(occlusion, 'b q c h w -> (b q) c h w')
+                occlusion = self.normalization(occlusion)  # [b*#Q, c, h, w]
+                occlusion = rearrange(occlusion, '(b q) c h w -> b q c h w', b=bsz)
+                batch['occlusion_data'] = occlusion
         return batch
 
     def augment(self, segments: torch.Tensor, gt_bboxes: torch.Tensor):   # TODO: static

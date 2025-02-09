@@ -33,3 +33,13 @@ notebooks/sel_ckps.ipynb
 tem.py
 scripts/submit.sh
 data/egotracks/
+config/base_sy.yaml
+download_trackingnet.py
+object_extraction.py
+config/eval_fast_sy.yaml
+config/eval_sy.yaml
+config/train_fast_sy.yaml
+config/train_sy.yaml
+config/debug/base_sy.yaml
+ltvu/_metrics.py
+scripts/ttrain-multinode.sbatch

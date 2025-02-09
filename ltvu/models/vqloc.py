@@ -791,6 +791,9 @@ class ClipMatcher(nn.Module):
         sim_mode = 'max',
         sim_thr = 0.0,
         enable_rt_pq_threshold=False,
+        occlusion=False,
+        occlusion_data=None,
+        late_epoch_rt_pos = 0,
 
         get_intermediate_features = False,
 
@@ -812,9 +815,15 @@ class ClipMatcher(nn.Module):
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
             if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random':
-                valid_indices = rt_pos_idx != -1
-                random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
-                query = rt_pos_queries[torch.arange(b), random_idx]
+                if occlusion and (random.randint(0, 1) == 1 or self.debug) and cur_epoch >= late_epoch_rt_pos:
+                    valid_indices = torch.ones(b, occlusion_data.shape[1], device=device).bool()
+                    random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
+                    query = occlusion_data[torch.arange(b), random_idx]
+                else:
+                    valid_indices = rt_pos_idx != -1
+                    random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
+                    query = rt_pos_queries[torch.arange(b), random_idx]
+                
             query_feat_dict = self.extract_feature(query)
 
         if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':

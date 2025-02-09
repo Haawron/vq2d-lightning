@@ -55,6 +55,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.rt_pos_query = config.get('rt_pos_query')
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
+            self.occlusion = self.rt_pos_query.occlusion
         self.split = split
         self.movement = movement
         if movement != "":
@@ -92,7 +93,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.rt_pos_query is not None and self.split == 'train':
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
-        query = self.get_query(ann)
+        query, occlusion = self.get_query(ann)
         segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
 
         sample = {
@@ -123,6 +124,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 .setdefault('multi_query', {})
                 .setdefault('rt_pos_queries', rt_pos_queries))
             sample['experiment']['multi_query']['rt_pos_idx'] = np.array(rt_pos_idx)
+            
+            if self.occlusion:
+                sample['experiment']['multi_query']['occlusion'] = occlusion
 
         return sample
 
@@ -193,36 +197,63 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         fno = min(vc['fno'], num_clip_frames - 1)
         p_frame = self.p_clips_dir / ann['clip_uid'] / f'frame_{fno+1:07d}.jpg'
         x, y, w, h = vc['x'], vc['y'], vc['w'], vc['h']
-        l, s = max(w, h), min(w, h)  # large, short
-
-        if self.query_square:  # but don't have to be strictly square, will be resized at the end of this function
-            cx, cy, s = x + w / 2, y + h / 2, np.clip(l, a_min=10, a_max=min(oh, ow)-1).item()
-            cx, cy = np.clip(cx, s / 2, ow - s / 2 - 1).item(), np.clip(cy, s / 2, oh - s / 2 - 1).item()
-            x, y, w, h = cx - s / 2, cy - s / 2, s, s
-            assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
-                f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
-
+    
         # load
-        query = Image.open(p_frame)
+        ori_query = Image.open(p_frame)
+        
+        def process_box(query, x, y, h, w, ow, oh):     
+            l, s = max(w, h), min(w, h)  # large, short
+                   
+            if self.query_square:  # but don't have to be strictly square, will be resized at the end of this function
+                cx, cy, s = x + w / 2, y + h / 2, np.clip(l, a_min=10, a_max=min(oh, ow)-1).item()
+                cx, cy = np.clip(cx, s / 2, ow - s / 2 - 1).item(), np.clip(cy, s / 2, oh - s / 2 - 1).item()
+                x, y, w, h = cx - s / 2, cy - s / 2, s, s
+                assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
+                    f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
+            
+            # crop - permute - normalize
+            oow, ooh = query.size  # might be pre-pre-processed already
+            rho = (oh / ooh + ow / oow) / 2
+            x, y, w, h = x / rho, y / rho, h / rho, w / rho
+            query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
+            query = TF.pil_to_tensor(query)  # [c, h, w]
+            query = query.float() / 255.
 
-        # crop - permute - normalize
-        oow, ooh = query.size  # might be pre-pre-processed already
-        rho = (oh / ooh + ow / oow) / 2
-        x, y, w, h = x / rho, y / rho, h / rho, w / rho
-        query = query.crop((x, y, x + w, y + h))  # [y:y+h, x:x+w]  # [h, w, c]
-        query = TF.pil_to_tensor(query)  # [c, h, w]
-        query = query.float() / 255.
+            # permute - pad - resize
+            if self.query_padding:
+                pad_size = (l - s) // 2
+                if h > w:
+                    pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
+                else:
+                    pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
+                query = F.pad(query, pad, value=0)
+            query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+            
+            return query
+        
+        query = process_box(ori_query, x, y, h, w, ow, oh).squeeze(0)
+        
+        if self.occlusion and  self.split == 'train':
+            # Calculate the width and height of each smaller box
+            new_w = w / 2
+            new_h = h / 2
 
-        # permute - pad - resize
-        if self.query_padding:
-            pad_size = (l - s) // 2
-            if h > w:
-                pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
-            else:
-                pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
-            query = F.pad(query, pad, value=0)
-        query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
-        return query.squeeze(0)  # [c, h, w]
+            # Calculate the coordinates for the 4 smaller boxes
+            box1 = {'x': x, 'y': y, 'w': new_w, 'h': new_h}  # Top-Left
+            box2 = {'x': x + new_w, 'y': y, 'w': new_w, 'h': new_h}  # Top-Right
+            box3 = {'x': x, 'y': y + new_h, 'w': new_w, 'h': new_h}  # Bottom-Left
+            box4 = {'x': x + new_w, 'y': y + new_h, 'w': new_w, 'h': new_h}  # Bottom-Right
+        
+            occlusion_result = []
+            
+            for box in [box1, box2, box3, box4]:
+                occlusion_result.append(process_box(ori_query, box['x'], box['y'], box['h'], box['w'], ow, oh).squeeze(0))
+                
+            occlusion_result = torch.stack(occlusion_result)
+                
+            return query, occlusion_result
+        else:
+            return query, None
 
     def get_rt_pos_query(self, ann, frame_idxs):
         clip_uid = ann['clip_uid']
@@ -425,7 +456,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         frame_idxs[frame_idxs >= num_frames_clip] = num_frames_clip - 1  # repeat
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
-        query = self.get_query(ann)
+        query, occlusion = self.get_query(ann)
         if self.test_submit:
             gt_rt, gt_prob = np.random.randn(t, 4), np.random.randn(t)
         else:
