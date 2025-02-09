@@ -46,3 +46,4 @@ notebooks/box_variation.ipynb
 notebooks/object_stats.ipynb
 scripts/ttrain-multinode.sbatch
 notebooks/occluded_objects.ipynb
+scripts/eeval-multinode.sh

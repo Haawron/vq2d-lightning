@@ -25,11 +25,14 @@ class LaSOTDataset(torch.utils.data.Dataset):
         self.query_size: tuple[int] = tuple(ds_config.query_size)  # H, W, desired
         self.query_square: bool = ds_config.query_square
         self.query_padding: bool = ds_config.query_padding
-        self.random_pos_query: bool = ds_config.get('random_pos_query')
+        self.rt_pos_query = config.get('rt_pos_query')
         if ds_config.padding_value == 'mean':
             self.padding_value = .5
         elif ds_config.padding_value == 'zero':
             self.padding_value = 0.
+            
+        if self.rt_pos_query is not None:
+            self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
 
         if split == 'val':
             split = 'test'
@@ -82,10 +85,7 @@ class LaSOTDataset(torch.utils.data.Dataset):
         return gt_st, np.ones(len(frame_idxs))
 
     def get_query(self, segment, gt_stt):
-        if self.split == 'train' and self.random_pos_query and np.random.rand() < .5:
-            idx = np.random.randint(0, len(segment))
-        else:
-            idx = 0
+        idx = 0
 
         query = segment[idx]
         oh, ow = segment.shape[-2:]
@@ -146,7 +146,39 @@ class LaSOTDataset(torch.utils.data.Dataset):
         bboxes /= hw_pad
 
         return frames, bboxes
+    
+    def get_rt_pos_query(self, ann, frame_idxs):
+        class_name = ann['class_name']
+        clip_idx = ann['clip_idx']
+        gt_st = ann['gt_st']
+        
+        rt_pos_queries, rt_pos_idx = [], []
 
+        for frame_idx in frame_idxs:
+            p_pos_frame = self.p_rt_pos_query / class_name / f'{class_name}_{clip_idx}' / f'{frame_idx+1:08d}.jpg'
+            if p_pos_frame.exists():
+                frame = Image.open(p_pos_frame)
+                frame = TF.pil_to_tensor(frame)
+                frame = frame.float() / 255.
+                if self.query_padding:
+                    bbox_h, bbox_w = gt_st.iloc[frame_idx]['h'], gt_st.iloc[frame_idx]['w']
+                    l, s = max(bbox_h, bbox_w), min(bbox_h, bbox_w)
+                    pad_size = (l - s) // 2
+                    if bbox_h > bbox_w:
+                        pad = (pad_size, l - s - pad_size, 0, 0)
+                    else:
+                        pad = (0, 0, pad_size, l - s - pad_size)
+                    frame = F.pad(frame, pad, value=0)
+                frame = F.interpolate(frame[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
+            else:
+                frame = torch.zeros(3, self.query_size[0], self.query_size[1])
+                frame_idx = -1
+            rt_pos_idx.append(frame_idx)
+            rt_pos_queries.append(frame.squeeze(0))
+
+        rt_pos_queries = torch.stack(rt_pos_queries)
+
+        return rt_pos_queries, rt_pos_idx
 
 
 class LaSOTFitDataset(LaSOTDataset):
@@ -167,6 +199,9 @@ class LaSOTFitDataset(LaSOTDataset):
 
         query = self.get_query(segment, gt_stt)
         segment, gt_stt = self.pad_and_resize(segment, gt_stt)  # [t, c, s, s], [t, 4]
+        
+        if self.rt_pos_query is not None and self.split == 'train':
+            rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
         sample = {
             # inputs
@@ -186,9 +221,16 @@ class LaSOTFitDataset(LaSOTDataset):
             'query_set': '',  # str (of a single digit)
             'clip_fps': 30,  # float
             'query_frame': 999999,  # int
-            # 'visual_crop': vc,  # dict
+            'visual_crop': {"fno": 0, "x": 0, "y": 0, "w": 0, "h": 0},  # dict
             'object_title': ann['class_name'],  # str
         }
+        
+        if self.rt_pos_query is not None and self.split == 'train':
+            (sample
+                .setdefault('experiment', {})
+                .setdefault('multi_query', {})
+                .setdefault('rt_pos_queries', rt_pos_queries))
+            sample['experiment']['multi_query']['rt_pos_idx'] = np.array(rt_pos_idx)
 
         return sample
 
