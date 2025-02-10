@@ -9,6 +9,8 @@ rt_pos_query:
   enable_rt_pq_threshold: True
   sim_thr: 0.0
   occlusion: False
+  occlusion_ratio: 0.75
+  num_occlusion: 4
   
 model:
   sim_between: 'random'

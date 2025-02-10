@@ -8,6 +8,7 @@ import torch
 import torch.utils.data
 from torch.nn import functional as F
 import torchvision.transforms.functional as TF
+import random
 
 # lightning
 # import lightning as L
@@ -56,6 +57,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
             self.occlusion = self.rt_pos_query.get('occlusion', None)
+            self.occlusion_ratio = self.rt_pos_query.get('occlusion_ratio', None)
+            self.num_occlusion = self.rt_pos_query.get('num_occlusion', None)
         else:
             self.occlusion = None
         self.split = split
@@ -235,23 +238,37 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         
         query = process_box(ori_query, x, y, h, w, ow, oh).squeeze(0)
         
-        if self.occlusion and  self.split == 'train':
-            # Calculate the width and height of each smaller box
-            new_w = w / 2
-            new_h = h / 2
-
-            # Calculate the coordinates for the 4 smaller boxes
-            box1 = {'x': x, 'y': y, 'w': new_w, 'h': new_h}  # Top-Left
-            box2 = {'x': x + new_w, 'y': y, 'w': new_w, 'h': new_h}  # Top-Right
-            box3 = {'x': x, 'y': y + new_h, 'w': new_w, 'h': new_h}  # Bottom-Left
-            box4 = {'x': x + new_w, 'y': y + new_h, 'w': new_w, 'h': new_h}  # Bottom-Right
-        
+        if self.occlusion and self.split == 'train':
             occlusion_result = []
+            if self.occlusion_ratio == 0.25:
+                # Calculate the width and height of each smaller box
+                new_w = w / 2
+                new_h = h / 2
+
+                boxes = [
+                    {'x': x, 'y': y, 'w': new_w, 'h': new_h},
+                    {'x': x + new_w, 'y': y, 'w': new_w, 'h': new_h},
+                    {'x': x, 'y': y + new_h, 'w': new_w, 'h': new_h},
+                    {'x': x + new_w, 'y': y + new_h, 'w': new_w, 'h': new_h}
+                ]
+            else:
+                if random.randint(0,1) == 1:
+                    new_h = h * self.occlusion_ratio
+                    new_w = w
+                else:
+                    new_h = h
+                    new_w = w * self.occlusion_ratio
+                
+                boxes = []
+                for _ in range(self.num_occlusion):
+                    new_x = random.randint(int(x), int(x + w - new_w))
+                    new_y = random.randint(int(y), int(y + h - new_h))
+                    boxes.append({'x': new_x, 'y': new_y, 'w': new_w, 'h': new_h})                
             
-            for box in [box1, box2, box3, box4]:
+            for box in boxes:
                 occlusion_result.append(process_box(ori_query, box['x'], box['y'], box['h'], box['w'], ow, oh).squeeze(0))
                 
-            occlusion_result = torch.stack(occlusion_result)
+            occlusion_result = torch.stack(occlusion_result) # [4, c, h, w]
                 
             return query, occlusion_result
         else:
@@ -458,7 +475,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
         frame_idxs[frame_idxs >= num_frames_clip] = num_frames_clip - 1  # repeat
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
-        query, occlusion = self.get_query(ann)
+        query, _ = self.get_query(ann)
         if self.test_submit:
             gt_rt, gt_prob = np.random.randn(t, 4), np.random.randn(t)
         else:
