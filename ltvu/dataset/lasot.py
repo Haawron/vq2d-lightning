@@ -155,7 +155,7 @@ class LaSOTDataset(torch.utils.data.Dataset):
         rt_pos_queries, rt_pos_idx = [], []
 
         for frame_idx in frame_idxs:
-            p_pos_frame = self.p_rt_pos_query / class_name / f'{class_name}_{clip_idx}' / f'{frame_idx+1:08d}.jpg'
+            p_pos_frame = self.p_rt_pos_query / class_name / f'{class_name}-{clip_idx}' / f'{frame_idx+1:08d}.jpg'
             if p_pos_frame.exists():
                 frame = Image.open(p_pos_frame)
                 frame = TF.pil_to_tensor(frame)
@@ -175,7 +175,6 @@ class LaSOTDataset(torch.utils.data.Dataset):
                 frame_idx = -1
             rt_pos_idx.append(frame_idx)
             rt_pos_queries.append(frame.squeeze(0))
-
         rt_pos_queries = torch.stack(rt_pos_queries)
 
         return rt_pos_queries, rt_pos_idx
