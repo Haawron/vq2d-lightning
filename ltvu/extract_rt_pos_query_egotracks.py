@@ -21,7 +21,7 @@ def main():
     p_crop_out_dir.mkdir(exist_ok=True, parents=True)
 
     for aidx, ann in enumerate(tqdm(all_anns)):
-        if 'clip_uid' in list(ann.keys()):
+        if 'clip_uid' in list(ann.keys()) and 'lt_track' in list(ann.keys()):
             clip_uid = ann['clip_uid']
             qset_uuid = f"{clip_uid}_{ann['query_set']}"
             rt = ann['response_track']
