@@ -1,4 +1,4 @@
-name: 'vq2d'
+name: 'trek150'
 ###### torch #####
 batch_size: ${batch_size}
 num_workers: ${num_workers}
@@ -9,12 +9,12 @@ persistent_workers: False  # No, our dataset is memory-bound
 # clips or frames should be located like: ./{clip_uid}.mp4 or ./{clip_uid}/frame_{1+frame_idx:07d}.jpg
 # for frames, frame_idxs should be 1-based
 clips_dir: '/data/dataset/trek150/TREK-150'
-official_anns_dir: '/data/datasets/ego4d_data/v2/annotations'
 flat_anns_dir: './data'
 num_frames: 32
 frame_interval: 1
 segment_size: [448, 448]  # height, width
 query_size: [448, 448]  # height, width
+ope_benchmark : True
 query_padding: False
 query_square: True
 padding_value: 'zero'  # zero or mean

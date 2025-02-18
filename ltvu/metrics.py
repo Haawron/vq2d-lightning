@@ -411,6 +411,113 @@ def format_metrics_lasot(metrics):
     return metrics_str
 
 
+
+
+def get_metrics_trek150(p_clips_dir, p_pred_pt):
+    preds = torch.load(p_pred_pt, weights_only=True)
+    dfs_gt, dfs_pred = [], []
+    for clip_uid, clip_preds in preds.items():
+        class_name = clip_uid.split('-')[0]
+        df_gt = pd.read_csv(p_clips_dir / clip_uid / 'groundtruth_rect.txt', header=None, names=['x', 'y', 'w', 'h'])
+        df_pred = pd.DataFrame(clip_preds['ret_bboxes'], columns=['x1', 'y1', 'x2', 'y2'])
+        dfs_gt.append(df_gt)
+        dfs_pred.append(df_pred)
+    df_gt = pd.concat(dfs_gt, ignore_index=True)
+    df_pred = pd.concat(dfs_pred, ignore_index=True)
+
+    df_gt['cx'] = df_gt['x'] + df_gt['w'] / 2
+    df_gt['cy'] = df_gt['y'] + df_gt['h'] / 2
+    df_pred['cx'] = (df_pred['x1'] + df_pred['x2']) / 2
+    df_pred['cy'] = (df_pred['y1'] + df_pred['y2']) / 2
+    df_pred['x'] = df_pred['x1']
+    df_pred['y'] = df_pred['y1']
+    df_pred['w'] = df_pred['x2'] - df_pred['x1']
+    df_pred['h'] = df_pred['y2'] - df_pred['y1']
+    df_pred = df_pred[['x', 'y', 'w', 'h', 'cx', 'cy']]
+
+    xA = np.maximum(df_gt['x'], df_pred['x'])
+    yA = np.maximum(df_gt['y'], df_pred['y'])
+    xB = np.minimum(df_gt['x'] + df_gt['w'], df_pred['x'] + df_pred['w'])
+    yB = np.minimum(df_gt['y'] + df_gt['h'], df_pred['y'] + df_pred['h'])
+    interArea = np.maximum(0, xB - xA) * np.maximum(0, yB - yA)
+    boxAArea = df_gt['w'] * df_gt['h']
+    boxBArea = df_pred['w'] * df_pred['h']
+    ious = interArea / (boxAArea + boxBArea - interArea)
+    
+    # Success Score (SS)
+    # suc = ious.mean()
+        # NumPy 배열로 변환 (수정된 부분)
+    ious = np.asarray(ious)
+    ss_thresholds = np.linspace(0, 1, 21)
+    ss_curve = np.mean(ious[:, np.newaxis] > ss_thresholds, axis=0)
+    suc = ss_curve.mean()  # AUC 사용
+    
+
+    # # # Normalized Precision Score (NPS)
+    # diag = np.sqrt(df_gt['w']**2 + df_gt['h']**2)
+    # cdists_normed = np.sqrt(((df_gt['cx'] - df_pred['cx']) / diag)**2 + ((df_gt['cy'] - df_pred['cy']) / diag)**2)
+    # prec_norm = (0.5 - cdists_normed).clip(0, 0.5).mean() / .5
+    
+    # Normalized Precision Score (NPS)
+    diag = np.sqrt(df_gt['w']**2 + df_gt['h']**2)
+    cdists_normed = np.sqrt(((df_gt['cx'] - df_pred['cx']) / diag)**2 + ((df_gt['cy'] - df_pred['cy']) / diag)**2)
+    
+    # **여기 수정!**
+    cdists_normed = np.asarray(cdists_normed)  # Pandas → NumPy 변환
+    nps_thresholds = np.linspace(0, 0.5, 51)
+    norm_prec_curve = np.mean(cdists_normed[:, np.newaxis] <= nps_thresholds, axis=0)
+    prec_norm = norm_prec_curve.mean()
+
+    # Precision (20px)
+    cdists = np.sqrt((df_gt['cx'] - df_pred['cx'])**2 + (df_gt['cy'] - df_pred['cy'])**2)
+    prec = (cdists < 20).mean()
+    
+    # Generalized Success Robustness (GSR)
+    gsr_thresholds = np.linspace(0, 0.5, 51)  # Trek150 : 0~0.5 IoU threshold
+    gsr_curve = np.zeros(len(gsr_thresholds))
+
+    for i, th in enumerate(gsr_thresholds):
+        failure_idx = np.where(ious <= th)[0]  # IoU <= threshold frames
+        if len(failure_idx) > 0:
+            gsr_curve[i] = failure_idx[0] / len(ious)
+        else:
+            gsr_curve[i] = 1.0
+
+    gsr = gsr_curve.mean()
+    # gsr_thresholds = np.linspace(0, 0.5, 51)
+    # gsr_curve = np.array([np.argmax(ious <= th) / len(ious) if np.any(ious <= th) else 1.0 for th in gsr_thresholds])
+    # gsr = gsr_curve.mean()
+
+    return {
+        'suc': 100*suc,
+        'prec_norm': 100*prec_norm,
+        'prec': 100*prec,
+        'gsr': 100*gsr,
+    }
+
+
+def print_metrics_trek150(metrics):
+    suc = metrics['suc']
+    prec = metrics['prec']
+    prec_norm = metrics['prec_norm']
+    gsr = metrics['gsr']
+    print('Trek150 Evaluation')
+    print(f'Success Score (SS)                   : {suc:6.3f}')
+    print(f'Normalized Precision Score (NPS)     : {prec_norm:6.3f}')
+    print(f'Generalized Success Robustness (GSR) : {gsr:6.3f}')
+    print(f'Prec                                 : {prec:6.3f}')
+
+
+def format_metrics_trek150(metrics):
+    import io, sys
+    stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    print_metrics_trek150(metrics)
+    metrics_str = sys.stdout.getvalue()
+    sys.stdout = stdout
+    return metrics_str
+
+
 if __name__ == '__main__':
     # p_ann = Path("data/vq_v2_val_anno.json")
     # p_pred = Path("notebooks/43634_results.json.gz")
@@ -423,7 +530,14 @@ if __name__ == '__main__':
     # metrics = get_metrics_egotracks(p_ann, p_pred)
     # print_metrics_egotracks(metrics)
 
-    p_clips_dir = Path("/data/datasets/LaSOT")
-    p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
-    metrics = get_metrics_lasot(p_clips_dir, p_pred)
-    print_metrics_lasot(metrics)
+    # p_clips_dir = Path("/data/datasets/LaSOT")
+    # p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
+    # metrics = get_metrics_lasot(p_clips_dir, p_pred)
+    # print_metrics_lasot(metrics)
+    
+    p_clips_dir = Path("/data/dataset/trek150/TREK-150")
+    p_pred = Path("outputs/batch/2025-02-18/84365/trek150/intermediate_predictions.pt")
+    # p_pred = Path("/data/joohyun7u/project/vq2d-lightning/outputs/batch/2025-02-18/84425/trek150/intermediate_predictions.pt")
+    # p_pred = Path("outputs/batch/2025-02-18/rank-0.pt")
+    metrics = get_metrics_trek150(p_clips_dir, p_pred)
+    print_metrics_trek150(metrics)

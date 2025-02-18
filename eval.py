@@ -54,6 +54,8 @@ def main(config: DictConfig):
             litdatamodule = LitEgoTracksDataModule
         case 'lasot':
             litdatamodule = LitLaSOTDataModule
+        case 'trek150':
+            litdatamodule = LitTrek150DataModule
     pdm = litdatamodule(config)  # eval config
     
     if config.dataset.get('movement', "") in ['slow', 'medium', 'fast']:

@@ -13,7 +13,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSegmentWriterLaSOT
+from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSegmentWriterLaSOT, PerSegmentWriterTrek150
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -45,6 +45,10 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
     elif task == 'lasot':
         callbacks.append(PerSegmentWriterLaSOT(
             output_dir=runtime_outdir / 'lasot',
+            official_anns_dir=config.dataset.official_anns_dir))
+    elif task == 'trek150':
+        callbacks.append(PerSegmentWriterTrek150(
+            output_dir=runtime_outdir / 'trek150',
             official_anns_dir=config.dataset.official_anns_dir))
 
     if enable_checkpointing:
