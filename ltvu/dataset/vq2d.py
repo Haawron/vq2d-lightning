@@ -16,6 +16,7 @@ import torchvision.transforms.functional as TF
 # import decord
 import numpy as np
 from PIL import Image
+import random
 
 # local (ours)
 
@@ -85,6 +86,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         assert idxs_required.issubset(idxs_avail), \
             f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
+            
+        # self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
+        # if self.config.dataset.get('frame_dash') and self.split == 'train' and random.random() < self.frame_dash_rate:
+        #     self.frame_stride = self.config.dataset.get('frame_stride')
+        #     frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
@@ -131,6 +137,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
     def sample_frame_idxs(self, num_frames: int, frame_interval: int, clip_len: int, gt_ext = None):
         frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)
+        self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
+        if self.config.dataset.get('frame_dash') and self.split == 'train' and random.random() < self.frame_dash_rate:
+            self.frame_stride = self.config.dataset.get('frame_stride')
+            frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
         frame_idxs = shift_indices_to_clip_range(frame_idxs, clip_len)
         return frame_idxs
 
@@ -159,6 +169,36 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert h <= w, f'All the videos in Ego4D are landscape, got {ann["clip_uid"]}, {frames.shape=}'
 
         return frames
+    
+    def reorder_frames(self, frame_idxs, frame_stride):
+        if frame_stride == 2:
+            # 1. move forward
+            forward = frame_idxs[::frame_stride]
+            remaining = np.setdiff1d(frame_idxs, forward, assume_unique=True)  # exclude selected
+
+            # 2. move backward
+            backward = remaining[::-1]
+
+            result = np.concatenate([forward, backward])
+
+        elif frame_stride == 3:
+            # 1. move forward
+            forward = frame_idxs[::frame_stride]
+            remaining = np.setdiff1d(frame_idxs, forward, assume_unique=True)
+
+            # 2. move backward
+            backward = remaining[::-1][::frame_stride-1]
+            remaining = np.setdiff1d(remaining, backward, assume_unique=True)
+
+            # 3. move forward again
+            third_pass = remaining
+
+            result = np.concatenate([forward, backward, third_pass])
+
+        else:
+            raise ValueError("frame_stride must be either 2 or 3.")
+
+        return result
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
         # frames: [t, c, h, w]
@@ -491,4 +531,42 @@ class VQ2DEvalDataset(VQ2DFitDataset):
 
 if __name__ == '__main__':
     # python -m ltvu.dataset
-    VQ2DEvalDataset.testme()
+    # VQ2DEvalDataset.testme()
+    import hydra
+    hydra.initialize(config_path='../../config', version_base='1.3')
+    # config = hydra.compose(config_name='train', overrides=['dataset=vq2d'])
+    config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_dash'])
+    # config.dataset.clips_dir = '/data/datasets/LaSOT'
+    import lightning as L
+    # L.seed_everything(42)
+    ds = VQ2DFitDataset(config, split='train')
+    from imgcat import imgcat
+    import matplotlib.pyplot as plt
+    import io
+    # idx = 0  # landscape
+    # idx = 565  # portrait
+    for i in range(1000):
+        idx = np.random.randint(0, len(ds))
+        sample = ds[idx]
+        print(sample['seg_idxs'])
+    segment = sample['segment']
+    gt_bboxes = sample['gt_bboxes']
+    T = len(segment)
+
+    for t in range(0, T, T // 10):
+        image = plt.imshow(segment[t].permute(1, 2, 0).cpu().numpy())
+        y1, x1, y2, x2 = gt_bboxes[t] * (segment.shape[-2:] * 2)
+        ax = plt.gca()
+        ax.add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='red', lw=2))
+        img_io = io.BytesIO()
+        plt.savefig(img_io, format='png')
+        plt.close()
+        imgcat(img_io.getvalue())
+        print()
+
+    image = sample['query']
+    img_io = io.BytesIO()
+    plt.imshow(image.permute(1, 2, 0).cpu().numpy())
+    plt.savefig(img_io, format='png')
+    imgcat(img_io.getvalue())
+    print()
