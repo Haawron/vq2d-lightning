@@ -66,6 +66,8 @@ class EgoTracksDataset(VQ2DFitDataset):
             'b7fc5f98-e5d5-405d-8561-68cbefa75106',  # not exist
             'db211359-c259-4515-9d6c-be521711b6d0',  # not exist
         )]
+        anns = [ann for ann in anns if 'lt_track' in list(ann.keys())]
+        anns = [ann for ann in anns if (self.p_rt_pos_query / f'{ann['clip_uid']}_{ann['query_set']}').exists()]
         return anns
 
     def get_lt_track(self, ann, frame_idxs):
@@ -141,11 +143,12 @@ class EgoTracksFitDataset(EgoTracksDataset):
             segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
             gt_ltt, _ = self.get_lt_track(ann, frame_idxs)  # prob as a binary mask
 
-            if self.rt_pos_query is not None and self.split == 'train':
-                rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
-            segment, gt_ltt = self.pad_and_resize(segment, gt_ltt)  # [t, c, s, s], [t, 4]
+            segment, gt_ltt, _ = self.pad_and_resize(segment, gt_ltt)  # [t, c, s, s], [t, 4]
             query = self.get_query(ann)
+            
+            if self.rt_pos_query is not None and self.split == 'train':
+                rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs, query)
 
             sample = {
                 # inputs
@@ -178,9 +181,10 @@ class EgoTracksFitDataset(EgoTracksDataset):
 
             return sample
 
-    def get_rt_pos_query(self, ann, frame_idxs):
+    def get_rt_pos_query(self, ann, frame_idxs, query):
         clip_uid = ann['clip_uid']
-        object_title = ann['object_title']
+        query_set = ann['query_set']
+        qset_uuid = f'{clip_uid}_{query_set}'
 
         rt_ann = {}
         for rt in ann.get('lt_track', ann['response_track']):
@@ -189,10 +193,14 @@ class EgoTracksFitDataset(EgoTracksDataset):
                 'h': rt['h'],
             }
 
+        fno_list = list(rt_ann.keys())
+        
+        if len(fno_list) >= self.num_frames:
+            frame_idxs = [np.random.choice(fno_list) for _ in range(self.num_frames)]
         rt_pos_queries, rt_pos_idx = [], []
 
         for frame_idx in frame_idxs:
-            p_pos_frame = self.p_rt_pos_query / clip_uid / object_title / f'{clip_uid}_{frame_idx}.jpg'
+            p_pos_frame = self.p_rt_pos_query / qset_uuid / f'{frame_idx}.jpg'
             if frame_idx in list(rt_ann.keys()) and p_pos_frame.exists():
                 frame = Image.open(p_pos_frame)
                 frame = TF.pil_to_tensor(frame)

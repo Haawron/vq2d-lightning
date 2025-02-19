@@ -217,6 +217,7 @@ class ClipMatcher(nn.Module):
 
         # EPQ (HQQ)
         sim_between: str = 'query',
+        rt_ratio: float = 0.5,
 
         # cls token score
         enable_cls_token_score = False,
@@ -323,6 +324,7 @@ class ClipMatcher(nn.Module):
         self.t_short = t_short
 
         self.sim_between = sim_between
+        self.rt_ratio = rt_ratio
 
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
@@ -793,6 +795,9 @@ class ClipMatcher(nn.Module):
         enable_rt_pq_threshold=False,
 
         get_intermediate_features = False,
+        
+        aug_segment = None,
+        aug_gt_rt = None,
 
         max_epochs = None,
         cur_epoch = None,
@@ -807,17 +812,20 @@ class ClipMatcher(nn.Module):
         b, t = segment.shape[:2]
         device = segment.device
         output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
-
+        if aug_segment is not None and (random.randint(0,1) == 1 or self.debug):
+            segment = aug_segment
+            gt_bboxes = aug_gt_rt
+            
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():
             clip_feat_dict = self.extract_feature(segment)
-            if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random':
+            if rt_pos and (random.randint(0, 100) <= self.rt_ratio * 100 or self.debug) and self.sim_between == 'random':
                 valid_indices = rt_pos_idx != -1
                 random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
                 query = rt_pos_queries[torch.arange(b), random_idx]
             query_feat_dict = self.extract_feature(query)
 
-        if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
+        if rt_pos and (random.randint(0, 100) <= self.rt_ratio * 100 or self.debug) and self.sim_between != 'random':
             rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
             with self.backbone_context():
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)

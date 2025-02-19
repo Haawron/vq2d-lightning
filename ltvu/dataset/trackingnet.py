@@ -11,14 +11,15 @@ from torch.nn import functional as F
 import torchvision.transforms.functional as TF
 
 from PIL import Image
+import imghdr
 
 
-class LaSOTDataset(torch.utils.data.Dataset):
+class TrackingNetDataset(torch.utils.data.Dataset):
     def __init__(self, config: DictConfig, split: str = 'train'):
         torch.utils.data.Dataset.__init__(self)
         self.config = config
         ds_config = config.dataset
-        self.p_lasot_rootdir = Path(ds_config.clips_dir)  # {PATH}/CLASSNAME/CLASSNAME-IDX/img/08d.jpg
+        self.p_trackingnet_rootdir = Path(ds_config.clips_dir)  # {PATH}/CLASSNAME/CLASSNAME-IDX/img/08d.jpg
         self.num_frames: int = ds_config.num_frames
         self.frame_interval: int = ds_config.frame_interval
         self.segment_size: tuple[int] = tuple(ds_config.segment_size)  # H, W, desired
@@ -38,28 +39,28 @@ class LaSOTDataset(torch.utils.data.Dataset):
         if split == 'val':
             split = 'test'
         self.split = split
-        self.p_split_csv = self.p_lasot_rootdir / f'{split}ing_set.txt'
-        self.split_csv = set(pd.read_csv(self.p_split_csv, header=None).iloc[:, 0].tolist())
-
+        
+        self.p_root_dir = self.p_trackingnet_rootdir / split.upper()
+        self.p_clip_dir = self.p_root_dir / 'zips'
+        self.p_ann_dir = self.p_root_dir / 'anno'
         self.anns = []
-        for p_class_dir in sorted(self.p_lasot_rootdir.glob('*')):
-            if not p_class_dir.is_dir():
+        for clip_dir in sorted(self.p_clip_dir.glob('*')):
+            if not clip_dir.is_dir():
                 continue
-            if 'cache' in p_class_dir.stem:
+            if 'cache' in clip_dir.stem:
                 continue
-            class_name = p_class_dir.stem
-            for p_clip in sorted(p_class_dir.glob('*'), key=lambda p: int(p.stem.split('-')[-1])):
-                clip_uid = p_clip.stem
-                if clip_uid not in self.split_csv:
-                    continue
-                clip_idx = int(clip_uid.split('-')[-1])
-                gt_st = pd.read_csv(p_clip / 'groundtruth.txt', header=None, names=['x', 'y', 'w', 'h'])
-                self.anns.append({
-                    'class_name': class_name,
-                    'clip_idx': clip_idx,
-                    'p_clip': p_clip,
-                    'gt_st': gt_st,
-                })
+            clip_idx = clip_dir.stem
+            gt_st = pd.read_csv(self.p_ann_dir / f'{clip_idx}.txt', header=None, names=['x', 'y', 'w', 'h'])
+            
+            if len(gt_st) <= (self.num_frames - 1) * self.frame_interval + 1:
+                continue
+            
+            self.anns.append({
+                'clip_idx': clip_idx,
+                'p_clip': clip_dir,
+                'gt_st': gt_st,
+                'class_name': clip_idx,
+            })
 
     def __len__(self):
         return len(self.anns)
@@ -70,9 +71,16 @@ class LaSOTDataset(torch.utils.data.Dataset):
         frame_idxs = frame_idxs.clip(0, num_clip_frames - 1)
 
         # load - normalize - permute
-        p_frames = [p_clip / f'img/{idx+1:08d}.jpg' for idx in frame_idxs]
-        frames = [Image.open(p) for p in p_frames]
-        frames = torch.stack([TF.pil_to_tensor(f) for f in frames])  # [t, c, h, w]
+        p_frames = [p_clip / f'{idx}.jpg' for idx in frame_idxs]
+        first_frame = Image.open(p_frames[0])
+        frames = []
+        for p_frame in p_frames:
+            frame = Image.open(p_frame)
+            if frame.size != first_frame.size:
+                frame = frame.resize(first_frame.size, Image.BICUBIC)
+            frame = TF.pil_to_tensor(frame)
+            frames.append(frame)
+        frames = torch.stack(frames)  # [t, c, h, w]
         frames = frames.float() / 255.
 
         return frames
@@ -150,15 +158,13 @@ class LaSOTDataset(torch.utils.data.Dataset):
     
     def get_rt_pos_query(self, ann, frame_idxs):
         class_name = ann['class_name']
-        clip_idx = ann['clip_idx']
         gt_st = ann['gt_st']
         frame_idxs = [np.random.randint(0, len(gt_st)) for _ in range(self.num_rt_pos_quey)]
-        
         rt_pos_queries, rt_pos_idx = [], []
 
         for frame_idx in frame_idxs:
-            p_pos_frame = self.p_rt_pos_query / class_name / f'{class_name}-{clip_idx}' / f'{frame_idx+1:08d}.jpg'
-            if p_pos_frame.exists():
+            p_pos_frame = self.p_rt_pos_query / class_name / f'{frame_idx}.jpg'
+            if p_pos_frame.exists() and imghdr.what(p_pos_frame) is not None:
                 frame = Image.open(p_pos_frame)
                 frame = TF.pil_to_tensor(frame)
                 frame = frame.float() / 255.
@@ -182,7 +188,7 @@ class LaSOTDataset(torch.utils.data.Dataset):
         return rt_pos_queries, rt_pos_idx
 
 
-class LaSOTFitDataset(LaSOTDataset):
+class TrackingNetFitDataset(TrackingNetDataset):
     def __getitem__(self, idx):
         ann = self.anns[idx]
         p_clip = ann['p_clip']
@@ -191,7 +197,10 @@ class LaSOTFitDataset(LaSOTDataset):
 
         # get inputs
         required_len = (self.num_frames - 1) * self.frame_interval + 1
-        start = np.random.randint(0, clip_len - required_len)
+        try:
+            start = np.random.randint(0, clip_len - required_len)
+        except:
+            print(f'{p_clip}, {clip_uid}, {clip_len}')
         frame_idxs = np.arange(start, start + required_len, self.frame_interval)
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
@@ -236,7 +245,7 @@ class LaSOTFitDataset(LaSOTDataset):
         return sample
 
 
-class LaSOTEvalDataset(LaSOTDataset):
+class TrackingNetEvalDataset(TrackingNetDataset):
     def __init__(self, config, split = 'val'):
         super().__init__(config, split)
         self.num_frames_per_segment = self.num_frames
@@ -303,14 +312,14 @@ class LaSOTEvalDataset(LaSOTDataset):
 
 
 if __name__ == '__main__':
-    # python -Bm ltvu.dataset.lasot
+    # python -Bm ltvu.dataset.trackingnet
     import hydra
     hydra.initialize(config_path='../../config', version_base='1.3')
-    config = hydra.compose(config_name='train', overrides=['dataset=lasot'])
-    config.dataset.clips_dir = '/data/datasets/LaSOT'
+    config = hydra.compose(config_name='train', overrides=['dataset=trackingnet'])
+    config.dataset.clips_dir = '/data/datasets/TrackingNet'
     import lightning as L
     # L.seed_everything(42)
-    ds = LaSOTFitDataset(config, split='train')
+    ds = TrackingNetFitDataset(config, split='train')
     from imgcat import imgcat
     import matplotlib.pyplot as plt
     import io

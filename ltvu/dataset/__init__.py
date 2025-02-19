@@ -5,6 +5,8 @@ from .vq2d import (
 
 from .egotracks import EgoTracksFitDataset, EgoTracksEvalDataset
 from .lasot import LaSOTFitDataset, LaSOTEvalDataset
+from .got10k import GOT10KFitDataset, GOT10KEvalDataset
+from .trackingnet import TrackingNetFitDataset, TrackingNetEvalDataset
 
 __all__ = [
     'VQ2DFitDataset', 'VQ2DEvalDataset',
