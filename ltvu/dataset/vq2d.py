@@ -56,6 +56,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.rt_pos_query = config.get('rt_pos_query')
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
+        self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
+        self.frame_stride = self.config.dataset.get('frame_stride')
+        self.frame_incremental = self.config.dataset.get('frame_incremental')
+        self.frame_incremental_level = 0
         self.split = split
         self.movement = movement
         if movement != "":
@@ -136,11 +140,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return anns
 
     def sample_frame_idxs(self, num_frames: int, frame_interval: int, clip_len: int, gt_ext = None):
-        frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)
-        self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
-        if self.config.dataset.get('frame_dash') and self.split == 'train' and random.random() < self.frame_dash_rate:
-            self.frame_stride = self.config.dataset.get('frame_stride')
-            frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
+        frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)                
+        frame_idxs = self.frame_dash(frame_idxs)                
         frame_idxs = shift_indices_to_clip_range(frame_idxs, clip_len)
         return frame_idxs
 
@@ -169,6 +170,29 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert h <= w, f'All the videos in Ego4D are landscape, got {ann["clip_uid"]}, {frames.shape=}'
 
         return frames
+    
+    def frame_dash(self, frame_idxs):
+        if self.config.dataset.get('frame_dash') and self.split == 'train':
+            if not self.frame_incremental:
+                if random.random() < self.frame_dash_rate:
+                    frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
+            else:
+                if self.frame_incremental_level == 0:
+                    dash_rate = 0.2
+                    frame_stride = 2
+                elif self.frame_incremental_level == 1:
+                    dash_rate = 0.4
+                    frame_stride = 2 if random.random() < 0.7 else 3
+                elif self.frame_incremental_level == 3:
+                    dash_rate = 0.6
+                    frame_stride = 2 if random.random() < 0.5 else 3
+                # elif self.frame_incremental_level == 4:
+                #     dash_rate = 0.8
+                #     frame_stride = 3
+                if random.random() < dash_rate:
+                    frame_idxs = self.reorder_frames(frame_idxs, frame_stride)
+                    
+        return frame_idxs
     
     def reorder_frames(self, frame_idxs, frame_stride):
         if frame_stride == 2:

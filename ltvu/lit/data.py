@@ -48,6 +48,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.test_submit = ds_config.get('test_submit', False)
         self.eval_on_train = ds_config.get('eval_on_train', False)
         self.movement = ds_config.get('movement', "")
+        self.dataset = None 
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -172,8 +173,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         return segment, query
 
     def train_dataloader(self, shuffle=True):
+        self.dataset = VQ2DFitDataset(self.config, split='train', movement=self.movement)
         return torch.utils.data.DataLoader(
-            VQ2DFitDataset(self.config, split='train', movement=self.movement),
+            self.dataset,
             batch_size=self.batch_size,
             shuffle=shuffle,
             pin_memory=self.pin_memory,

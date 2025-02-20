@@ -80,10 +80,31 @@ class LitModule(L.LightningModule):
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True))  # to save the config in the checkpoint
         self.sample_step = 0
         self.use_hnm = config.get('use_hnm')
+        self.max_steps = self.config.trainer.max_steps
 
         self.rt_pos_query = config.get('rt_pos_query')
 
     ############ major hooks ############
+    
+    def on_train_batch_start(self, batch, batch_idx):
+        if hasattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+            global_step = self.trainer.global_step
+            dataset = self.trainer.datamodule.dataset
+            
+            if global_step >= self.max_steps * 0.4:
+                dataset.frame_incremental_level = 3
+            elif global_step >= self.max_steps * 0.3:
+                dataset.frame_incremental_level = 2
+            elif global_step >= self.max_steps * 0.15:
+                dataset.frame_incremental_level = 1
+                
+            self.log("frame_incremental_level", dataset.frame_incremental_level, 
+                    on_step=True, prog_bar=True, rank_zero_only=True)
+        
+
+            
+        # self.log("frame_incremental_level", self.dataset.frame_incremental_level, 
+        #          on_step=True, prog_bar=True, rank_zero_only=True)
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
