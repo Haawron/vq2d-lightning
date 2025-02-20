@@ -47,6 +47,11 @@ def main(config: DictConfig):
     assert config.ckpt is not None, "Please provide a checkpoint path"
     p_ckpt = Path(config.ckpt)
     plm = LitModule.load_from_checkpoint(p_ckpt)
+    vqloc_ckpt = Path(config.vqloc_ckpt) if config.get('vqloc_ckpt', None) is not None else None
+    if vqloc_ckpt is not None:
+        pth_state_dict = torch.load(vqloc_ckpt, map_location='cpu') 
+        plm.model.load_state_dict(pth_state_dict['state_dict'], strict=False)
+        log_to_console(f"Loaded VQLoc model from {vqloc_ckpt}")
     match config.dataset.name:
         case 'vq2d':
             litdatamodule = LitVQ2DDataModule
