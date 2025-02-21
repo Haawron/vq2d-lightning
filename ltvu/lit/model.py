@@ -107,6 +107,11 @@ class LitModule(L.LightningModule):
                     extra_args['sim_mode']='min'
                 else:
                     extra_args['sim_mode']='max'
+        if self.config.dataset.box_aug and self.current_epoch >= self.config.late_epoch_box_aug:
+            extra_args['use_box_aug'] = True
+        else:
+            extra_args['use_box_aug'] = False
+            
         output_dict = self.model.forward(
             **batch,
             compute_loss=True,

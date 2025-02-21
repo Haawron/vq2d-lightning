@@ -108,7 +108,7 @@ def get_final_preds_vq2d(preds, split='val', plateau_threshold_ratio=0.7, moveme
     return result
 
 
-def get_final_preds_egotracks(preds, split='val'):
+def get_final_preds_egotracks(preds, split='val', plateau_threshold_ratio=0.7):
     """Convert whole-clip predictions to submittable format.
     
     Usage:
@@ -131,8 +131,14 @@ def get_final_preds_egotracks(preds, split='val'):
                 continue
             if 'ae8727ba' in ann['clip_uid']:
                 continue
-
-        result[ann['uuid_ltt']] = {}
+        
+        uuid_ltt = ann['uuid_ltt']
+        result[uuid_ltt] = {}
+        pred = preds[uuid_ltt]
+        bboxes = pred['ret_bboxes']
+        scores = pred['ret_scores'].sigmoid()
+        ret_score = []
+        ret_bboxes = []
 
         for fnol in range(0, math.ceil(30*ann['clip_duration']), 6):
             fnor = fnol // 6
@@ -141,14 +147,47 @@ def get_final_preds_egotracks(preds, split='val'):
             elif 'cb45277e' in ann['clip_uid']:
                 fnol += 1
 
-            uuid_ltt = ann['uuid_ltt']
-            pred = preds[uuid_ltt]
-            bboxes = pred['ret_bboxes']
-            scores = pred['ret_scores'].sigmoid()
             if fnor == len(bboxes):
                 fnor -= 1
-            score = scores[fnor].item()
-            result[uuid_ltt][fnol] = bboxes[fnor].tolist() + [score]
+            score = scores[fnor]
+            ret_score.append(score)
+            ret_bboxes.append(bboxes[fnor].tolist())
+        
+        ret_score = torch.stack(ret_score, dim=0)
+        
+        # logit to prob
+        probs = ret_score.numpy()
+        
+        # 1D median filter
+        probs_sm = medfilt(probs, 5)
+
+        # find the last valid peak, valid = large enough
+        peaks, _ = find_peaks(probs_sm)
+        if peaks.size == 0:
+            peaks = np.array([np.argmax(probs_sm)])
+        max_peak_prob = probs_sm[peaks].max()
+        peak_threshold = max_peak_prob * 0.8
+        valid_peaks = peaks[probs_sm[peaks] >= peak_threshold]
+        if valid_peaks.size == 0:
+            valid_peaks = np.array([np.argmax(probs_sm)])
+            
+        # Find plateaus for each valid peak
+        all_fnos = set()
+        for peak in valid_peaks:
+            plateau_threshold = probs_sm[peak] * plateau_threshold_ratio
+
+            # Find the last index before the peak where the value drops below the threshold
+            plateau_idx1 = np.where(probs_sm[:peak] < plateau_threshold)[0]
+            plateau_idx1 = plateau_idx1[-1] if plateau_idx1.size > 0 else 0
+
+            # Find the first index after the peak where the value drops below the threshold
+            plateau_idx2 = np.where(probs_sm[peak:] < plateau_threshold)[0]
+            plateau_idx2 = plateau_idx2[0] + peak if plateau_idx2.size > 0 else len(probs) - 1
+
+            all_fnos.update(range(plateau_idx1, plateau_idx2 + 1))
+            
+        for fno in sorted(all_fnos):
+            result[uuid_ltt][fno] = ret_bboxes[fno] + [ret_score[fno].item()]
 
     return result
 
@@ -230,22 +269,22 @@ def fix_predictions_order(final_preds, p_official_ann):
 
 if __name__ == '__main__':
     from pathlib import Path
-    from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
+    # from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
 
     p_tmp_outdir = Path('outputs/debug/2024-09-25/126347/tmp')
-    p_int_pred = p_tmp_outdir.parent / 'intermediate_predictions.pt'
+    p_int_pred = Path('/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/intermediate_predictions.pt')
     p_pred = p_tmp_outdir.parent / 'predictions.json'
 
     # json.dump(qset_preds, p_int_pred.open('w'))
     qset_preds = torch.load(p_int_pred, weights_only=True)
 
     # get final predictions
-    final_preds = get_final_preds_vq2d(qset_preds)
+    final_preds = get_final_preds_egotracks(qset_preds)
 
     # write the final predictions to json
     # json.dump(final_preds, open(p_pred, 'w'))
-    json.dump(final_preds, open('/tmp/pred.json', 'w'))
+    json.dump(final_preds, open('/data/soyeonhong/vq2d/vq2d-lightning/outputs/predictions/egotracks.json', 'w'))
 
     # print metrics
-    subset_metrics = get_metrics_vq2d('data/vq_v2_val_anno.json', '/tmp/pred.json')
-    print_metrics_vq2d(subset_metrics)
+    # subset_metrics = get_metrics_vq2d('data/vq_v2_val_anno.json', '/tmp/pred.json')
+    # print_metrics_vq2d(subset_metrics)

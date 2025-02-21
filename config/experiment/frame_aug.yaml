@@ -4,3 +4,5 @@
 
 dataset:
   box_aug: True
+
+late_epoch_box_aug: 0

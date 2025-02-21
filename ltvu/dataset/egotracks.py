@@ -67,7 +67,8 @@ class EgoTracksDataset(VQ2DFitDataset):
             'db211359-c259-4515-9d6c-be521711b6d0',  # not exist
         )]
         anns = [ann for ann in anns if 'lt_track' in list(ann.keys())]
-        anns = [ann for ann in anns if (self.p_rt_pos_query / f'{ann['clip_uid']}_{ann['query_set']}').exists()]
+        if self.split == 'train':
+            anns = [ann for ann in anns if (self.p_rt_pos_query / f'{ann['clip_uid']}_{ann['query_set']}').exists()]
         return anns
 
     def get_lt_track(self, ann, frame_idxs):

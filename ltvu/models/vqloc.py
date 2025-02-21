@@ -798,6 +798,7 @@ class ClipMatcher(nn.Module):
         
         aug_segment = None,
         aug_gt_rt = None,
+        use_box_aug = False,
 
         max_epochs = None,
         cur_epoch = None,
@@ -812,7 +813,7 @@ class ClipMatcher(nn.Module):
         b, t = segment.shape[:2]
         device = segment.device
         output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
-        if aug_segment is not None and (random.randint(0,1) == 1 or self.debug):
+        if aug_segment is not None and (random.randint(0,1) == 1 or self.debug) and use_box_aug:
             segment = aug_segment
             gt_bboxes = aug_gt_rt
             

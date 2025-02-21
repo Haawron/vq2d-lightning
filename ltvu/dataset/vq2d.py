@@ -100,7 +100,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs, query)
             
         if self.box_aug and self.split == 'train':
-            aug_segment, aug_gt_rt = self.get_box_aug(segment, gt_rt_ori, gt_prob)
+            aug_segment, aug_gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -329,11 +329,12 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         return bboxes, seg_with_gt.astype(np.float32)
     
-    def get_box_aug(self, segment, gt_rt, gt_prob):
+    def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         gt_idx = np.where(gt_prob == 1)[0]
         aug_segment = segment.clone()
         aug_gt_rt = gt_rt.copy()
-        gt_box = aug_gt_rt[gt_idx]
+        gt_rt_original = gt_rt_ori.copy()
+        gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
         
         if not len(gt_box) <=2:
@@ -374,7 +375,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 available_indices.remove(most_different_idx)
 
             # Apply the new order
-            aug_gt_rt[gt_idx] = gt_box[new_order]
+            aug_gt_rt[gt_idx] = aug_gt_rt[gt_idx[new_order]]
             aug_segment[gt_idx] = aug_segment[gt_idx[new_order]]
         
         return aug_segment, aug_gt_rt
@@ -518,7 +519,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
                             segment[ii, :, bbox[0]:bbox[2], bbox[1]:bbox[3]] = torch.rand(3, bbox[2] - bbox[0], bbox[3] - bbox[1])
 
 
-        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        segment, gt_rt, _ = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
 
         return {
             # inputs
