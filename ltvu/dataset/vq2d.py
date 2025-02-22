@@ -60,9 +60,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.frame_stride = self.config.dataset.get('frame_stride')
         self.frame_incremental = self.config.dataset.get('frame_incremental')
         self.frame_incremental_level = 0
+        self.dash_rate = 0
         self.split = split
         self.movement = movement
         self.box_aug = ds_config.get('box_aug', False)
+        self.frame_box_aug = ds_config.get('frame_box_aug')
         if movement != "":
             assert movement in ['slow', 'medium', 'fast', 'slow2', 'medium2', 'fast2'], f'Invalid movement: {movement}'
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
@@ -109,6 +111,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             self.add_aug = self.rt_pos_query.add_aug
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs, query)
             
+        if self.frame_incremental and self.frame_box_aug:
+            assert self.config.dataset.get('frame_dash'), 'frame_dash must be True'
+            if random.random() < self.dash_rate:
+                segment, gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+                
         if self.box_aug and self.split == 'train':
             aug_segment, aug_gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
@@ -192,19 +199,19 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                     frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
             else:
                 if self.frame_incremental_level == 0:
-                    dash_rate = 0.0
+                    self.dash_rate = 0.0
                     frame_stride = 2
                 elif self.frame_incremental_level == 1:
-                    dash_rate = 0.2
+                    self.dash_rate = 0.2
                     frame_stride = 2
                 elif self.frame_incremental_level == 2:
-                    dash_rate = 0.4
+                    self.dash_rate = 0.4
                     frame_stride = 2 if random.random() < 0.7 else 3
                 elif self.frame_incremental_level == 3:
-                    dash_rate = 0.6
+                    self.dash_rate = 0.6
                     frame_stride = 2 if random.random() < 0.5 else 3
                     # frame_stride = 3
-                if random.random() < dash_rate:
+                if random.random() < self.dash_rate:
                     frame_idxs = self.reorder_frames(frame_idxs, frame_stride)
                     
         return frame_idxs
