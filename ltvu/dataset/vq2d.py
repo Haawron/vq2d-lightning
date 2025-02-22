@@ -95,8 +95,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
         if self.rt_pos_query is not None and self.split == 'train':
-            self.aug_exp = self.rt_pos_query.aug_exp
-            self.add_aug = self.rt_pos_query.add_aug
+            self.aug_exp = self.rt_pos_query.get('aug_exp')
+            self.add_aug = self.rt_pos_query.get('add_aug')
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs, query)
             
         if self.box_aug and self.split == 'train':
