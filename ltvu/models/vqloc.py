@@ -1108,24 +1108,32 @@ class ClipMatcher(nn.Module):
                 # 'center': None,                 # [b,t,2]
             }
             
-            output_dict, _, preds_top = self.compute_losses_with_anchor(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict)
+            output_dict, _, preds_top_bbox = self.compute_losses_with_anchor(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, True, False)
             if self.box_penalty and training:
-                output_dict_penalty, pred_dict_penalty_ori, _ = self.compute_losses_with_anchor(pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict_penalty)
+                output_dict_penalty, pred_dict_penalty_ori, _ = self.compute_losses_with_anchor(pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict_penalty, False, True)
                 
                 gt_probs = torch.ones([b, t]).to(device)
                 gts = {
                     'before_query': before_query_mask,
                     'clip_with_bbox': gt_probs,
-                    'clip_bbox': preds_top['bbox']
+                    'clip_bbox': preds_top_bbox
                     }
                 
-                output_dict_compare, _, _ = self.compute_losses_with_anchor(pred_dict_penalty_ori, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict)
+                penalty_loss = output_dict_penalty['loss'].clone()
+                output_dict_compare, _, _ = self.compute_losses_with_anchor(pred_dict_penalty_ori, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict, False, False)
                 
-                output_dict['loss'] = (output_dict['loss'] + output_dict_penalty['loss'] + output_dict_compare['loss']) / 3
+                compare_loss = output_dict_compare['loss'].clone()
+                
+                output_dict['loss'] = (output_dict['loss'] + penalty_loss + compare_loss) / 3
+                
+                detach_dict(output_dict_penalty)
+                penalty_loss = penalty_loss.detach()
+                compare_loss = compare_loss.detach()
+                preds_top_bbox = preds_top_bbox.detach()
 
         return output_dict
     
-    def compute_losses_with_anchor(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict):
+    def compute_losses_with_anchor(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, return_top_bbox=False, return_pred_dict=False):
             # acutal loss calculation
             loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
                 pred_dict, gts,
@@ -1230,7 +1238,10 @@ class ClipMatcher(nn.Module):
 
 
             # for logging - metrics
-            preds_top_ori = preds_top.copy()
+            if return_top_bbox:
+                preds_top_bbox_ori = preds_top['bbox'].clone()
+            else:
+                preds_top_bbox_ori = None
             preds_top = detach_dict(preds_top)
             prob: torch.Tensor = pred_dict['prob'].detach()
             b, t, N = prob.shape
@@ -1278,14 +1289,17 @@ class ClipMatcher(nn.Module):
                 'gts': gts,                 # gts with hw, center computed
             }
 
-            pred_dict_ori = pred_dict.copy()
+            if return_pred_dict:
+                pred_dict_ori = pred_dict.copy()
+            else:
+                pred_dict_ori = None
             # gather all outputs
             output_dict.update({'loss': total_loss})  # for backward
             output_dict.update({'log_dict': log_dict})  # for logging
             output_dict.update({'info_dict': info_dict})  # for debugging
             output_dict.update({'pred_dict': detach_dict(pred_dict)})
-            
-            return output_dict, pred_dict_ori, preds_top_ori
+
+            return output_dict, pred_dict_ori, preds_top_bbox_ori
 
 
 class Head(nn.Module):
