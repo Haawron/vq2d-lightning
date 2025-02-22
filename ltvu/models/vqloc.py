@@ -239,6 +239,9 @@ class ClipMatcher(nn.Module):
         ignore_border: bool = False,
         weight_entropy_mapwise: float = 1.,
         weight_entropy_tokenwise: float = 1.,
+        
+        # Box penalty
+        box_penalty: bool = False,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -323,6 +326,8 @@ class ClipMatcher(nn.Module):
         self.t_short = t_short
 
         self.sim_between = sim_between
+        
+        self.box_penalty = box_penalty
 
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
@@ -772,112 +777,86 @@ class ClipMatcher(nn.Module):
             query_cls = rearrange(query_cls, 'b c 1 -> b 1 c') # [b,1,c]
             rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
         return rt_pos_queries_cls, query_cls
-
-
-    def forward(
+    
+    def compute_rt_pos_queries(
         self,
-        segment,
-        query,
-        compute_loss = False,
-        training = True,
-        before_query_mask: None | torch.Tensor = None,
-        gt_probs: None | torch.Tensor = None,
-        gt_bboxes: None | torch.Tensor = None,  # yxyx
-        use_hnm: bool = False,
-        rt_pos_queries = None,
-        rt_pos_top_k = 1,
-        rt_pos_idx = None, # -1 means not gt
-        rt_pos = False,
-        sim_mode = 'max',
-        sim_thr = 0.0,
-        enable_rt_pq_threshold=False,
-
-        get_intermediate_features = False,
-
-        max_epochs = None,
-        cur_epoch = None,
-        **kwargs
+        rt_pos,
+        rt_pos_idx,
+        rt_pos_queries,
+        b,t,
+        sim_between,
+        sim_thr,
+        sim_mode,
+        enable_rt_pq_threshold,
+        get_intermediate_features,
+        output_dict,
+        device,
+        query_ori
     ):
-        '''
-        clip: in shape [b,t,c,h,w]
-        query: in shape [b,c,h2,w2]
-        before_query_mask:
-        gt_bboxes:
-        '''
-        b, t = segment.shape[:2]
-        device = segment.device
-        output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
-
-        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
-        with self.backbone_context():
-            clip_feat_dict = self.extract_feature(segment)
-            if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random':
+        if rt_pos and sim_between == 'random':
+            if self.box_penalty or (torch.randint(0, 2, (1,)).item() == 1 or self.debug):
                 valid_indices = rt_pos_idx != -1
                 random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
                 query = rt_pos_queries[torch.arange(b), random_idx]
-            query_feat_dict = self.extract_feature(query)
 
-        if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
-            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
+        if rt_pos and (torch.randint(0, 2, (1,)).item() == 1 or self.debug) and sim_between != 'random':
+            query_feat_dict = self.extract_feature(query_ori)
+            rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w')
             with self.backbone_context():
                 rt_pos_queries_feat_dict = self.extract_feature(rt_pos_queries)
-            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']  # [b*t,c], [b,c,1]
-            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1) # [b,t,c]
-            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b= b, t=t) # [b,t,c]
+            rt_pos_queries_cls, query_cls = rt_pos_queries_feat_dict['cls'], query_feat_dict['cls']
+            query_cls = rearrange(query_cls, 'b c 1 -> b 1 c').expand(-1, t, -1)
+            rt_pos_queries_cls = rearrange(rt_pos_queries_cls.squeeze(-1), '(b t) c -> b t c', b=b, t=t)
+            
             if get_intermediate_features:
                 output_dict['feat']['rt_pos_query'] = rt_pos_queries_cls.clone()
                 output_dict['feat']['rt_query'] = query_cls.clone()
+            
+            valid_gt_mask = rt_pos_idx != -1
 
-            valid_gt_mask = rt_pos_idx != -1  # [b,t]
+            if sim_between in ['positives', 'positives_multinomial', 'positives_multinomial_plus1']:
+                _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)
+                _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))
+                simmat = torch.einsum('bsc,btc->bst', _cls, _cls)
+                sim = torch.stack([simmat[bidx, valid_gt_mask[bidx]].mean(dim=0) for bidx in range(b)])
+            elif sim_between == 'query':
+                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1)
 
-            if self.sim_between in ['positives', 'positives_multinomial', 'positives_multinomial_plus1']:  # sim between query and rt_pos_queries
-                _norms = torch.norm(rt_pos_queries_cls, dim=-1, keepdim=True)  # [b,t,1]
-                _cls = rt_pos_queries_cls / torch.maximum(_norms, torch.tensor(1e-6, device=device))  # [b,t,c]
-                simmat = torch.einsum('bsc,btc->bst', _cls, _cls)  # [b,t,t]
-                sim = []  # [b,t]
-                for bidx in range(b):
-                    sim.append(simmat[bidx, valid_gt_mask[bidx]].mean(dim=0))  # [t]
-                sim = torch.stack(sim)  # [b,t]
-            elif self.sim_between == 'query':  # sim between query and rt_pos_queries
-                sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
-
-            sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
-            sim_mask_num = sim_mask.sum() / b
-            batch_has_valid = sim_mask.any(dim=-1) # [b]
-
-            rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
+            sim_mask = (sim > sim_thr) & valid_gt_mask
+            batch_has_valid = sim_mask.any(dim=-1)
+            rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)
+            
             if batch_has_valid.any():
-                valid_sim_mask = sim_mask.float()  # [b, t]
-                if self.sim_between in ['positives_multinomial', 'positives_multinomial_plus1']:
-                    if self.sim_between == 'positives_multinomial_plus1':
-                        valid_sim = 1 + sim * valid_sim_mask  # [b,t]
-                    else:
-                        valid_sim = sim * valid_sim_mask  # [b,t]
-                    valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)  # [b,t]
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)  # [b]
+                valid_sim_mask = sim_mask.float()
+                if sim_between in ['positives_multinomial', 'positives_multinomial_plus1']:
+                    valid_sim = (1 + sim * valid_sim_mask) if sim_between == 'positives_multinomial_plus1' else (sim * valid_sim_mask)
+                    valid_sim = valid_sim / (valid_sim.sum(dim=-1, keepdim=True) + 1e-6)
+                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim[batch_has_valid], 1).squeeze(1)
                 else:
-                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)  # [b]
-
+                    rand_indices_per_batch[batch_has_valid] = torch.multinomial(valid_sim_mask[batch_has_valid], 1).squeeze(1)
 
             if sim_mode == 'max':
                 masked_sim = sim.masked_fill(~valid_gt_mask, float('-inf'))
-                top_sim_idx = masked_sim.argmax(dim=-1)  # [b,1]
+                top_sim_idx = masked_sim.argmax(dim=-1)
             elif sim_mode == 'min':
                 masked_sim = sim.masked_fill(~valid_gt_mask, float('inf'))
-                top_sim_idx = masked_sim.argmin(dim=-1)  # [b,1]
+                top_sim_idx = masked_sim.argmin(dim=-1)
 
-            final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)  # [b, 1]
-            rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t) # [b,t,c,h,w]
+            final_top_sim_idx = torch.where(batch_has_valid, rand_indices_per_batch, top_sim_idx)
+            rt_pos_queries = rearrange(rt_pos_queries, '(b t) c h w -> b t c h w', b=b, t=t)
 
             if enable_rt_pq_threshold:
-                query = rt_pos_queries[torch.arange(b), final_top_sim_idx]  # [b, c, h2, w2]
+                query = rt_pos_queries[torch.arange(b), final_top_sim_idx]
             else:
-                query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
+                query = rt_pos_queries[torch.arange(b), top_sim_idx]
 
-            with self.backbone_context():
-                query_feat_dict = self.extract_feature(query)
-
-
+        return query, output_dict
+    
+    def inner_forward(self,
+        query_feat_dict, clip_feat_dict, output_dict, 
+        get_intermediate_features, use_hnm, compute_loss, 
+        device, t, b
+    ):
         query_feat = query_feat_dict['feat']
         clip_feat = clip_feat_dict['feat']
         h, w = clip_feat_dict['h'], clip_feat_dict['w']
@@ -887,25 +866,23 @@ class ClipMatcher(nn.Module):
             output_dict['feat']['query']['backbone'] = query_feat.clone()
 
         if self.enable_pca_guide and self.guide_from == 'backbone':
-            score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
+            score_maps = self.compute_pca_score_map(query_feat)
 
-        # reduce channel size
         if not self.late_reduce and not self.no_reduce:
             all_feat = torch.cat([query_feat, clip_feat], dim=0)
             all_feat = self.reduce(all_feat)
             query_feat, clip_feat = all_feat.split([b, b*t], dim=0)
-
             if get_intermediate_features:
                 output_dict['feat']['clip']['reduce'] = clip_feat.clone()
                 output_dict['feat']['query']['reduce'] = query_feat.clone()
 
         if self.enable_pca_guide and self.guide_from == 'reduce':
-            score_maps = self.compute_pca_score_map(query_feat)  # [b,h2*w2,H]
+            score_maps = self.compute_pca_score_map(query_feat)
 
         if use_hnm and compute_loss:
-            clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)   # b -> b^2
+            clip_feat, query_feat = self.replicate_for_hnm(query_feat, clip_feat)
             b **= 2
-
+            
         # masks
         nc, ts = t // self.t_short, self.t_short
         stx_tgt_mask = None   # [b*t*H,h*w,h*w], Q, K
@@ -934,7 +911,7 @@ class ClipMatcher(nn.Module):
             self.score_maps_mean, self.score_maps_std = score_maps.mean(dim=-1).mean().item(), score_maps.std(dim=(-1, -2)).mean().item()
             if self.guide_to_stx:
                 stx_mem_mask = repeat(score_maps, 'b (h2 w2) H -> (b t H) (h1 w1) (h2 w2)', t=t, h1=h, w1=w, h2=h, w2=w)
-
+        
         # spatial correspondence
         query_feat_expanded = repeat(query_feat, 'b c h w -> (b t) (h w) c', t=t)  # [b*t,n,c]
         clip_feat = rearrange(clip_feat, '(b t) c h w -> b t (h w) c', b=b)
@@ -1048,11 +1025,80 @@ class ClipMatcher(nn.Module):
             'anchor': anchors_xyxy      # [1,1,N,4]
         }
 
+        return pred_dict, output_dict, query_feat, clip_feat_stx
+
+    def forward(
+        self,
+        segment,
+        query,
+        compute_loss = False,
+        training = True,
+        before_query_mask: None | torch.Tensor = None,
+        gt_probs: None | torch.Tensor = None,
+        gt_bboxes: None | torch.Tensor = None,  # yxyx
+        use_hnm: bool = False,
+        rt_pos_queries = None,
+        rt_pos_top_k = 1,
+        rt_pos_idx = None, # -1 means not gt
+        rt_pos = False,
+        sim_mode = 'max',
+        sim_thr = 0.0,
+        enable_rt_pq_threshold=False,
+
+        get_intermediate_features = False,
+
+        max_epochs = None,
+        cur_epoch = None,
+        **kwargs
+    ):
+        '''
+        clip: in shape [b,t,c,h,w]
+        query: in shape [b,c,h2,w2]
+        before_query_mask:
+        gt_bboxes:
+        '''
+        b, t = segment.shape[:2]
+        device = segment.device
+        output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
+
+        segment = rearrange(segment, 'b t c h w -> (b t) c h w')
+        with self.backbone_context():
+            clip_feat_dict = self.extract_feature(segment)
+            
+        if rt_pos and training:
+            changed_query, output_dict = self.compute_rt_pos_queries(rt_pos,
+                                                rt_pos_idx,
+                                                rt_pos_queries,
+                                                b, t,
+                                                self.sim_between,
+                                                sim_thr,
+                                                sim_mode,
+                                                enable_rt_pq_threshold,
+                                                get_intermediate_features,
+                                                output_dict,
+                                                device,
+                                                query)
+        if rt_pos and not self.box_penalty:
+            query = changed_query
+        query_feat_dict = self.extract_feature(query)
+            
+        if self.box_penalty and training:
+            query_feat_penalty_dict = self.extract_feature(changed_query)
+                
+        pred_dict, output_dict, query_feat, clip_feat_stx = self.inner_forward(query_feat_dict, clip_feat_dict, output_dict,    
+                                                       get_intermediate_features, use_hnm, 
+                                                       compute_loss, device, t, b)
+        
+        if self.box_penalty and training:
+            output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
+            pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = self.inner_forward(query_feat_penalty_dict, 
+                                        clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
+        
         if compute_loss:
             assert before_query_mask is not None
             assert gt_probs is not None
             assert gt_bboxes is not None
-
+            
             # rename variables for `get_losses_with_anchor` interface
             gts = {
                 'before_query': before_query_mask,  # [b,t]
@@ -1061,6 +1107,25 @@ class ClipMatcher(nn.Module):
                 # 'hw': None,                     # [b,t,2]
                 # 'center': None,                 # [b,t,2]
             }
+            
+            output_dict, _, preds_top = self.compute_losses_with_anchor(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict)
+            if self.box_penalty and training:
+                output_dict_penalty, pred_dict_penalty_ori, _ = self.compute_losses_with_anchor(pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict_penalty)
+                
+                gt_probs = torch.ones([b, t]).to(device)
+                gts = {
+                    'before_query': before_query_mask,
+                    'clip_with_bbox': gt_probs,
+                    'clip_bbox': preds_top['bbox']
+                    }
+                
+                output_dict_compare, _, _ = self.compute_losses_with_anchor(pred_dict_penalty_ori, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict)
+                
+                output_dict['loss'] = (output_dict['loss'] + output_dict_penalty['loss'] + output_dict_compare['loss']) / 3
+
+        return output_dict
+    
+    def compute_losses_with_anchor(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict):
             # acutal loss calculation
             loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
                 pred_dict, gts,
@@ -1165,8 +1230,9 @@ class ClipMatcher(nn.Module):
 
 
             # for logging - metrics
+            preds_top_ori = preds_top.copy()
             preds_top = detach_dict(preds_top)
-            prob: torch.Tensor = prob.detach()
+            prob: torch.Tensor = pred_dict['prob'].detach()
             b, t, N = prob.shape
             ious, gious = loss_dict['iou'], loss_dict['giou']  # both [b*t*N]
             prob_theta = .5
@@ -1212,13 +1278,14 @@ class ClipMatcher(nn.Module):
                 'gts': gts,                 # gts with hw, center computed
             }
 
+            pred_dict_ori = pred_dict.copy()
             # gather all outputs
             output_dict.update({'loss': total_loss})  # for backward
             output_dict.update({'log_dict': log_dict})  # for logging
             output_dict.update({'info_dict': info_dict})  # for debugging
-        output_dict.update({'pred_dict': detach_dict(pred_dict)})
-
-        return output_dict
+            output_dict.update({'pred_dict': detach_dict(pred_dict)})
+            
+            return output_dict, pred_dict_ori, preds_top_ori
 
 
 class Head(nn.Module):
