@@ -18,6 +18,8 @@ from ltvu.dataset import (
     EgoTracksFitDataset, EgoTracksEvalDataset,
     LaSOTFitDataset, LaSOTEvalDataset,
     Trek150FitDataset, Trek150EvalDataset,
+    GOT10KFitDataset, GOT10KEvalDataset,
+    TrackingNetFitDataset, TrackingNetEvalDataset,
 )
 from ltvu.preprocess import generate_flat_annotations_vq2d, generate_flat_annotations_egotracks
 from ltvu.bbox_ops import check_bbox
@@ -55,6 +57,9 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.strict_bbox_check: bool = aug_config.strict_bbox_check
 
         self.rt_pos_query = config.get('rt_pos_query')
+        self.box_aug = ds_config.get('box_aug', False)
+        
+        self.add_aug: bool = self.rt_pos_query.get('add_aug', False) if self.rt_pos_query is not None else False
 
         self.save_hyperparameters(ignore='config')  # to avoid saving unresolved config as a hyperparameter
         self.save_hyperparameters(OmegaConf.to_container(config, resolve=True), logger=False)  # to save the config in the checkpoint
@@ -62,6 +67,11 @@ class LitVQ2DDataModule(L.LightningDataModule):
         # GPU accelerated data preprocessing
         self.normalization = kornia.enhance.Normalize(mean=MEAN, std=STD)
         self.transform_clip: K.AugmentationSequential = instantiate(aug_config.segment.aug_list)
+        if self.add_aug:
+            self.transform_rt_pos_query: K.AugmentationSequential = instantiate(aug_config.rt_pos_query.aug_list)
+            
+        if self.box_aug:
+            self.transform_box_aug: K.AugmentationSequential = instantiate(aug_config.box_aug.aug_list)
 
     def prepare_data(self):
         """Calls generate_flat_annotations_vq2d to save the flat annotations.
@@ -105,10 +115,28 @@ class LitVQ2DDataModule(L.LightningDataModule):
         batch.update({
             'segment': segment, 'query': query,
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
+        
+        if self.box_aug and self.trainer is not None and self.trainer.training:
+            aug_segment = batch['experiment']['box_aug']['aug_segment']
+            bsz = aug_segment.shape[0]
+            
+            aug_segment = self.transform_box_aug(aug_segment)  # [b,t,c,h,w]
+            aug_segment = rearrange(aug_segment, 'b t c h w -> (b t) c h w')
+            aug_segment = self.normalization(aug_segment)  # [b*t,c,h,w]
+            aug_segment = rearrange(aug_segment, '(b t) c h w -> b t c h w', b=bsz)
+            batch['aug_segment'] = aug_segment
+            batch['aug_gt_rt'] = batch['experiment']['box_aug']['aug_gt_rt']
 
         if self.rt_pos_query is not None and self.trainer is not None and self.trainer.training:
             rt_pos_queries = batch['experiment']['multi_query']['rt_pos_queries']  # [b, #Q, c, h, w]
-            bsz = rt_pos_queries.shape[0]
+            rt_pos_idx = batch['experiment']['multi_query']['rt_pos_idx']
+            bsz, q, c, h, w = rt_pos_queries.shape
+            if self.add_aug:
+                mask = (rt_pos_idx == -1) # [b, #Q]
+                mask = mask[:, :, None, None, None]
+                transformed_rt_pos_queries = self.transform_rt_pos_query(rt_pos_queries)  # Shape: [bsz, #Q, c, h, w]
+                rt_pos_queries = torch.where(mask, transformed_rt_pos_queries, rt_pos_queries)
+                rt_pos_idx = torch.ones((bsz, q), device=rt_pos_idx.device)
             rt_pos_queries = rearrange(rt_pos_queries, 'b q c h w -> (b q) c h w')
             rt_pos_queries = self.normalization(rt_pos_queries)  # [b*#Q, c, h, w]
             rt_pos_queries = rearrange(rt_pos_queries, '(b q) c h w -> b q c h w', b=bsz)
@@ -263,85 +291,158 @@ class LitVQ2DDataModule(L.LightningDataModule):
 class LitEgoTracksDataModule(LitVQ2DDataModule):
     ALL_NUM_CLIPS = 3537 + 1157 + 66  # train + val + challenge_test_unannotated
     ALL_NUM_ANNS = [13129 + 13619, 4468 + 4504, 1 + 244]  # train, val, challenge_test_unannotated
+    
+    def __init__(self, config):
+        super().__init__(config)
+        self.lasot_config = self.config.dataset.lasot
+        self.got10k_config = self.config.dataset.got10k
+        self.trackingnet_config = self.config.dataset.trackingnet
+        self.egotracks_config = self.config.dataset.egotracks
 
     def prepare_data(self):
-        """Calls generate_flat_annotations_vq2d to save the flat annotations.
-        And report the number of video uids and clip uids.
-        """
-        print('Preparing data...')
-        video_uids, clip_uids = set(), set()
-        for split, desired_num_anns in zip(['train', 'val', 'challenge_test_unannotated'], self.ALL_NUM_ANNS):
-            p_ann = self.p_anns_dir / f'egotracks_{split}_anno.json'
-            p_official_ann = self.p_official_anns_dir / f'egotracks_{split}.json'
-            if p_ann.exists():
-                flat_anns = json.load(p_ann.open())
-            else:
-                flat_anns = generate_flat_annotations_egotracks(p_official_ann)
-            assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
-            print(f'Found {len(flat_anns)} annotations in {split}.')
-            if not p_ann.exists():
-                json.dump(flat_anns, p_ann.open('w'))
-            for ann in flat_anns:
-                video_uids.add(ann['video_uid'])
-                if 'clip_uid' in ann:
-                    clip_uids.add(ann['clip_uid'])
-        assert len(clip_uids) == self.ALL_NUM_CLIPS, f'Expected {self.ALL_NUM_CLIPS} clips, got {len(clip_uids)}'
-        p_video_uids = self.p_anns_dir / 'video_uids.txt'
-        p_clip_uids = self.p_anns_dir / 'clip_uids.txt'
-        p_video_uids.write_text(' '.join(sorted(video_uids)))
-        p_clip_uids.write_text(' '.join(sorted(clip_uids)))
-        print(f'Found {len(video_uids)} video uids and {len(clip_uids)} clip uids.')
-        print(f'Video uids are saved in {p_video_uids}')
-        print(f'Clip uids are saved in {p_clip_uids}')
-        print('Data preparation done.')
+        # """Calls generate_flat_annotations_vq2d to save the flat annotations.
+        # And report the number of video uids and clip uids.
+        # """
+        # print('Preparing data...')
+        # video_uids, clip_uids = set(), set()
+        # for split, desired_num_anns in zip(['train', 'val', 'challenge_test_unannotated'], self.ALL_NUM_ANNS):
+        #     p_ann = self.p_anns_dir / f'egotracks_{split}_anno.json'
+        #     p_official_ann = self.p_official_anns_dir / f'egotracks_{split}.json'
+        #     if p_ann.exists():
+        #         flat_anns = json.load(p_ann.open())
+        #     else:
+        #         flat_anns = generate_flat_annotations_egotracks(p_official_ann)
+        #     assert len(flat_anns) == desired_num_anns, f'Split {split} has {len(flat_anns)} annotations, expected {desired_num_anns}'
+        #     print(f'Found {len(flat_anns)} annotations in {split}.')
+        #     if not p_ann.exists():
+        #         json.dump(flat_anns, p_ann.open('w'))
+        #     for ann in flat_anns:
+        #         video_uids.add(ann['video_uid'])
+        #         if 'clip_uid' in ann:
+        #             clip_uids.add(ann['clip_uid'])
+        # assert len(clip_uids) == self.ALL_NUM_CLIPS, f'Expected {self.ALL_NUM_CLIPS} clips, got {len(clip_uids)}'
+        # p_video_uids = self.p_anns_dir / 'video_uids.txt'
+        # p_clip_uids = self.p_anns_dir / 'clip_uids.txt'
+        # p_video_uids.write_text(' '.join(sorted(video_uids)))
+        # p_clip_uids.write_text(' '.join(sorted(clip_uids)))
+        # print(f'Found {len(video_uids)} video uids and {len(clip_uids)} clip uids.')
+        # print(f'Video uids are saved in {p_video_uids}')
+        # print(f'Clip uids are saved in {p_clip_uids}')
+        # print('Data preparation done.')
+        pass
 
     def train_dataloader(self, shuffle=True):
-        return torch.utils.data.DataLoader(
-            EgoTracksFitDataset(self.config, split='train'),
-            batch_size=self.batch_size,
-            shuffle=shuffle,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=True,
-        )
+        if self.config.get('ckpt_finetune_from', None) is not None: # finetuning
+            self.config.dataset = self.egotracks_config
+            return torch.utils.data.DataLoader(
+                EgoTracksFitDataset(self.config, split='train'),
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,)
+        else: # pretrained
+            self.config.dataset = self.lasot_config
+            ds1 = LaSOTFitDataset(self.config, split='train')
+            self.config.dataset = self.got10k_config
+            ds2 = GOT10KFitDataset(self.config, split='train')
+            self.config.dataset = self.trackingnet_config
+            ds3 = TrackingNetFitDataset(self.config, split='train')
+            
+            dataset = torch.utils.data.ConcatDataset([ds1, ds2, ds3])
+            return torch.utils.data.DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=shuffle,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=True,
+            )
 
     def val_dataloader(self):
-        return torch.utils.data.DataLoader(
-            EgoTracksFitDataset(self.config, split='val'),
-            batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
+        if self.config.get('ckpt_finetune_from', None) is not None: # finetuning
+            self.config.dataset = self.egotracks_config
+            return torch.utils.data.DataLoader(
+                EgoTracksFitDataset(self.config, split='val'),
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,)
+        else: # pretrained
+            
+            self.config.dataset = self.lasot_config
+            ds1 = LaSOTFitDataset(self.config, split='test')
+            self.config.dataset = self.got10k_config
+            ds2 = GOT10KFitDataset(self.config, split='val')
+            self.config.dataset = self.trackingnet_config
+            ds3 = TrackingNetFitDataset(self.config, split='test')
+            
+            dataset = torch.utils.data.ConcatDataset([ds1, ds2, ds3])
+            return torch.utils.data.DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
 
     def pred_dataloader(self):
-        return torch.utils.data.DataLoader(
-            EgoTracksEvalDataset(self.config, split='val'),
-            batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
+        if self.config.get('ckpt_finetune_from', None) is not None:
+            self.config.dataset = self.egotracks_config
+            return torch.utils.data.DataLoader(
+                EgoTracksEvalDataset(self.config, split='val'),
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
+        else: # pretrained
+            self.config.dataset = self.lasot_config
+            ds1 = LaSOTFitDataset(self.config, split='test')
+            self.config.dataset = self.got10k_config
+            ds2 = GOT10KFitDataset(self.config, split='val')
+            self.config.dataset = self.trackingnet_config
+            ds3 = TrackingNetFitDataset(self.config, split='test')
+            
+            dataset = torch.utils.data.ConcatDataset([ds1, ds2, ds3])
+            return torch.utils.data.DataLoader(
+                dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
 
     def test_dataloader(self):
-        return torch.utils.data.DataLoader(
-            EgoTracksEvalDataset(self.config, split='challenge_test_unannotated'),
-            batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
+        if self.config.get('ckpt_finetune_from', None) is not None:
+            return torch.utils.data.DataLoader(
+                EgoTracksEvalDataset(self.config, split='challenge_test_unannotated'),
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
+        else:
+            raise NotImplementedError
 
 
 class LitLaSOTDataModule(LitVQ2DDataModule):

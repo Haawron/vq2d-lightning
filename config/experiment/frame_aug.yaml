@@ -1,0 +1,8 @@
+# @package _global_
+
+# usage: python train.py +experiment=frame_aug
+
+dataset:
+  box_aug: True
+
+late_epoch_box_aug: 0
