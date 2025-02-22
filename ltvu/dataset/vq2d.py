@@ -62,6 +62,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.frame_incremental_level = 0
         self.split = split
         self.movement = movement
+        self.frame_box_aug = ds_config.get('frame_box_aug')
         if movement != "":
             assert movement in ['slow', 'medium', 'fast', 'slow2', 'medium2', 'fast2'], f'Invalid movement: {movement}'
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
@@ -103,7 +104,12 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs)
 
         query = self.get_query(ann)
-        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        
+        if self.frame_incremental and self.frame_box_aug:
+            assert self.config.dataset.get('frame_dash'), 'frame_dash must be True'
+            if random.random() < self.dash_rate:
+                segment, gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -178,19 +184,19 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                     frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
             else:
                 if self.frame_incremental_level == 0:
-                    dash_rate = 0.0
+                    self.dash_rate = 0.0
                     frame_stride = 2
                 elif self.frame_incremental_level == 1:
-                    dash_rate = 0.2
+                    self.dash_rate = 0.2
                     frame_stride = 2
                 elif self.frame_incremental_level == 2:
-                    dash_rate = 0.4
+                    self.dash_rate = 0.4
                     frame_stride = 2 if random.random() < 0.7 else 3
                 elif self.frame_incremental_level == 3:
-                    dash_rate = 0.6
+                    self.dash_rate = 0.6
                     frame_stride = 2 if random.random() < 0.5 else 3
                     # frame_stride = 3
-                if random.random() < dash_rate:
+                if random.random() < self.dash_rate:
                     frame_idxs = self.reorder_frames(frame_idxs, frame_stride)
                     
         return frame_idxs
@@ -246,10 +252,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         # resize
         frames = F.interpolate(frames, size=self.segment_size, mode='bilinear', align_corners=True, antialias=True)
 
+        gt_rt_ori = bboxes.copy()
         # normalize
         bboxes /= hw_pad
 
-        return frames, bboxes
+        return frames, bboxes, gt_rt_ori
 
     def get_query(self, ann):
         vc = ann['visual_crop']
@@ -368,6 +375,57 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         bboxes = bboxes.clip(0, 1)
 
         return bboxes, seg_with_gt.astype(np.float32)
+   
+    def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
+        gt_idx = np.where(gt_prob == 1)[0]
+        aug_segment = segment.clone()
+        aug_gt_rt = gt_rt.copy()
+        gt_rt_original = gt_rt_ori.copy()
+        gt_box = gt_rt_original[gt_idx]
+        num_boxes = len(gt_box)
+        
+        if not len(gt_box) <=2:
+            # Compute center points, width, and height
+            cx = (gt_box[:, 1] + gt_box[:, 3]) / 2
+            cy = (gt_box[:, 0] + gt_box[:, 2]) / 2
+            w = gt_box[:, 3] - gt_box[:, 1]
+            h = gt_box[:, 2] - gt_box[:, 0]
+            
+            # Compute pairwise distances
+            cx_diff = cx[:, None] - cx[None, :]
+            cy_diff = cy[:, None] - cy[None, :]
+            distance = np.sqrt(cx_diff**2 + cy_diff**2)
+            
+            # Compute width and height differences
+            delta_w = w[:, None] - w[None, :]
+            delta_h = h[:, None] - h[None, :]
+            
+            # Compute scale ratios safely
+            valid_w = (w[:, None] > 0) & (w[None, :] > 0)
+            valid_h = (h[:, None] > 0) & (h[None, :] > 0)
+            scale_w = np.where(valid_w, np.log(w[:, None] / w[None, :]), 0)
+            scale_h = np.where(valid_h, np.log(h[:, None] / h[None, :]), 0)
+
+            # Compute total change (delta)
+            delta_total = distance + np.abs(delta_w) + np.abs(delta_h) + np.abs(scale_w) + np.abs(scale_h)
+
+            # Create a new order of boxes
+            new_order = [0]  # Start with the first box
+            available_indices = set(range(1, num_boxes))  # Remaining boxes to be chosen
+
+            for _ in range(1, num_boxes):
+                last_idx = new_order[-1]  # The most recently chosen box
+                # Select the most different box
+                remaining_deltas = delta_total[last_idx, list(available_indices)]
+                most_different_idx = list(available_indices)[np.argmax(remaining_deltas)]
+                new_order.append(most_different_idx)
+                available_indices.remove(most_different_idx)
+
+            # Apply the new order
+            aug_gt_rt[gt_idx] = aug_gt_rt[gt_idx[new_order]]
+            aug_segment[gt_idx] = aug_segment[gt_idx[new_order]]
+        
+        return aug_segment, aug_gt_rt
 
 
 def sample_nearby_gt_frames(
@@ -508,7 +566,7 @@ class VQ2DEvalDataset(VQ2DFitDataset):
                             segment[ii, :, bbox[0]:bbox[2], bbox[1]:bbox[3]] = torch.rand(3, bbox[2] - bbox[0], bbox[3] - bbox[1])
 
 
-        segment, gt_rt = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
+        segment, gt_rt, _ = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
 
         return {
             # inputs
