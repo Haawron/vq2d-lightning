@@ -83,11 +83,13 @@ class LitModule(L.LightningModule):
         self.max_steps = self.config.trainer.max_steps
 
         self.rt_pos_query = config.get('rt_pos_query')
+        self.track_continual = config.dataset.get('track_continual')
+        self.track_last = config.dataset.get('track_last')
 
     ############ major hooks ############
     
     def on_train_batch_start(self, batch, batch_idx):
-        if hasattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+        if getattr(self.trainer.datamodule, "dataset", False) and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
             global_step = self.trainer.global_step
             dataset = self.trainer.datamodule.dataset
             
@@ -158,10 +160,14 @@ class LitModule(L.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         bsz = batch['segment'].shape[0]
         device = batch['segment'].device
-        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-        # bbox: [b,t,4], in pixels wrt the original, yxyx, float
-        # prob: [b,t], logits, float
-        preds_top = output_dict['info_dict']['preds_top']
+        
+        if getattr(self.trainer.datamodule, "dataset", False) and hasattr(self.trainer.datamodule.dataset, "track_continual"):
+            preds_top = self.continual_tracking(batch_idx, device)
+        else:    
+            output_dict = self.model.forward(**batch, compute_loss=True, training=False)
+            # bbox: [b,t,4], in pixels wrt the original, yxyx, float
+            # prob: [b,t], logits, float
+            preds_top = output_dict['info_dict']['preds_top']
         pred_outputs = []
         for bidx in range(bsz):
             ow, oh = batch['original_width'][bidx], batch['original_height'][bidx]
@@ -186,6 +192,34 @@ class LitModule(L.LightningModule):
                 'frame_idxs': batch['frame_idxs'][bidx].cpu(),  # check missing or duplicated frames (last frame can be duplicated)
             })
         return pred_outputs
+    
+    def continual_tracking(self, batch_idx, device):
+        dm = self.trainer.datamodule
+        pred_query = None
+        segment_loader = dm.get_segment_item(batch_idx)
+        bboxes, probs = [], []
+        for seg_batch in segment_loader:
+            segment_ori = seg_batch['segment']
+            if pred_query is not None:
+                seg_batch['query'] = pred_query
+            seg_batch = dm.on_after_batch_transfer(seg_batch, dataloader_idx=0)
+            seg_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in seg_batch.items()}
+            
+            segment_output_dict = self.model.forward(**seg_batch, compute_loss=True, training=False)
+            segment_top = segment_output_dict['info_dict']['preds_top']
+            
+            bbox_yxyx = segment_top['bbox'][0]
+            segment_scores = segment_top['prob'][0].cpu()
+            top_idx = -1 if self.track_last else segment_scores.argmax()
+            pred_query = dm.dataset.get_query(segment_ori[0], bbox_yxyx.cpu().numpy(), top_idx).unsqueeze(0).to(device)
+            bboxes.append(segment_top['bbox'])
+            probs.append(segment_top['prob'])
+        
+        segment_tops = {
+            'bbox': torch.cat(bboxes, dim=1),
+            'prob': torch.cat(probs, dim=1),
+        }
+        return segment_tops
 
     def configure_optimizers(self):
         optim_config = self.config.optim

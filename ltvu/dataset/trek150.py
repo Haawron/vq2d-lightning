@@ -26,6 +26,10 @@ class Trek150Dataset(torch.utils.data.Dataset):
         self.seq_dirs = [os.path.join(ds_config.clips_dir, n) for n in self.seq_names] # ['/data/dataset/trek150/TREK-150/P03-P03_02-558','/data/dataset/trek150/TREK-150/P03-P03_02-56',]
         self.random_pos_query = False
         self.ope_benchmark = ds_config.get("ope_benchmark")
+        self.track_continual = ds_config.get("track_continual")
+        if self.track_continual:
+            if self.config.batch_size != 1:
+                raise ValueError("Batch size must be 1 for continual tracking")
         
         self.num_frames: int = ds_config.num_frames
         self.frame_interval: int = ds_config.frame_interval
@@ -52,24 +56,6 @@ class Trek150Dataset(torch.utils.data.Dataset):
                 'gt_st': gt_st,
                 'clip_frames': frames,
             })
-        # for p_class_dir in sorted(self.p_lasot_rootdir.glob('*')):
-        #     if not p_class_dir.is_dir():
-        #         continue
-        #     if 'cache' in p_class_dir.stem:
-        #         continue
-        #     class_name = p_class_dir.stem
-        #     for p_clip in sorted(p_class_dir.glob('*'), key=lambda p: int(p.stem.split('-')[-1])):
-        #         clip_uid = p_clip.stem
-        #         if clip_uid not in self.split_csv:
-        #             continue
-        #         clip_idx = int(clip_uid.split('-')[-1])
-        #         gt_st = pd.read_csv(p_clip / 'groundtruth.txt', header=None, names=['x', 'y', 'w', 'h'])
-        #         self.anns.append({
-        #             'class_name': class_name,
-        #             'clip_idx': clip_idx,
-        #             'p_clip': p_clip,
-        #             'gt_st': gt_st,
-        #         })
 
     def __len__(self):
         return len(self.anns)
@@ -138,11 +124,11 @@ class Trek150Dataset(torch.utils.data.Dataset):
         gt_st /= [oh, ow, oh, ow]
         return gt_st, np.ones(len(frame_idxs))
 
-    def get_query(self, segment, gt_stt):
+    def get_query(self, segment, gt_stt, _idx=0):
         if self.split == 'train' and self.random_pos_query and np.random.rand() < .5:
             idx = np.random.randint(0, len(segment))
         else:
-            idx = 0
+            idx = _idx
 
         query = segment[idx]
         oh, ow = segment.shape[-2:]
@@ -274,11 +260,13 @@ class Trek150EvalDataset(Trek150Dataset):
                     'qset_uuid': p_clip.stem,
                     'num_segments': num_segments,
                 })
+                if self.track_continual:
+                    break
 
     def __len__(self):
         return len(self.all_segments)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, _seg_idx=0):
         seg_info = self.all_segments[idx]
         ann_idx, seg_idx = seg_info['ann_idx'], seg_info['seg_idx']
         ann = self.anns[ann_idx]
@@ -287,7 +275,11 @@ class Trek150EvalDataset(Trek150Dataset):
         num_frames_clip = len(ann['gt_st'])
         t = self.num_frames_per_segment
         start_idx = int(ann['clip_frames'][0])
-        frame_idxs = np.arange(seg_idx * t, (seg_idx + 1) * t, self.frame_interval)
+        if self.track_continual:
+            all_frame_idxs = np.array([int(i) for i in ann['clip_frames']]) - int(ann['clip_frames'][0])
+            frame_idxs = np.arange(_seg_idx * t, (_seg_idx + 1) * t, self.frame_interval)
+        else:
+            frame_idxs = np.arange(seg_idx * t, (seg_idx + 1) * t, self.frame_interval)
         frame_idxs[frame_idxs >= num_frames_clip] = num_frames_clip - 1  # repeat
 
         segment = self.get_segment_frames(ann, frame_idxs + start_idx)  # [t, c, h, w]
@@ -301,6 +293,8 @@ class Trek150EvalDataset(Trek150Dataset):
             query = self.get_query(segment, gt_stt)
         segment, gt_stt = self.pad_and_resize(segment, gt_stt)  # [t, c, s, s], [t, 4]
 
+        if self.track_continual:
+            frame_idxs = all_frame_idxs
         return {
             # inputs
             'segment': segment,  # [t, c, h, w], normalized
@@ -327,7 +321,7 @@ if __name__ == '__main__':
     # python -Bm ltvu.dataset.trek150
     import hydra
     hydra.initialize(config_path='../../config', version_base='1.3')
-    config = hydra.compose(config_name='train', overrides=['dataset=trek150'])
+    config = hydra.compose(config_name='train', overrides=['dataset=trek150','dataset.track_continual=True'])
     import lightning as L
     # L.seed_everything(42)
     # ds = Trek150Dataset(config, split='train')

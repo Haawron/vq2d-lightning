@@ -19,3 +19,5 @@ query_padding: False
 query_square: True
 padding_value: 'zero'  # zero or mean
 num_train_samples: 13607
+track_continual: True
+track_last : False

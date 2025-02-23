@@ -42,7 +42,10 @@ def main(config: DictConfig):
     log_to_console(OmegaConf.to_yaml(config, resolve=True))
     log_to_console("="*80 + '\n')
 
-    trainer, _ = get_trainer(config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False)
+    if config.dataset.get('track_continual'):
+        trainer, _ = get_trainer(config, jid=jid, enable_progress_bar=True, enable_checkpointing=False)
+    else:
+        trainer, _ = get_trainer(config, jid=jid, enable_progress_bar=not within_slurm_batch(), enable_checkpointing=False)
 
     assert config.ckpt is not None, "Please provide a checkpoint path"
     p_ckpt = Path(config.ckpt)

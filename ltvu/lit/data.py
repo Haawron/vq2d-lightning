@@ -422,8 +422,9 @@ class LitTrek150DataModule(LitVQ2DDataModule):
         )
 
     def pred_dataloader(self):
+        self.dataset = Trek150EvalDataset(self.config, split='test')
         return torch.utils.data.DataLoader(
-            Trek150EvalDataset(self.config, split='test'),
+            self.dataset,
             batch_size=self.batch_size,
             shuffle=False,
             pin_memory=self.pin_memory,
@@ -436,6 +437,22 @@ class LitTrek150DataModule(LitVQ2DDataModule):
     def test_dataloader(self):
         raise NotImplementedError
 
+    def get_segment_item(self, idx):
+        segment_config = OmegaConf.merge(self.config, {"dataset": {"track_continual": False}})
+        ds = Trek150EvalDataset(segment_config, split='test')
+        ds.all_segments = [seg for seg in ds.all_segments if seg['ann_idx'] == idx]
+        dl = torch.utils.data.DataLoader(
+            ds,
+            batch_size=1,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=1,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
+        )
+        
+        return [next(iter(dl)) for i in range(len(dl))]
 
 if __name__ == '__main__':
     import os

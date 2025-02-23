@@ -352,6 +352,7 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
         output_dir,
         official_anns_dir,
         test_submit = False,
+        config = None,
     ):
         super().__init__(write_interval="batch")
         self.p_outdir = Path(output_dir)
@@ -362,6 +363,7 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
         self.rank_seg_preds = []
         self.test_submit = test_submit
         self.official_anns_dir = Path(official_anns_dir)
+        self.track_continual = config.dataset.get('track_continual')
 
         self.split = 'test'
 
@@ -418,17 +420,26 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
             for qset_uuid, qset_seg_preds in all_seg_preds.items():
                 new_ret_bboxes, new_ret_scores, frame_idxs = [], [], []
                 num_segments = len(qset_seg_preds)
-                for seg_idx, seg_pred in enumerate(qset_seg_preds):
-                    assert seg_pred is not None, f'{qset_uuid}_{seg_idx}_{num_segments}'
-                    new_ret_bboxes.append(seg_pred['ret_bboxes'])
-                    new_ret_scores.append(seg_pred['ret_scores'])
-                    frame_idxs.append(seg_pred['frame_idxs'])
-                frame_idxs = torch.cat(frame_idxs, dim=0)
-                mask_duplicated = frame_idxs == torch.cat([torch.tensor([-1]), frame_idxs[:-1]])
-                qset_preds[qset_uuid] = {
-                    'ret_bboxes': torch.cat(new_ret_bboxes, dim=0)[~mask_duplicated],
-                    'ret_scores': torch.cat(new_ret_scores, dim=0)[~mask_duplicated],
-                }
+                if self.track_continual:
+                    seg_pred = qset_seg_preds[0]
+                    assert seg_pred is not None, f'{qset_uuid}_{0}_{num_segments}'
+                    frame_idxs = seg_pred['frame_idxs']
+                    qset_preds[qset_uuid] = {
+                        'ret_bboxes': seg_pred['ret_bboxes'][:len(frame_idxs)],
+                        'ret_scores': seg_pred['ret_scores'][:len(frame_idxs)],
+                    }
+                else:
+                    for seg_idx, seg_pred in enumerate(qset_seg_preds):
+                        assert seg_pred is not None, f'{qset_uuid}_{seg_idx}_{num_segments}'
+                        new_ret_bboxes.append(seg_pred['ret_bboxes'])
+                        new_ret_scores.append(seg_pred['ret_scores'])
+                        frame_idxs.append(seg_pred['frame_idxs'])
+                    frame_idxs = torch.cat(frame_idxs, dim=0)
+                    mask_duplicated = frame_idxs == torch.cat([torch.tensor([-1]), frame_idxs[:-1]])
+                    qset_preds[qset_uuid] = {
+                        'ret_bboxes': torch.cat(new_ret_bboxes, dim=0)[~mask_duplicated],
+                        'ret_scores': torch.cat(new_ret_scores, dim=0)[~mask_duplicated],
+                    }
 
             # save intermediate results
             print('Saving intermediate results...')

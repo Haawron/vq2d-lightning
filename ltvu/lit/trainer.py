@@ -49,7 +49,8 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
     elif task == 'trek150':
         callbacks.append(PerSegmentWriterTrek150(
             output_dir=runtime_outdir / 'trek150',
-            official_anns_dir=config.dataset.official_anns_dir))
+            official_anns_dir=config.dataset.official_anns_dir,
+            config=config))
 
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
