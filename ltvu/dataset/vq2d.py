@@ -56,13 +56,19 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.rt_pos_query = config.get('rt_pos_query')
         if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
+        self.frame_dash_aug = self.config.dataset.get('frame_dash_aug')
         self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
         self.frame_stride = self.config.dataset.get('frame_stride')
         self.frame_incremental = self.config.dataset.get('frame_incremental')
         self.frame_incremental_level = 0
+        self.frame_box_aug = ds_config.get('frame_box_aug')
+        self.frame_random = ds_config.get('frame_random', False)
+        self.box_aug = config.dataset.get('box_aug', False)
+        self.box_aug_mode = None
         self.split = split
         self.movement = movement
-        self.frame_box_aug = ds_config.get('frame_box_aug')
+        if ds_config.get('box_aug'):
+            self.frame_box_aug = True
         if movement != "":
             assert movement in ['slow', 'medium', 'fast', 'slow2', 'medium2', 'fast2'], f'Invalid movement: {movement}'
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
@@ -92,11 +98,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         assert idxs_required.issubset(idxs_avail), \
             f'{clip_uid} does not have all required frames in {p_clip_dir}: {idxs_required - idxs_avail}'
             
-        # self.frame_dash_rate = self.config.dataset.get('frame_dash_rate')
-        # if self.config.dataset.get('frame_dash') and self.split == 'train' and random.random() < self.frame_dash_rate:
-        #     self.frame_stride = self.config.dataset.get('frame_stride')
-        #     frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
-
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
         gt_rt, gt_prob = self.get_response_track(ann, frame_idxs)  # prob as a binary mask
 
@@ -106,10 +107,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = self.get_query(ann)
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
-        if self.frame_incremental and self.frame_box_aug:
-            assert self.config.dataset.get('frame_dash'), 'frame_dash must be True'
-            if random.random() < self.dash_rate:
-                segment, gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug):
+            segment, gt_rt = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -147,7 +146,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
     def sample_frame_idxs(self, num_frames: int, frame_interval: int, clip_len: int, gt_ext = None):
         frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)                
-        frame_idxs = self.frame_dash(frame_idxs)                
+        # frame_idxs = self.frame_dash(frame_idxs)                
         frame_idxs = shift_indices_to_clip_range(frame_idxs, clip_len)
         return frame_idxs
 
@@ -177,59 +176,89 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         return frames
     
-    def frame_dash(self, frame_idxs):
-        if self.config.dataset.get('frame_dash') and self.split == 'train':
+    def frame_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
+        if self.split == 'train':
             if not self.frame_incremental:
-                if random.random() < self.frame_dash_rate:
-                    frame_idxs = self.reorder_frames(frame_idxs, self.frame_stride)
-            else:
+                if self.frame_dash_aug and random.random() < self.frame_dash_rate:
+                    segment, gt_rt = self.frame_dash(segment, gt_rt, self.frame_stride)
+                if self.frame_box_aug and random.random() < 0.5 or True:
+                    if self.frame_random:
+                        gt_idx = np.where(gt_prob == 1)[0]
+                        gt_idx_shuffled = np.random.permutation(gt_idx) 
+                        segment[gt_idx] = segment[gt_idx_shuffled]
+                        gt_rt[gt_idx] = gt_rt[gt_idx_shuffled]
+                    else:
+                        segment, gt_rt = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+            elif self.frame_incremental:
+                dash_rate, box_rate = 0, 0
                 if self.frame_incremental_level == 0:
-                    self.dash_rate = 0.0
+                    total_rate = 0.0
                     frame_stride = 2
                 elif self.frame_incremental_level == 1:
-                    self.dash_rate = 0.2
+                    total_rate = 0.2
                     frame_stride = 2
                 elif self.frame_incremental_level == 2:
-                    self.dash_rate = 0.4
+                    total_rate = 0.4
                     frame_stride = 2 if random.random() < 0.7 else 3
                 elif self.frame_incremental_level == 3:
-                    self.dash_rate = 0.6
+                    total_rate = 0.6
                     frame_stride = 2 if random.random() < 0.5 else 3
-                    # frame_stride = 3
-                if random.random() < self.dash_rate:
-                    frame_idxs = self.reorder_frames(frame_idxs, frame_stride)
                     
-        return frame_idxs
+                if self.frame_dash_aug and self.frame_box_aug:
+                    dash_rate = total_rate / 2
+                    box_rate = total_rate / 2
+                elif self.frame_box_aug:
+                    box_rate = total_rate
+                elif self.frame_dash_aug:
+                    dash_rate = total_rate
+                    
+                random_rate = random.random()
+                if random_rate < dash_rate:
+                    segment, gt_rt = self.frame_dash(segment, gt_rt, frame_stride)
+                elif random_rate < dash_rate + box_rate:
+                    segment, gt_rt = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                    
+        return segment, gt_rt
     
-    def reorder_frames(self, frame_idxs, frame_stride):
-        if frame_stride == 2:
-            # 1. move forward
-            forward = frame_idxs[::frame_stride]
-            remaining = np.setdiff1d(frame_idxs, forward, assume_unique=True)  # exclude selected
+    def frame_dash(self, segment, gt_rt, frame_stride):
+        num_frames = self.num_frames 
 
-            # 2. move backward
+        if frame_stride == 2:
+            forward = np.arange(0, num_frames, frame_stride)
+            remaining = np.setdiff1d(np.arange(num_frames), forward, assume_unique=True)
             backward = remaining[::-1]
 
-            result = np.concatenate([forward, backward])
+            new_order = np.concatenate([forward, backward])
 
         elif frame_stride == 3:
-            # 1. move forward
-            forward = frame_idxs[::frame_stride]
-            remaining = np.setdiff1d(frame_idxs, forward, assume_unique=True)
+            forward = np.arange(0, num_frames, frame_stride)
+            remaining = np.setdiff1d(np.arange(num_frames), forward, assume_unique=True)
 
-            # 2. move backward
-            backward = remaining[::-1][::frame_stride-1]
+            backward = remaining[::-1][::frame_stride - 1]
             remaining = np.setdiff1d(remaining, backward, assume_unique=True)
 
-            # 3. move forward again
             third_pass = remaining
 
-            result = np.concatenate([forward, backward, third_pass])
+            new_order = np.concatenate([forward, backward, third_pass])
 
         else:
             raise ValueError("frame_stride must be either 2 or 3.")
 
-        return result
+        segment = segment[new_order]
+        gt_rt = gt_rt[new_order]
+
+        return segment, gt_rt
+    
+    def frame_box(self, segment, gt_rt, gt_rt_ori, gt_prob):
+        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        if self.box_aug_mode == 'diff':
+            segment, gt_rt = aug_segment_diff, aug_gt_rt_diff
+        elif self.box_aug_mode == 'easy':
+            segment, gt_rt = aug_segment_easy, aug_gt_rt_easy
+        elif self.box_aug_mode == None:
+            pass
+        return segment, gt_rt
+
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
         # frames: [t, c, h, w]
@@ -378,8 +407,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
    
     def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         gt_idx = np.where(gt_prob == 1)[0]
-        aug_segment = segment.clone()
-        aug_gt_rt = gt_rt.copy()
+        aug_segment_diff = segment.clone()
+        aug_gt_rt_diff = gt_rt.copy()
+        aug_segment_easy = segment.clone()
+        aug_gt_rt_easy = gt_rt.copy()
         gt_rt_original = gt_rt_ori.copy()
         gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
@@ -408,24 +439,48 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
             # Compute total change (delta)
             delta_total = distance + np.abs(delta_w) + np.abs(delta_h) + np.abs(scale_w) + np.abs(scale_h)
+            
+            def reorder_boxes(mode="diff"):
+                """
+                Reorders boxes based on either the most different (farthest) or most similar (nearest).
+                
+                Args:
+                    delta_matrix (np.ndarray): The distance or difference matrix.
+                    mode (str): "diff" for most different ordering, "easy" for most similar ordering.
+                
+                Returns:
+                    list: New ordering indices.
+                """
+                new_order = [0]  # Start with the first box
+                remaining_indices = list(range(1, num_boxes))
 
-            # Create a new order of boxes
-            new_order = [0]  # Start with the first box
-            available_indices = set(range(1, num_boxes))  # Remaining boxes to be chosen
+                for _ in range(1, num_boxes):
+                    last_idx = new_order[-1]
+                    if mode == "diff":
+                        selected_idx = remaining_indices[np.argmax(delta_total[last_idx, remaining_indices])]
+                    else:  # mode == "easy"
+                        selected_idx = remaining_indices[np.argmin(delta_total[last_idx, remaining_indices])]
+                    
+                    new_order.append(selected_idx)
+                    remaining_indices.remove(selected_idx)
 
-            for _ in range(1, num_boxes):
-                last_idx = new_order[-1]  # The most recently chosen box
-                # Select the most different box
-                remaining_deltas = delta_total[last_idx, list(available_indices)]
-                most_different_idx = list(available_indices)[np.argmax(remaining_deltas)]
-                new_order.append(most_different_idx)
-                available_indices.remove(most_different_idx)
+                return new_order
+            
+            # Compute new orderings
+            new_order_diff = reorder_boxes(mode="diff")
+            new_order_easy = reorder_boxes(mode="easy")
 
             # Apply the new order
-            aug_gt_rt[gt_idx] = aug_gt_rt[gt_idx[new_order]]
-            aug_segment[gt_idx] = aug_segment[gt_idx[new_order]]
+            gt_idx_new_diff = gt_idx[new_order_diff]
+            gt_idx_new_easy = gt_idx[new_order_easy]
+
+            aug_gt_rt_diff[gt_idx] = aug_gt_rt_diff[gt_idx_new_diff]
+            aug_segment_diff[gt_idx] = aug_segment_diff[gt_idx_new_diff]
+
+            aug_gt_rt_easy[gt_idx] = aug_gt_rt_easy[gt_idx_new_easy]
+            aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]            
         
-        return aug_segment, aug_gt_rt
+        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy
 
 
 def sample_nearby_gt_frames(
@@ -618,7 +673,8 @@ if __name__ == '__main__':
     import hydra
     hydra.initialize(config_path='../../config', version_base='1.3')
     # config = hydra.compose(config_name='train', overrides=['dataset=vq2d'])
-    config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_dash'])
+    config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_box_aug'])
+    # config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_dash'])
     # config.dataset.clips_dir = '/data/datasets/LaSOT'
     import lightning as L
     # L.seed_everything(42)

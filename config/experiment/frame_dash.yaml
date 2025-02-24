@@ -3,7 +3,7 @@
 # usage: python train.py +experiment=frame_dash
 
 dataset:
-  frame_dash: True
+  frame_dash_aug: True
   frame_stride: 2
   frame_dash_rate: 0.2
   frame_incremental: True

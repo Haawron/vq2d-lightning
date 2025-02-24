@@ -83,11 +83,14 @@ class LitModule(L.LightningModule):
         self.max_steps = self.config.trainer.max_steps
 
         self.rt_pos_query = config.get('rt_pos_query')
+        self.frame_box_aug = config.dataset.get('frame_box_aug', False)
+        self.box_aug_difficulty = config.get('box_aug_difficulty', False)
+        self.late_epoch_box_aug = config.get('late_epoch_box_aug', 0)
 
     ############ major hooks ############
     
     def on_train_batch_start(self, batch, batch_idx):
-        if hasattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+        if getattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
             global_step = self.trainer.global_step
             dataset = self.trainer.datamodule.dataset
             
@@ -98,13 +101,21 @@ class LitModule(L.LightningModule):
             elif global_step >= self.max_steps * 0.15:
                 dataset.frame_incremental_level = 1
                 
-            self.log("frame_incremental_level", dataset.frame_incremental_level, 
+            self.log("frame_aug_level", dataset.frame_incremental_level, 
+                    on_step=True, prog_bar=True, rank_zero_only=True)
+            
+        if getattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "box_aug_mode"):
+            if self.current_epoch >= self.late_epoch_box_aug:
+                dataset.box_aug_mode = 'diff'
+            else:
+                if self.box_aug_difficulty:
+                    dataset.box_aug_mode = 'easy'
+                else:
+                    dataset.box_aug_mode = None
+            
+            self.log("frame_box_mode", dataset.box_aug_mode, 
                     on_step=True, prog_bar=True, rank_zero_only=True)
         
-
-            
-        # self.log("frame_incremental_level", self.dataset.frame_incremental_level, 
-        #          on_step=True, prog_bar=True, rank_zero_only=True)
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
