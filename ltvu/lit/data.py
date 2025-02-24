@@ -115,15 +115,23 @@ class LitVQ2DDataModule(L.LightningDataModule):
             'gt_bboxes': gt_bboxes, 'gt_probs': gt_probs})
         
         if self.box_aug and self.trainer is not None and self.trainer.training:
-            aug_segment = batch['experiment']['box_aug']['aug_segment']
-            bsz = aug_segment.shape[0]
+            aug_segment_diff = batch['experiment']['box_aug']['aug_segment_diff']
+            bsz = aug_segment_diff.shape[0]
             
-            aug_segment = self.transform_box_aug(aug_segment)  # [b,t,c,h,w]
-            aug_segment = rearrange(aug_segment, 'b t c h w -> (b t) c h w')
-            aug_segment = self.normalization(aug_segment)  # [b*t,c,h,w]
-            aug_segment = rearrange(aug_segment, '(b t) c h w -> b t c h w', b=bsz)
-            batch['aug_segment'] = aug_segment
-            batch['aug_gt_rt'] = batch['experiment']['box_aug']['aug_gt_rt']
+            aug_segment_diff = self.transform_box_aug(aug_segment_diff)  # [b,t,c,h,w]
+            aug_segment_diff = rearrange(aug_segment_diff, 'b t c h w -> (b t) c h w')
+            aug_segment_diff = self.normalization(aug_segment_diff)  # [b*t,c,h,w]
+            aug_segment_diff = rearrange(aug_segment_diff, '(b t) c h w -> b t c h w', b=bsz)
+            batch['aug_segment_diff'] = aug_segment_diff
+            batch['aug_gt_rt_diff'] = batch['experiment']['box_aug']['aug_gt_rt_diff']
+            
+            aug_segment_easy = batch['experiment']['box_aug']['aug_segment_easy']
+            aug_segment_easy = self.transform_box_aug(aug_segment_easy)  # [b,t,c,h,w]
+            aug_segment_easy = rearrange(aug_segment_easy, 'b t c h w -> (b t) c h w')
+            aug_segment_easy = self.normalization(aug_segment_easy)  # [b*t,c,h,w]
+            aug_segment_easy = rearrange(aug_segment_easy, '(b t) c h w -> b t c h w', b=bsz)
+            batch['aug_segment_easy'] = aug_segment_easy
+            batch['aug_gt_rt_easy'] = batch['experiment']['box_aug']['aug_gt_rt_easy']
 
         if self.rt_pos_query is not None and self.trainer is not None and self.trainer.training:
             rt_pos_queries = batch['experiment']['multi_query']['rt_pos_queries']  # [b, #Q, c, h, w]
@@ -394,37 +402,37 @@ class LitEgoTracksDataModule(LitVQ2DDataModule):
             )
 
     def pred_dataloader(self):
-        if self.config.get('ckpt_finetune_from', None) is not None:
-            self.config.dataset = self.egotracks_config
-            return torch.utils.data.DataLoader(
-                EgoTracksEvalDataset(self.config, split='val'),
-                batch_size=self.batch_size,
-                shuffle=False,
-                pin_memory=self.pin_memory,
-                prefetch_factor=self.prefetch_factor,
-                persistent_workers=self.persistent_workers,
-                num_workers=self.num_workers,
-                drop_last=False,
+        # if self.config.get('ckpt_finetune_from', None) is not None:
+        self.config.dataset = self.egotracks_config
+        return torch.utils.data.DataLoader(
+            EgoTracksEvalDataset(self.config, split='val'),
+            batch_size=self.batch_size,
+            shuffle=False,
+            pin_memory=self.pin_memory,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+            num_workers=self.num_workers,
+            drop_last=False,
             )
-        else: # pretrained
-            self.config.dataset = self.lasot_config
-            ds1 = LaSOTFitDataset(self.config, split='test')
-            self.config.dataset = self.got10k_config
-            ds2 = GOT10KFitDataset(self.config, split='val')
-            self.config.dataset = self.trackingnet_config
-            ds3 = TrackingNetFitDataset(self.config, split='test')
+        # else: # pretrained
+        #     self.config.dataset = self.lasot_config
+        #     ds1 = LaSOTFitDataset(self.config, split='test')
+        #     self.config.dataset = self.got10k_config
+        #     ds2 = GOT10KFitDataset(self.config, split='val')
+        #     self.config.dataset = self.trackingnet_config
+        #     ds3 = TrackingNetFitDataset(self.config, split='test')
             
-            dataset = torch.utils.data.ConcatDataset([ds1, ds2, ds3])
-            return torch.utils.data.DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                pin_memory=self.pin_memory,
-                prefetch_factor=self.prefetch_factor,
-                persistent_workers=self.persistent_workers,
-                num_workers=self.num_workers,
-                drop_last=False,
-            )
+        #     dataset = torch.utils.data.ConcatDataset([ds1, ds2, ds3])
+        #     return torch.utils.data.DataLoader(
+        #         dataset,
+        #         batch_size=self.batch_size,
+        #         shuffle=False,
+        #         pin_memory=self.pin_memory,
+        #         prefetch_factor=self.prefetch_factor,
+        #         persistent_workers=self.persistent_workers,
+        #         num_workers=self.num_workers,
+        #         drop_last=False,
+        #     )
 
     def test_dataloader(self):
         if self.config.get('ckpt_finetune_from', None) is not None:

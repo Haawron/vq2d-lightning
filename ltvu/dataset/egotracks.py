@@ -272,7 +272,7 @@ class EgoTracksEvalDataset(EgoTracksDataset):
             gt_mask = np.zeros(t, dtype=np.float32)
         else:
             gt_ltt, gt_mask = self.get_lt_track(ann, frame_idxs)
-        segment, gt_ltt = self.pad_and_resize(segment, gt_ltt)  # [t, c, s, s], [t, 4]
+        segment, gt_ltt, _ = self.pad_and_resize(segment, gt_ltt)  # [t, c, s, s], [t, 4]
 
         return {
             # inputs

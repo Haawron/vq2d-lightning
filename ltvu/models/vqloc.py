@@ -796,9 +796,12 @@ class ClipMatcher(nn.Module):
 
         get_intermediate_features = False,
         
-        aug_segment = None,
-        aug_gt_rt = None,
+        aug_segment_diff = None,
+        aug_gt_rt_diff = None,
+        aug_segment_easy = None,
+        aug_gt_rt_easy = None,
         use_box_aug = False,
+        aug_mode = None,
 
         max_epochs = None,
         cur_epoch = None,
@@ -813,9 +816,13 @@ class ClipMatcher(nn.Module):
         b, t = segment.shape[:2]
         device = segment.device
         output_dict = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
-        if aug_segment is not None and (random.randint(0,1) == 1 or self.debug) and use_box_aug:
-            segment = aug_segment
-            gt_bboxes = aug_gt_rt
+        if use_box_aug and (random.randint(0,1) == 1 or self.debug):
+            if aug_mode == 'diff':
+                segment = aug_segment_diff
+                gt_bboxes = aug_gt_rt_diff
+            elif aug_mode == 'easy':
+                segment = aug_segment_easy
+                gt_bboxes = aug_gt_rt_easy
             
         segment = rearrange(segment, 'b t c h w -> (b t) c h w')
         with self.backbone_context():

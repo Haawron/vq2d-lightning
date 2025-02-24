@@ -58,6 +58,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.split = split
         self.movement = movement
         self.box_aug = ds_config.get('box_aug', False)
+        self.frame_random = ds_config.get('frame_random', False)
         if movement != "":
             assert movement in ['slow', 'medium', 'fast', 'slow2', 'medium2', 'fast2'], f'Invalid movement: {movement}'
             self.p_ann = self.p_anns_dir / f'vq_v2_{split}_{movement}_anno.json'
@@ -100,7 +101,19 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             rt_pos_queries, rt_pos_idx = self.get_rt_pos_query(ann, frame_idxs, query)
             
         if self.box_aug and self.split == 'train':
-            aug_segment, aug_gt_rt = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+            if self.frame_random:
+                aug_segment_diff = segment.clone()
+                aug_gt_rt_diff = gt_rt.copy()
+                gt_idx = np.where(gt_prob == 1)[0]
+                gt_idx_shuffled = np.random.permutation(gt_idx) 
+                aug_segment_diff[gt_idx] = aug_segment_diff[gt_idx_shuffled]
+                aug_gt_rt_diff[gt_idx] = aug_gt_rt_diff[gt_idx_shuffled]
+                
+                aug_segment_easy = aug_segment_diff
+                aug_gt_rt_easy = aug_gt_rt_diff
+
+            else:
+                aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -135,8 +148,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             (sample
                 .setdefault('experiment', {})
                 .setdefault('box_aug', {})
-                .setdefault('aug_segment', aug_segment))
-            sample['experiment']['box_aug']['aug_gt_rt'] = aug_gt_rt.astype(np.float32)
+                .setdefault('aug_segment_diff', aug_segment_diff))
+            sample['experiment']['box_aug']['aug_gt_rt_diff'] = aug_gt_rt_diff.astype(np.float32)
+            
+            (sample
+                .setdefault('experiment', {})
+                .setdefault('box_aug', {})
+                .setdefault('aug_segment_easy', aug_segment_easy))
+            sample['experiment']['box_aug']['aug_gt_rt_easy'] = aug_gt_rt_easy.astype(np.float32)
 
         return sample
 
@@ -331,8 +350,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
     
     def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         gt_idx = np.where(gt_prob == 1)[0]
-        aug_segment = segment.clone()
-        aug_gt_rt = gt_rt.copy()
+        aug_segment_diff = segment.clone()
+        aug_gt_rt_diff = gt_rt.copy()
+        aug_segment_easy = segment.clone()
+        aug_gt_rt_easy = gt_rt.copy()
         gt_rt_original = gt_rt_ori.copy()
         gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
@@ -361,24 +382,48 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
             # Compute total change (delta)
             delta_total = distance + np.abs(delta_w) + np.abs(delta_h) + np.abs(scale_w) + np.abs(scale_h)
+            
+            def reorder_boxes(mode="diff"):
+                """
+                Reorders boxes based on either the most different (farthest) or most similar (nearest).
+                
+                Args:
+                    delta_matrix (np.ndarray): The distance or difference matrix.
+                    mode (str): "diff" for most different ordering, "easy" for most similar ordering.
+                
+                Returns:
+                    list: New ordering indices.
+                """
+                new_order = [0]  # Start with the first box
+                remaining_indices = list(range(1, num_boxes))
 
-            # Create a new order of boxes
-            new_order = [0]  # Start with the first box
-            available_indices = set(range(1, num_boxes))  # Remaining boxes to be chosen
+                for _ in range(1, num_boxes):
+                    last_idx = new_order[-1]
+                    if mode == "diff":
+                        selected_idx = remaining_indices[np.argmax(delta_total[last_idx, remaining_indices])]
+                    else:  # mode == "easy"
+                        selected_idx = remaining_indices[np.argmin(delta_total[last_idx, remaining_indices])]
+                    
+                    new_order.append(selected_idx)
+                    remaining_indices.remove(selected_idx)
 
-            for _ in range(1, num_boxes):
-                last_idx = new_order[-1]  # The most recently chosen box
-                # Select the most different box
-                remaining_deltas = delta_total[last_idx, list(available_indices)]
-                most_different_idx = list(available_indices)[np.argmax(remaining_deltas)]
-                new_order.append(most_different_idx)
-                available_indices.remove(most_different_idx)
+                return new_order
+            
+            # Compute new orderings
+            new_order_diff = reorder_boxes(mode="diff")
+            new_order_easy = reorder_boxes(mode="easy")
 
             # Apply the new order
-            aug_gt_rt[gt_idx] = aug_gt_rt[gt_idx[new_order]]
-            aug_segment[gt_idx] = aug_segment[gt_idx[new_order]]
+            gt_idx_new_diff = gt_idx[new_order_diff]
+            gt_idx_new_easy = gt_idx[new_order_easy]
+
+            aug_gt_rt_diff[gt_idx] = aug_gt_rt_diff[gt_idx_new_diff]
+            aug_segment_diff[gt_idx] = aug_segment_diff[gt_idx_new_diff]
+
+            aug_gt_rt_easy[gt_idx] = aug_gt_rt_easy[gt_idx_new_easy]
+            aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]            
         
-        return aug_segment, aug_gt_rt
+        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy
 
 
 def sample_nearby_gt_frames(

@@ -4,5 +4,7 @@
 
 dataset:
   box_aug: True
+  frame_random: False
 
 late_epoch_box_aug: 0
+box_aug_difficulty: False

@@ -82,6 +82,8 @@ class LitModule(L.LightningModule):
         self.use_hnm = config.get('use_hnm')
 
         self.rt_pos_query = config.get('rt_pos_query')
+        self.box_aug = config.dataset.get('box_aug', False)
+        self.box_aug_difficulty = config.get('box_aug_difficulty', False)
 
     ############ major hooks ############
 
@@ -109,6 +111,13 @@ class LitModule(L.LightningModule):
                     extra_args['sim_mode']='max'
         if self.config.dataset.get('box_aug') and self.current_epoch >= self.config.late_epoch_box_aug:
             extra_args['use_box_aug'] = True
+            if self.current_epoch >= self.config.late_epoch_box_aug:
+                extra_args['aug_mode'] = 'diff'
+            else:
+                if self.box_aug_difficulty:
+                    extra_args['aug_mode'] = 'easy'
+                else:
+                    extra_args['use_box_aug'] = False
         else:
             extra_args['use_box_aug'] = False
             
