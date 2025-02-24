@@ -181,7 +181,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             if not self.frame_incremental:
                 if self.frame_dash_aug and random.random() < self.frame_dash_rate:
                     segment, gt_rt = self.frame_dash(segment, gt_rt, self.frame_stride)
-                if self.frame_box_aug and random.random() < 0.5 or True:
+                if self.frame_box_aug and random.random() < 0.5:
                     if self.frame_random:
                         gt_idx = np.where(gt_prob == 1)[0]
                         gt_idx_shuffled = np.random.permutation(gt_idx) 
