@@ -112,9 +112,6 @@ class LitModule(L.LightningModule):
                     dataset.box_aug_mode = 'easy'
                 else:
                     dataset.box_aug_mode = None
-            
-            self.log("frame_box_mode", dataset.box_aug_mode, 
-                    on_step=True, prog_bar=True, rank_zero_only=True)
         
 
     def training_step(self, batch, batch_idx):
