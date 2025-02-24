@@ -13,7 +13,7 @@ import random
 from transformers import Dinov2Model, ViTModel, CLIPModel
 from geomloss import SamplesLoss
 
-from ltvu.loss import get_losses_with_anchor
+from ltvu.loss import get_losses_with_anchor, KoLeoLoss
 from ltvu.bbox_ops import bbox_xyhwToxyxy, generate_anchor_boxes_on_regions
 
 
@@ -233,6 +233,7 @@ class ClipMatcher(nn.Module):
         weight_singular: float = 0.,
         weight_entropy: float = 0.,
         weight_sinkhorn: float = 0.,
+        weight_koleo: float = 0.,
         singular_include_first: bool = True,
         entropy_include_first: bool = True,
         rank_pca: int = 4,
@@ -331,6 +332,7 @@ class ClipMatcher(nn.Module):
         self.weight_singular = weight_singular
         self.weight_entropy = weight_entropy
         self.weight_sinkhorn = weight_sinkhorn
+        self.weight_koleo = weight_koleo
         self.rank_pca = rank_pca
         self.singular_include_first = singular_include_first
         self.entropy_include_first = entropy_include_first
@@ -535,6 +537,11 @@ class ClipMatcher(nn.Module):
             self.sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)
         else:
             self.sinkhorn = None
+            
+        if self.weight_koleo > 0:
+            self.koleo = KoLeoLoss(p=2, eps=1e-8)
+        else:
+            self.koleo = None
 
         self.debug = debug
 
@@ -1082,13 +1089,14 @@ class ClipMatcher(nn.Module):
                 total_loss = total_loss + ww * l
 
 
-            if self.weight_singular > 0 or self.weight_entropy > 0 or self.weight_sinkhorn > 0:
+            if self.weight_singular > 0 or self.weight_entropy > 0 or self.weight_sinkhorn > 0 or self.weight_koleo > 0:
                 # penalize entropy of a normed score map while limiting sigma's
                 # entropy -> activate only specific parts
                 # sigma -> limit the overall score magnitude
                 loss_singular = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_entropy = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 loss_sinkhorn = torch.tensor(0., dtype=query_feat.dtype, device=device)
+                loss_koleo = torch.tensor(0., dtype=query_feat.dtype, device=device)
                 if self.ignore_border:
                     _qfeat = query_feat[..., 2:-2, 2:-2].detach()
                     _cfeat = clip_feat_stx[..., 2:-2, 2:-2]
@@ -1128,19 +1136,26 @@ class ClipMatcher(nn.Module):
                         _xy = rearrange(_xy, 'h w c -> (h w) c')
                         _xy = _xy[None].expand(self.rank_pca * (self.rank_pca - 1) // 2, -1, -1)
                         _xy = _xy.float() / hw ** .5
-                        loss_sinkhorn = loss_sinkhorn - self.sinkhorn.forward(_a, _xy, _b, _xy).mean()  # maximize
+                        if self.weight_sinkhorn > 0:
+                            loss_sinkhorn = loss_sinkhorn - self.sinkhorn.forward(_a, _xy, _b, _xy).mean()  # maximize
+                    if self.weight_koleo > 0:
+                        l2_score_map = F.normalize(score_map, p=2, dim=-1)
+                        loss_koleo = loss_koleo + self.koleo.forward(l2_score_map).mean()
 
                     max_sigma = torch.tensor(1000., dtype=S.dtype, device=device)
                     loss_singular = loss_singular + -torch.minimum(S, max_sigma).sum()
                 loss_singular = loss_singular / b
                 loss_entropy = loss_entropy / b
                 loss_sinkhorn = loss_sinkhorn / b
+                loss_koleo = loss_koleo / b
                 if self.weight_singular > 0:
                     total_loss = total_loss + self.weight_singular * loss_singular
                 if self.weight_entropy > 0:
                     total_loss = total_loss + self.weight_entropy * loss_entropy
                 if self.weight_sinkhorn > 0:
                     total_loss = total_loss + self.weight_sinkhorn * loss_sinkhorn
+                if self.weight_koleo > 0:
+                    total_loss = total_loss + self.weight_koleo * loss_koleo
                 # print(loss_singular, loss_entropy, loss_dict['loss_prob'])
 
             if self.debug:
@@ -1162,6 +1177,8 @@ class ClipMatcher(nn.Module):
                 log_dict.update({'loss_entropy': loss_entropy.detach()})
             if self.weight_sinkhorn > 0:
                 log_dict.update({'loss_sinkhorn': loss_sinkhorn.detach()})
+            if self.weight_koleo > 0:
+                log_dict.update({'loss_koleo': loss_koleo.detach()})
 
 
             # for logging - metrics
