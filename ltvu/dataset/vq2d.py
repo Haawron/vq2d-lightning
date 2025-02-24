@@ -63,7 +63,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.frame_incremental_level = 0
         self.frame_box_aug = ds_config.get('frame_box_aug')
         self.frame_random = ds_config.get('frame_random', False)
-        self.box_aug = config.dataset.get('box_aug', False)
+        self.aug_based_time = ds_config.get('aug_based_time', False)
+        self.box_aug = ds_config.get('box_aug', False)
+        self.aug_time = ds_config.get('aug_time', False)
         self.box_aug_mode = None
         self.split = split
         self.movement = movement
@@ -181,7 +183,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             if not self.frame_incremental:
                 if self.frame_dash_aug and random.random() < self.frame_dash_rate:
                     segment, gt_rt = self.frame_dash(segment, gt_rt, self.frame_stride)
-                if self.frame_box_aug and random.random() < 0.5 or True:
+                if self.frame_box_aug and random.random() < 0.5:
                     if self.frame_random:
                         gt_idx = np.where(gt_prob == 1)[0]
                         gt_idx_shuffled = np.random.permutation(gt_idx) 
@@ -407,6 +409,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
    
     def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         gt_idx = np.where(gt_prob == 1)[0]
+        if self.aug_based_time and len(gt_idx) > self.aug_time:
+            gt_idx_rand = np.random.choice(gt_idx, self.aug_time, replace=False)
+        else:
+            gt_idx_rand = np.array([])
+
         aug_segment_diff = segment.clone()
         aug_gt_rt_diff = gt_rt.copy()
         aug_segment_easy = segment.clone()
@@ -415,7 +422,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
         
-        if not len(gt_box) <=2:
+        if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
             # Compute center points, width, and height
             cx = (gt_box[:, 1] + gt_box[:, 3]) / 2
             cy = (gt_box[:, 0] + gt_box[:, 2]) / 2
@@ -466,11 +473,41 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
                 return new_order
             
+            def reorder_boxes_for_time(mode="diff"):
+                new_order = []
+                used_idx = set()
+                in_gt_idx_rand = np.where(np.isin(gt_idx, gt_idx_rand))[0]
+                for i, gt_i in enumerate(gt_idx):
+                    if i in in_gt_idx_rand:
+                        excluded_indices = np.concatenate((list(used_idx), np.where(np.isin(gt_idx, gt_idx_rand))[0]))  
+                        valid_indices = np.setdiff1d(np.arange(len(delta_total[i])), excluded_indices)
+                        
+                        if len(valid_indices) > 0:
+                            if mode == "diff":
+                                best_match = valid_indices[np.argmax(delta_total[i][valid_indices])]
+                            else:  # mode == "easy"
+                                best_match = valid_indices[np.argmin(delta_total[i][valid_indices])]
+                        else:
+                            best_match = -1  # 선택할 값이 없으면 -1
+                            
+                        new_order.append(i)
+                        if best_match != -1:
+                            new_order.append(best_match)
+                            used_idx.add(best_match)
+                    elif i in in_gt_idx_rand + 1:
+                        continue
+                    else:
+                        new_order.append(i)
+                return new_order
+            
             # Compute new orderings
-            new_order_diff = reorder_boxes(mode="diff")
-            new_order_easy = reorder_boxes(mode="easy")
-
-            # Apply the new order
+            if self.aug_based_time:
+                new_order_diff = reorder_boxes_for_time(mode="diff")
+                new_order_easy = reorder_boxes_for_time(mode="easy")
+            else:
+                new_order_diff = reorder_boxes(mode="diff")
+                new_order_easy = reorder_boxes(mode="easy")
+                
             gt_idx_new_diff = gt_idx[new_order_diff]
             gt_idx_new_easy = gt_idx[new_order_easy]
 

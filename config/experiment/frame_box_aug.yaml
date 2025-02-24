@@ -5,6 +5,8 @@
 dataset:
   frame_box_aug: True
   frame_random: False
+  aug_based_time: False
+  aug_time: 3
 
 late_epoch_box_aug: 0
 box_aug_difficulty: False
