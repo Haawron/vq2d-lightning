@@ -53,8 +53,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             self.padding_value = 0.
 
         self.rt_pos_query = config.get('rt_pos_query')
-        self.box_penalty = ds_config.get('box_penalty')
-        if (self.rt_pos_query or self.box_panalty) is not None:
+        if self.rt_pos_query is not None:
             self.p_rt_pos_query = Path(self.rt_pos_query.rt_pos_query_dir)
         self.split = split
         self.movement = movement

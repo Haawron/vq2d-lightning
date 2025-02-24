@@ -1088,12 +1088,7 @@ class ClipMatcher(nn.Module):
         pred_dict, output_dict, query_feat, clip_feat_stx = self.inner_forward(query_feat_dict, clip_feat_dict, output_dict,    
                                                        get_intermediate_features, use_hnm, 
                                                        compute_loss, device, t, b)
-        
-        if self.box_penalty and training:
-            output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
-            pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = self.inner_forward(query_feat_penalty_dict, 
-                                        clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
-        
+
         if compute_loss:
             assert before_query_mask is not None
             assert gt_probs is not None
@@ -1108,32 +1103,35 @@ class ClipMatcher(nn.Module):
                 # 'center': None,                 # [b,t,2]
             }
             
-            output_dict, _, preds_top_bbox = self.compute_losses_with_anchor(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, True, False)
+            output_dict, preds_top = self.compute_losses_with_anchor(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, True, True)
+            del pred_dict, query_feat, clip_feat_stx
+            torch.cuda.empty_cache()
             if self.box_penalty and training:
-                output_dict_penalty, pred_dict_penalty_ori, _ = self.compute_losses_with_anchor(pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict_penalty, False, True)
+                output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}}}
+                pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = self.inner_forward(query_feat_penalty_dict, 
+                                            clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
+                output_dict_penalty, _ = self.compute_losses_with_anchor(
+                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
+                    gts, gt_probs, training, use_hnm, device, output_dict_penalty, False, False)
                 
-                gt_probs = torch.ones([b, t]).to(device)
-                gts = {
-                    'before_query': before_query_mask,
-                    'clip_with_bbox': gt_probs,
-                    'clip_bbox': preds_top_bbox
-                    }
+                gts['clip_with_bbox'] = preds_top['prob']
+                gts['clip_bbox'] = preds_top['bbox']
                 
-                penalty_loss = output_dict_penalty['loss'].clone()
-                output_dict_compare, _, _ = self.compute_losses_with_anchor(pred_dict_penalty_ori, query_feat_penalty, clip_feat_stx_penalty, gts, gt_probs, training, use_hnm, device, output_dict, False, False)
+                output_dict_compare, _ = self.compute_losses_with_anchor(
+                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
+                    gts, gt_probs, training, use_hnm, device, output_dict, False, True)
                 
-                compare_loss = output_dict_compare['loss'].clone()
-                
-                output_dict['loss'] = (output_dict['loss'] + penalty_loss + compare_loss) / 3
+                output_dict['loss'] = (output_dict['loss'] + output_dict_penalty['loss'].detach() + output_dict_compare['loss'].detach()) / 3
                 
                 detach_dict(output_dict_penalty)
-                penalty_loss = penalty_loss.detach()
-                compare_loss = compare_loss.detach()
-                preds_top_bbox = preds_top_bbox.detach()
+                detach_dict(pred_dict_penalty)
+
+                del output_dict_penalty, pred_dict_penalty
+                torch.cuda.empty_cache()
 
         return output_dict
     
-    def compute_losses_with_anchor(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, return_top_bbox=False, return_pred_dict=False):
+    def compute_losses_with_anchor(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, return_preds_top=False, detach=True):
             # acutal loss calculation
             loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
                 pred_dict, gts,
@@ -1238,10 +1236,7 @@ class ClipMatcher(nn.Module):
 
 
             # for logging - metrics
-            if return_top_bbox:
-                preds_top_bbox_ori = preds_top['bbox'].clone()
-            else:
-                preds_top_bbox_ori = None
+            
             preds_top = detach_dict(preds_top)
             prob: torch.Tensor = pred_dict['prob'].detach()
             b, t, N = prob.shape
@@ -1289,17 +1284,19 @@ class ClipMatcher(nn.Module):
                 'gts': gts,                 # gts with hw, center computed
             }
 
-            if return_pred_dict:
-                pred_dict_ori = pred_dict.copy()
-            else:
-                pred_dict_ori = None
             # gather all outputs
             output_dict.update({'loss': total_loss})  # for backward
             output_dict.update({'log_dict': log_dict})  # for logging
             output_dict.update({'info_dict': info_dict})  # for debugging
-            output_dict.update({'pred_dict': detach_dict(pred_dict)})
+            if detach:
+                output_dict.update({'pred_dict': detach_dict(pred_dict)})
+            else:
+                output_dict.update({'pred_dict': pred_dict})
 
-            return output_dict, pred_dict_ori, preds_top_bbox_ori
+            if return_preds_top:
+                return output_dict, preds_top
+            else:
+                return output_dict, None
 
 
 class Head(nn.Module):

@@ -40,7 +40,6 @@ config/eval_sy.yaml
 config/train_fast_sy.yaml
 config/train_sy.yaml
 config/debug/base_sy.yaml
-config/experiment/box_penalty.yaml
 ltvu/__metrics.py
 ours_stats.py
 download_trackingnet.py
