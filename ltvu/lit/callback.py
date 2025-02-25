@@ -391,7 +391,7 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
             num_segments = pred_output['num_segments']
             self.rank_seg_preds.append((qset_uuid, seg_idx, num_segments, pred_output))
 
-        if batch_idx % 100 == 0:  # checkpointing
+        if batch_idx % 100 == 0 or self.track_continual:  # checkpointing
             self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
             torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
 
@@ -402,6 +402,7 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
         torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
         if trainer.world_size > 1:
             trainer.strategy.barrier()
+        print(f'Final {trainer.global_rank}...')
 
         if trainer.is_global_zero:
             # get segmented features
@@ -415,6 +416,7 @@ class PerSegmentWriterTrek150(BasePredictionWriter):
                     all_seg_preds[qset_uuid][seg_idx] = pred_output
 
             # merge features
+            print('total length', len(all_seg_preds))
             print('Merging features...')
             qset_preds = {}
             for qset_uuid, qset_seg_preds in all_seg_preds.items():

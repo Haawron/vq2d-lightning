@@ -7,6 +7,8 @@ import torch
 import torch.optim
 import torch.utils.data
 
+import numpy as np
+
 import lightning as L
 
 import kornia
@@ -423,9 +425,11 @@ class LitTrek150DataModule(LitVQ2DDataModule):
 
     def pred_dataloader(self):
         self.dataset = Trek150EvalDataset(self.config, split='test')
+        print(f"Number of GPUs available: {self.config.num_gpus}")
         return torch.utils.data.DataLoader(
             self.dataset,
             batch_size=self.batch_size,
+            sampler=BalancedClipSampler(self.dataset, int(self.config.num_gpus)),
             shuffle=False,
             pin_memory=self.pin_memory,
             prefetch_factor=self.prefetch_factor,
@@ -437,10 +441,10 @@ class LitTrek150DataModule(LitVQ2DDataModule):
     def test_dataloader(self):
         raise NotImplementedError
 
-    def get_segment_item(self, idx):
+    def get_segment_item(self, qset_uuid):
         segment_config = OmegaConf.merge(self.config, {"dataset": {"track_continual": False}})
         ds = Trek150EvalDataset(segment_config, split='test')
-        ds.all_segments = [seg for seg in ds.all_segments if seg['ann_idx'] == idx]
+        ds.all_segments = [seg for seg in ds.all_segments if seg['qset_uuid'] == qset_uuid]
         dl = torch.utils.data.DataLoader(
             ds,
             batch_size=1,
@@ -453,6 +457,24 @@ class LitTrek150DataModule(LitVQ2DDataModule):
         )
         
         return [next(iter(dl)) for i in range(len(dl))]
+    
+    
+class BalancedClipSampler(torch.utils.data.Sampler):
+    def __init__(self, dataset, num_gpus):
+        self.dataset = dataset
+        self.num_gpus = num_gpus
+        
+        self.video_lengths = [ann['num_segments'] for ann in dataset.all_segments]
+        self.indices = np.argsort(self.video_lengths)
+
+    def __iter__(self):
+        partitions = np.array_split(self.indices, self.num_gpus)
+        new_indices = np.concatenate(partitions).tolist()
+        return iter(new_indices)
+
+    def __len__(self):
+        return len(self.dataset)
+    
 
 if __name__ == '__main__':
     import os

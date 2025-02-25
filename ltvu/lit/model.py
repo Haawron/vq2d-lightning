@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 from PIL import Image, ImageDraw
 from pathlib import Path
 from transformers import get_linear_schedule_with_warmup
+from torchvision.utils import save_image
 
 from ltvu.models import *
 
@@ -161,8 +162,8 @@ class LitModule(L.LightningModule):
         bsz = batch['segment'].shape[0]
         device = batch['segment'].device
         
-        if getattr(self.trainer.datamodule, "dataset", False) and hasattr(self.trainer.datamodule.dataset, "track_continual"):
-            preds_top = self.continual_tracking(batch_idx, device)
+        if getattr(self.trainer.datamodule, "dataset", False) and getattr(self.trainer.datamodule.dataset, "track_continual", False):
+            preds_top = self.continual_tracking(batch, batch_idx, batch['qset_uuid'][0], device)
         else:    
             output_dict = self.model.forward(**batch, compute_loss=True, training=False)
             # bbox: [b,t,4], in pixels wrt the original, yxyx, float
@@ -191,14 +192,21 @@ class LitModule(L.LightningModule):
                 'clip_uid': batch['clip_uid'][bidx],
                 'frame_idxs': batch['frame_idxs'][bidx].cpu(),  # check missing or duplicated frames (last frame can be duplicated)
             })
+            
         return pred_outputs
     
-    def continual_tracking(self, batch_idx, device):
+    def continual_tracking(self, batch, batch_idx, qset_uuid, device):
         dm = self.trainer.datamodule
+        segment_loader = dm.get_segment_item(qset_uuid)
+        max_len = len(segment_loader)
+            
         pred_query = None
-        segment_loader = dm.get_segment_item(batch_idx)
-        bboxes, probs = [], []
-        for seg_batch in segment_loader:
+        segment_oris, bboxes, probs = None, None, None
+        query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{0}.png'
+        query_save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_image(segment_loader[0]['query'][0], query_save_path)
+        for i, seg_batch in enumerate(segment_loader):
+            
             segment_ori = seg_batch['segment']
             if pred_query is not None:
                 seg_batch['query'] = pred_query
@@ -208,17 +216,21 @@ class LitModule(L.LightningModule):
             segment_output_dict = self.model.forward(**seg_batch, compute_loss=True, training=False)
             segment_top = segment_output_dict['info_dict']['preds_top']
             
-            bbox_yxyx = segment_top['bbox'][0]
-            segment_scores = segment_top['prob'][0].cpu()
-            top_idx = -1 if self.track_last else segment_scores.argmax()
-            pred_query = dm.dataset.get_query(segment_ori[0], bbox_yxyx.cpu().numpy(), top_idx).unsqueeze(0).to(device)
-            bboxes.append(segment_top['bbox'])
-            probs.append(segment_top['prob'])
-        
+            segment_oris = torch.cat([segment_oris, segment_ori], dim=1) if segment_oris is not None else segment_ori
+            bboxes = torch.cat([bboxes, segment_top['bbox']], dim=1) if bboxes is not None else segment_top['bbox']
+            probs = torch.cat([probs, segment_top['prob']], dim=1) if probs is not None else segment_top['prob']
+                
+            segment_scores = probs[0].cpu()
+            top_idx = len(segment_oris[0])-1 if self.track_last else segment_scores.argmax()
+            pred_query = dm.dataset.instance_get_query(qset_uuid, bboxes[0].cpu().numpy(), top_idx).unsqueeze(0).to(device)
+            query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{top_idx}.png'
+            save_image(pred_query[0], query_save_path)
+            
         segment_tops = {
-            'bbox': torch.cat(bboxes, dim=1),
-            'prob': torch.cat(probs, dim=1),
+            'bbox': bboxes,
+            'prob': probs,
         }
+        
         return segment_tops
 
     def configure_optimizers(self):

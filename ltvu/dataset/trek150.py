@@ -246,6 +246,7 @@ class Trek150EvalDataset(Trek150Dataset):
         del self.num_frames  # to avoid confusion
 
         self.all_segments = []
+        print(f'Number of clips: {len(self.anns)}')
         for ann_idx, ann in enumerate(self.anns):
             p_clip = ann['p_clip']
             num_frames_clip = len(ann['gt_st'])
@@ -315,7 +316,13 @@ class Trek150EvalDataset(Trek150Dataset):
             'original_width': ow,
             'frame_idxs': frame_idxs,
         }
-
+        
+    def instance_get_query(self, qset_uuid, pred_stt, idx):
+        ann = next(i for i in self.anns if i['class_name'] == qset_uuid)
+        start_idx = int(ann['clip_frames'][0])
+        query_segment = self.get_segment_frames(ann, np.array([idx]) + start_idx)  # [1, c, h, w]
+        query = self.get_query(query_segment, pred_stt)
+        return query
 
 if __name__ == '__main__':
     # python -Bm ltvu.dataset.trek150
