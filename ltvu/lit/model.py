@@ -91,7 +91,7 @@ class LitModule(L.LightningModule):
     ############ major hooks ############
     
     def on_train_batch_start(self, batch, batch_idx):
-        if getattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+        if getattr(self.trainer.datamodule, "dataset") and getattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
             global_step = self.trainer.global_step
             dataset = self.trainer.datamodule.dataset
             
@@ -105,7 +105,7 @@ class LitModule(L.LightningModule):
             self.log("frame_aug_level", dataset.frame_incremental_level, 
                     on_step=True, prog_bar=True, rank_zero_only=True)
             
-        if getattr(self.trainer.datamodule, "dataset") and hasattr(self.trainer.datamodule.dataset, "box_aug_mode"):
+        if getattr(self.trainer.datamodule, "dataset") and getattr(self.trainer.datamodule.dataset, "box_aug_mode"):
             if self.current_epoch >= self.late_epoch_box_aug:
                 dataset.box_aug_mode = 'diff'
             else:

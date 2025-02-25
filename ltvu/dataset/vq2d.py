@@ -433,6 +433,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         gt_rt_original = gt_rt_ori.copy()
         gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
+        before_delta, after_diff_delta, after_easy_delta = 0, 0, 0
         
         if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
             # Compute total change (delta)
