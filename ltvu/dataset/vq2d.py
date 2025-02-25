@@ -110,7 +110,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
         if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug):
-            segment, gt_rt = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+            segment, gt_rt, before_delta, after_delta = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -140,6 +140,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 .setdefault('multi_query', {})
                 .setdefault('rt_pos_queries', rt_pos_queries))
             sample['experiment']['multi_query']['rt_pos_idx'] = np.array(rt_pos_idx)
+            
+        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug):
+            (sample
+                .setdefault('experiment', {})
+                .setdefault('frame_aug', {}))
+            sample['experiment']['frame_aug']['before_delta'] = before_delta
+            sample['experiment']['frame_aug']['after_delta'] = after_delta
+            sample['experiment']['frame_aug']['difference'] = after_delta - before_delta
 
         return sample
 
@@ -180,6 +188,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
     
     def frame_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         if self.split == 'train':
+            before_delta, after_delta = 0, 0
             if not self.frame_incremental:
                 if self.frame_dash_aug and random.random() < self.frame_dash_rate:
                     segment, gt_rt = self.frame_dash(segment, gt_rt, self.frame_stride)
@@ -190,7 +199,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                         segment[gt_idx] = segment[gt_idx_shuffled]
                         gt_rt[gt_idx] = gt_rt[gt_idx_shuffled]
                     else:
-                        segment, gt_rt = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                        segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
             elif self.frame_incremental:
                 dash_rate, box_rate = 0, 0
                 if self.frame_incremental_level == 0:
@@ -218,9 +227,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 if random_rate < dash_rate:
                     segment, gt_rt = self.frame_dash(segment, gt_rt, frame_stride)
                 elif random_rate < dash_rate + box_rate:
-                    segment, gt_rt = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                    segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
                     
-        return segment, gt_rt
+        return segment, gt_rt, before_delta, after_delta
     
     def frame_dash(self, segment, gt_rt, frame_stride):
         num_frames = self.num_frames 
@@ -252,14 +261,17 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return segment, gt_rt
     
     def frame_box(self, segment, gt_rt, gt_rt_ori, gt_prob):
-        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
         if self.box_aug_mode == 'diff':
             segment, gt_rt = aug_segment_diff, aug_gt_rt_diff
+            after_delta = after_diff_delta
         elif self.box_aug_mode == 'easy':
             segment, gt_rt = aug_segment_easy, aug_gt_rt_easy
+            after_delta = after_easy_delta
         elif self.box_aug_mode == None:
+            after_delta = 0
             pass
-        return segment, gt_rt
+        return segment, gt_rt, before_delta, after_delta
 
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
@@ -412,7 +424,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.aug_based_time and len(gt_idx) > self.aug_time:
             gt_idx_rand = np.random.choice(gt_idx, self.aug_time, replace=False)
         else:
-            gt_idx_rand = np.array([])
+            gt_idx_rand = gt_idx
 
         aug_segment_diff = segment.clone()
         aug_gt_rt_diff = gt_rt.copy()
@@ -423,29 +435,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         num_boxes = len(gt_box)
         
         if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
-            # Compute center points, width, and height
-            cx = (gt_box[:, 1] + gt_box[:, 3]) / 2
-            cy = (gt_box[:, 0] + gt_box[:, 2]) / 2
-            w = gt_box[:, 3] - gt_box[:, 1]
-            h = gt_box[:, 2] - gt_box[:, 0]
-            
-            # Compute pairwise distances
-            cx_diff = cx[:, None] - cx[None, :]
-            cy_diff = cy[:, None] - cy[None, :]
-            distance = np.sqrt(cx_diff**2 + cy_diff**2)
-            
-            # Compute width and height differences
-            delta_w = w[:, None] - w[None, :]
-            delta_h = h[:, None] - h[None, :]
-            
-            # Compute scale ratios safely
-            valid_w = (w[:, None] > 0) & (w[None, :] > 0)
-            valid_h = (h[:, None] > 0) & (h[None, :] > 0)
-            scale_w = np.where(valid_w, np.log(w[:, None] / w[None, :]), 0)
-            scale_h = np.where(valid_h, np.log(h[:, None] / h[None, :]), 0)
-
             # Compute total change (delta)
-            delta_total = distance + np.abs(delta_w) + np.abs(delta_h) + np.abs(scale_w) + np.abs(scale_h)
+            delta_total = compute_bbox_deltas(gt_box)
             
             def reorder_boxes(mode="diff"):
                 """
@@ -515,9 +506,15 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             aug_segment_diff[gt_idx] = aug_segment_diff[gt_idx_new_diff]
 
             aug_gt_rt_easy[gt_idx] = aug_gt_rt_easy[gt_idx_new_easy]
-            aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]            
+            aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]
+            
+            before_delta = np.mean(np.diagonal(delta_total, offset=1))
+            aug_diff_delta = compute_bbox_deltas(gt_box[new_order_diff])
+            after_diff_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))
+            aug_diff_delta = compute_bbox_deltas(gt_box[new_order_easy])
+            after_easy_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))            
         
-        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy
+        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta
 
 
 def sample_nearby_gt_frames(
@@ -597,6 +594,45 @@ def shift_indices_to_clip_range(
     assert (frame_idxs < clip_len).all(), f'Frame indices out of clip range: {frame_idxs}, {lmost=} {rmost=} {clip_len=}'
     # assert (0 <= frame_idxs).all() and (frame_idxs < clip_len).all()
     return frame_idxs
+
+def compute_bbox_deltas(gt_box):
+    """
+    Compute center points, width, height, pairwise distances,
+    width/height differences, scale ratios, and total change (delta) for bounding boxes.
+    
+    Parameters:
+        gt_box (numpy.ndarray): Bounding box coordinates of shape (N, 4),
+                                where each row is [y1, x1, y2, x2].
+
+    Returns:
+        tuple: distance (numpy.ndarray), delta_w (numpy.ndarray), delta_h (numpy.ndarray),
+               scale_w (numpy.ndarray), scale_h (numpy.ndarray), delta_total (numpy.ndarray)
+    """
+    # Compute center points, width, and height
+    cx = (gt_box[:, 1] + gt_box[:, 3]) / 2
+    cy = (gt_box[:, 0] + gt_box[:, 2]) / 2
+    w = gt_box[:, 3] - gt_box[:, 1]
+    h = gt_box[:, 2] - gt_box[:, 0]
+    
+    # Compute pairwise distances
+    cx_diff = cx[:, None] - cx[None, :]
+    cy_diff = cy[:, None] - cy[None, :]
+    distance = np.sqrt(cx_diff**2 + cy_diff**2)
+    
+    # Compute width and height differences
+    delta_w = w[:, None] - w[None, :]
+    delta_h = h[:, None] - h[None, :]
+    
+    # Compute scale ratios safely
+    valid_w = (w[:, None] > 0) & (w[None, :] > 0)
+    valid_h = (h[:, None] > 0) & (h[None, :] > 0)
+    scale_w = np.where(valid_w, np.log(w[:, None] / w[None, :]), 0)
+    scale_h = np.where(valid_h, np.log(h[:, None] / h[None, :]), 0)
+
+    # Compute total change (delta)
+    delta_total = distance + np.abs(delta_w) + np.abs(delta_h) + np.abs(scale_w) + np.abs(scale_h)
+    
+    return delta_total
 
 
 class VQ2DEvalDataset(VQ2DFitDataset):
