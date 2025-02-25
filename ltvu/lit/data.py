@@ -426,6 +426,7 @@ class LitTrek150DataModule(LitVQ2DDataModule):
     def pred_dataloader(self):
         self.dataset = Trek150EvalDataset(self.config, split='test')
         print(f"Number of GPUs available: {self.config.num_gpus}")
+        print(f'Number of clips: {len(self.dataset.anns)}')
         return torch.utils.data.DataLoader(
             self.dataset,
             batch_size=self.batch_size,

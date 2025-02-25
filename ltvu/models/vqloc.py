@@ -816,6 +816,10 @@ class ClipMatcher(nn.Module):
                 random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
                 query = rt_pos_queries[torch.arange(b), random_idx]
             query_feat_dict = self.extract_feature(query)
+        
+        if get_intermediate_features:
+            output_dict['feat']['clip_cls'] = clip_feat_dict['cls'].clone().squeeze(-1)
+            output_dict['feat']['query_cls'] = query_feat_dict['cls'].clone().squeeze(-1)
 
         if rt_pos and (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
             rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]

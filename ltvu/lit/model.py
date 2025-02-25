@@ -201,7 +201,7 @@ class LitModule(L.LightningModule):
         max_len = len(segment_loader)
             
         pred_query = None
-        segment_oris, bboxes, probs = None, None, None
+        segment_oris, bboxes, probs, clips_cls = None, None, None, None
         query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{0}.png'
         query_save_path.parent.mkdir(parents=True, exist_ok=True)
         save_image(segment_loader[0]['query'][0], query_save_path)
@@ -213,15 +213,20 @@ class LitModule(L.LightningModule):
             seg_batch = dm.on_after_batch_transfer(seg_batch, dataloader_idx=0)
             seg_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in seg_batch.items()}
             
-            segment_output_dict = self.model.forward(**seg_batch, compute_loss=True, training=False)
+            segment_output_dict = self.model.forward(**seg_batch, compute_loss=True, training=False, get_intermediate_features=True)
             segment_top = segment_output_dict['info_dict']['preds_top']
             
             segment_oris = torch.cat([segment_oris, segment_ori], dim=1) if segment_oris is not None else segment_ori
             bboxes = torch.cat([bboxes, segment_top['bbox']], dim=1) if bboxes is not None else segment_top['bbox']
             probs = torch.cat([probs, segment_top['prob']], dim=1) if probs is not None else segment_top['prob']
+            clips_cls = torch.cat([clips_cls, segment_output_dict['feat']['clip_cls']], dim=0) if clips_cls is not None else segment_output_dict['feat']['clip_cls']
+            query_cls = segment_output_dict['feat']['query_cls']
                 
             segment_scores = probs[0].cpu()
             top_idx = len(segment_oris[0])-1 if self.track_last else segment_scores.argmax()
+            # cls_sim = torch.nn.functional.cosine_similarity(clips_cls, query_cls, dim=-1).cpu() # [t]
+            # top_idx = cls_sim.argmax()
+            
             pred_query = dm.dataset.instance_get_query(qset_uuid, bboxes[0].cpu().numpy(), top_idx).unsqueeze(0).to(device)
             query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{top_idx}.png'
             save_image(pred_query[0], query_save_path)

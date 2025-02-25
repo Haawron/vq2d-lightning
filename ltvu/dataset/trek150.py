@@ -143,7 +143,7 @@ class Trek150Dataset(torch.utils.data.Dataset):
             x, y, w, h = cx - s / 2, cy - s / 2, s, s
             assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
                 f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
-            x, y, w, h = map(lambda a: int(round(a)), (x, y, w, h))
+        x, y, w, h = map(lambda a: int(round(a)), (x, y, w, h))
 
         # crop - permute - normalize
         query: torch.Tensor = TF.crop(query, y, x, h, w)  # [c, h, w]
@@ -155,6 +155,7 @@ class Trek150Dataset(torch.utils.data.Dataset):
                 pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
             else:
                 pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
+            pad = tuple(map(lambda a: int(round(a)), pad))
             query = F.pad(query, pad, value=0)
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
@@ -246,7 +247,6 @@ class Trek150EvalDataset(Trek150Dataset):
         del self.num_frames  # to avoid confusion
 
         self.all_segments = []
-        print(f'Number of clips: {len(self.anns)}')
         for ann_idx, ann in enumerate(self.anns):
             p_clip = ann['p_clip']
             num_frames_clip = len(ann['gt_st'])
@@ -328,7 +328,7 @@ if __name__ == '__main__':
     # python -Bm ltvu.dataset.trek150
     import hydra
     hydra.initialize(config_path='../../config', version_base='1.3')
-    config = hydra.compose(config_name='train', overrides=['dataset=trek150','dataset.track_continual=True'])
+    config = hydra.compose(config_name='train', overrides=['batch_size=1','dataset=trek150','dataset.track_continual=True','dataset.query_padding=True','dataset.query_square=False'])
     import lightning as L
     # L.seed_everything(42)
     # ds = Trek150Dataset(config, split='train')
