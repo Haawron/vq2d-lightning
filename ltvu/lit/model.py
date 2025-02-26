@@ -241,6 +241,27 @@ class LitModule(L.LightningModule):
     def on_train_epoch_start(self):
         if self.fix_backbone:
             self.model.backbone.eval()
+            
+    def on_train_epoch_end(self):
+        best_epoch_iou = None
+        best_epoch_prob = None
+
+        for callback in self.trainer.checkpoint_callbacks:
+            if isinstance(callback, L.pytorch.callbacks.ModelCheckpoint):
+                if callback.monitor == "Val/iou":
+                    best_ckpt_path_iou = callback.best_model_path
+                    if best_ckpt_path_iou:
+                        best_epoch_iou = int(best_ckpt_path_iou.split("epoch=")[1].split("-")[0])
+                elif callback.monitor == "Val/prob_acc":
+                    best_ckpt_path_prob = callback.best_model_path
+                    if best_ckpt_path_prob:
+                        best_epoch_prob = int(best_ckpt_path_prob.split("epoch=")[1].split("-")[0])
+
+        if best_epoch_iou is not None:
+            self.log("best_epoch_iou", best_epoch_iou, prog_bar=True, rank_zero_only=True)
+        if best_epoch_prob is not None:
+            self.log("best_epoch_prob", best_epoch_prob, prog_bar=True, rank_zero_only=True)
+
 
     def on_load_checkpoint(self, checkpoint):
         param_names = set('model.' + k for k in self.model.state_dict().keys())
