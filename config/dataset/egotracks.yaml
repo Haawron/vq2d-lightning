@@ -15,8 +15,8 @@ num_frames: 32
 frame_interval: 1
 segment_size: [448, 448]  # height, width
 query_size: [448, 448]  # height, width
-query_padding: False
-query_square: True
+query_padding: True
+query_square: False
 padding_value: 'zero'  # zero or mean
 num_train_samples: 27956
 
@@ -38,8 +38,8 @@ egotracks:
   frame_interval: 1
   segment_size: [448, 448]  # height, width
   query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
+  query_padding: True
+  query_square: False
   padding_value: 'zero'  # zero or mean
   num_train_samples: 26838
 
@@ -59,8 +59,8 @@ lasot:
   frame_interval: 1
   segment_size: [448, 448]  # height, width
   query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
+  query_padding: True
+  query_square: False
   padding_value: 'zero'  # zero or mean
 
   official_anns_dir: ''
@@ -84,8 +84,8 @@ got10k:
   frame_interval: 1
   segment_size: [448, 448]  # height, width
   query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
+  query_padding: True
+  query_square: False
   padding_value: 'zero'  # zero or mean
 
   official_anns_dir: ''
@@ -109,8 +109,8 @@ trackingnet:
   frame_interval: 1
   segment_size: [448, 448]  # height, width
   query_size: [448, 448]  # height, width
-  query_padding: False
-  query_square: True
+  query_padding: True
+  query_square: False
   padding_value: 'zero'  # zero or mean
 
   official_anns_dir: ''

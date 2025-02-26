@@ -316,7 +316,7 @@ if __name__ == '__main__':
     # from ltvu.metrics import get_metrics_vq2d, print_metrics_vq2d
 
     p_tmp_outdir = Path('outputs/debug/2024-09-25/126347/tmp')
-    p_int_pred = Path('/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/intermediate_predictions.pt')
+    p_int_pred = Path('/data/soyeonhong/vq2d/vq2d-lightning/outputs/batch/2025-02-24/177022/egotracks/intermediate_predictions.pt')
     p_pred = p_tmp_outdir.parent / 'predictions.json'
 
     # json.dump(qset_preds, p_int_pred.open('w'))
@@ -327,7 +327,7 @@ if __name__ == '__main__':
 
     # write the final predictions to json
     # json.dump(final_preds, open(p_pred, 'w'))
-    json.dump(final_preds, open('/data/soyeonhong/vq2d/vq2d-lightning/outputs/predictions/egotracks.json', 'w'))
+    json.dump(final_preds, open('/data/soyeonhong/vq2d/vq2d-lightning/outputs/batch/2025-02-24/177022/egotracks/predictions.json', 'w'))
 
     # print metrics
     # subset_metrics = get_metrics_vq2d('data/vq_v2_val_anno.json', '/tmp/pred.json')

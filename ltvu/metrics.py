@@ -272,8 +272,9 @@ def get_metrics_egotracks(p_ann_flat, p_pred):
     final_preds = json.load(p_pred.open())
 
     num_gt_frames = 0
-    ious = []
-    scores = []
+    num_pred_frames = 0
+    ious_pr = []
+    ious_re = []
     anns = json.load(p_ann_flat.open())
     for ann in anns:
         if 'uuid_ltt' not in ann:
@@ -288,51 +289,44 @@ def get_metrics_egotracks(p_ann_flat, p_pred):
         gt_lt = ann['lt_track']
         fno2gt = {bbox['fno']: bbox for bbox in gt_lt}
         num_gt_frames += len(gt_lt)
+        num_pred_frames += len(list(pred.keys()))
         for pred_fno, pred_bbox in pred.items():
-            pred_fno = int(round(int(pred_fno) / 6))
+            pred_fno = int(pred_fno)
             if pred_fno not in fno2gt:
-                iou, score = 0, pred_bbox[-1]
+                ious_re.append(0) # FP
             else:
                 gt_bbox = fno2gt[pred_fno]
                 gx1, gy1, gw, gh = gt_bbox['x'], gt_bbox['y'], gt_bbox['w'], gt_bbox['h']
                 iou = compute_iou((gx1, gy1, gw, gh), pred_bbox[:4])
                 iou, score = iou, pred_bbox[-1]
-            ious.append(iou)
-            scores.append(score)
-    ious = np.array(ious)
-    scores = np.array(scores)
-    args = np.argsort(scores)[::-1]
-    ious = ious[args]
+                ious_re.append(iou)
+                ious_pr.append(iou)
+                
+        for gt_fno in fno2gt: #FN
+            if gt_fno not in list(pred.keys()):  # If GT exists but no prediction is made
+                ious_re.append(0)  # IoU is 0 for recall (False Negative case)
 
     # long-term tracking metrics
-    ious_cumsum = ious.cumsum()
-    pr = ious_cumsum / np.arange(1, len(ious)+1)
-    re = ious_cumsum / num_gt_frames
+    pr = np.array(ious_pr).sum() / num_pred_frames # all iou / num_pred_frames
+    re = np.array(ious_re).sum() / num_gt_frames # all iou / num_gt_frames
     f1 = 2 * pr * re / (pr + re + 1e-6)
-    best_f1_idx = np.argmax(f1)
-    best_f1 = f1[best_f1_idx]
-    best_pr = pr[best_f1_idx]
-    best_re = re[best_f1_idx]
-    best_th = scores[args[best_f1_idx]]
     metrics = {
-        'best_f1': 100*best_f1,
-        'best_pr': 100*best_pr,
-        'best_re': 100*best_re,
-        'best_th': 100*best_th,
+        'f1': 100*f1,
+        'pr': 100*pr,
+        're': 100*re
     }
     return metrics
 
 
 def print_metrics_egotracks(metrics):
-    best_f1 = metrics['best_f1']
-    best_pr = metrics['best_pr']
-    best_re = metrics['best_re']
-    best_th = metrics['best_th']
+    best_f1 = metrics['f1']
+    best_pr = metrics['pr']
+    best_re = metrics['re']
+    # best_th = metrics['best_th']
     print('EgoTracks Evaluation')
     print(f'Best F1       : {best_f1:6.3f}')
     print(f'Best Precision: {best_pr:6.3f}')
     print(f'Best Recall   : {best_re:6.3f}')
-    print(f'Best Threshold: {best_th:6.3f}')
 
 
 def format_metrics_egotracks(metrics):
@@ -422,8 +416,19 @@ if __name__ == '__main__':
     # p_pred = Path("/data/gunsbrother/repos/vq2d-lightning/outputs/debug/2024-11-09/141214/egotracks/predictions.json")
     # metrics = get_metrics_egotracks(p_ann, p_pred)
     # print_metrics_egotracks(metrics)
+    
+    # p_ann = Path("data/egotracks/egotracks_val_anno.json")
+    # p_pred = Path("/data/soyeonhong/vq2d/vq2d-lightning/outputs/batch/2025-02-24/177022/egotracks/predictions.json")
+    # metrics = get_metrics_egotracks(p_ann, p_pred)
+    # print_metrics_egotracks(metrics)
+    
+    p_ann = Path("data/egotracks/egotracks_val_anno.json")
+    p_pred = Path("/data/soyeonhong/vq2d/vq2d-lightning/outputs/batch/2025-02-24/177022/egotracks/predictions2.json")
+    metrics = get_metrics_egotracks(p_ann, p_pred)
+    print_metrics_egotracks(metrics)
+    
 
-    p_clips_dir = Path("/data/datasets/LaSOT")
-    p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
-    metrics = get_metrics_lasot(p_clips_dir, p_pred)
-    print_metrics_lasot(metrics)
+    # p_clips_dir = Path("/data/datasets/LaSOT")
+    # p_pred = Path("outputs/batch/2024-11-12/35047/lasot/intermediate_predictions.pt")
+    # metrics = get_metrics_lasot(p_clips_dir, p_pred)
+    # print_metrics_lasot(metrics)

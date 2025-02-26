@@ -235,6 +235,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             x, y, w, h = cx - s / 2, cy - s / 2, s, s
             assert 0 <= x < ow and 0 <= y < oh and 0 < x + w < ow and 0 < y + h < oh, \
                 f'Invalid visual crop: {x=}, {y=}, {h=}, {w=}, {oh=}, {ow=}'
+        x, y, w, h = map(lambda a: int(round(a)), (x, y, w, h))
 
         # load
         query = Image.open(p_frame)
@@ -254,6 +255,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 pad = (pad_size, l - s - pad_size, 0, 0)   # Left, Right, Top, Bottom
             else:
                 pad = (0, 0, pad_size, l - s - pad_size)   # Left, Right, Top, Bottom
+            pad = tuple(map(lambda a: int(round(a)), pad))
             query = F.pad(query, pad, value=0)
         query = F.interpolate(query[None], size=self.query_size, mode='bilinear', align_corners=True, antialias=True)
         return query.squeeze(0)  # [c, h, w]
