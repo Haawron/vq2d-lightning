@@ -165,6 +165,14 @@ class LitModule(L.LightningModule):
         output_dict = self.model.forward(**batch, compute_loss=True, training=False)
         if 'log_dict' in output_dict:
             log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Val')
+            
+            if 'Val/prob_acc' in log_dict:
+                self.log("Val/prob_acc", log_dict["Val/prob_acc"], batch_size=bsz, on_epoch=True, sync_dist=True, prog_bar=True)
+                log_dict.pop("Val/prob_acc", None)
+            if 'Val/iou' in log_dict:
+                self.log("Val/iou", log_dict["Val/iou"], batch_size=bsz, on_epoch=True, sync_dist=True, prog_bar=True)
+                log_dict.pop("Val/iou", None)
+
             self.log_dict(log_dict, batch_size=bsz, on_epoch=True, sync_dist=True)
             self.trainer.strategy.barrier('validation_step_end')  # processing times may vary
 
@@ -248,14 +256,14 @@ class LitModule(L.LightningModule):
 
         for callback in self.trainer.checkpoint_callbacks:
             if isinstance(callback, L.pytorch.callbacks.ModelCheckpoint):
-                if callback.monitor == "Val/iou":
-                    best_ckpt_path_iou = callback.best_model_path
-                    if best_ckpt_path_iou:
-                        best_epoch_iou = int(best_ckpt_path_iou.split("epoch=")[1].split("-")[0])
-                elif callback.monitor == "Val/prob_acc":
+                if callback.monitor == "Val/prob_acc":
                     best_ckpt_path_prob = callback.best_model_path
                     if best_ckpt_path_prob:
                         best_epoch_prob = int(best_ckpt_path_prob.split("epoch=")[1].split("-")[0])
+                elif callback.monitor == "Val/iou":
+                    best_ckpt_path_iou = callback.best_model_path
+                    if best_ckpt_path_iou:
+                        best_epoch_iou = int(best_ckpt_path_iou.split("epoch=")[1].split("-")[0])
 
         if best_epoch_iou is not None:
             self.log("best_epoch_iou", best_epoch_iou, prog_bar=True, rank_zero_only=True)
