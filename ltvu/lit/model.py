@@ -85,13 +85,15 @@ class LitModule(L.LightningModule):
 
         self.rt_pos_query = config.get('rt_pos_query')
         self.frame_box_aug = config.dataset.get('frame_box_aug', False)
+        self.frame_dash_aug = config.dataset.get('frame_dash_aug', False)
+        self.frame_incremental = config.dataset.get('frame_incremental', False)
         self.box_aug_difficulty = config.get('box_aug_difficulty', False)
         self.late_epoch_box_aug = config.get('late_epoch_box_aug', 0)
 
     ############ major hooks ############
     
     def on_train_batch_start(self, batch, batch_idx):
-        if getattr(self.trainer.datamodule, "dataset") and getattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+        if self.frame_incremental:
             global_step = self.trainer.global_step
             dataset = self.trainer.datamodule.dataset
             
@@ -105,7 +107,7 @@ class LitModule(L.LightningModule):
             self.log("frame_aug_level", dataset.frame_incremental_level, 
                     on_step=True, prog_bar=True, rank_zero_only=True)
             
-        if getattr(self.trainer.datamodule, "dataset") and getattr(self.trainer.datamodule.dataset, "box_aug_mode"):
+        if self.frame_box_aug:
             if self.current_epoch >= self.late_epoch_box_aug:
                 dataset.box_aug_mode = 'diff'
             else:
