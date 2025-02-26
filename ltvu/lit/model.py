@@ -108,6 +108,7 @@ class LitModule(L.LightningModule):
                     on_step=True, prog_bar=True, rank_zero_only=True)
             
         if self.frame_box_aug:
+            dataset = self.trainer.datamodule.dataset
             if self.current_epoch >= self.late_epoch_box_aug:
                 dataset.box_aug_mode = 'diff'
             else:

@@ -217,7 +217,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                     
                 if self.frame_dash_aug and self.frame_box_aug:
                     dash_rate = total_rate / 2
-                    box_rate = total_rate / 2
+                    box_rate = total_rate / 2 + 0.1
                 elif self.frame_box_aug:
                     box_rate = total_rate
                 elif self.frame_dash_aug:
