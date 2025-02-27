@@ -196,11 +196,14 @@ class TrackingNetFitDataset(TrackingNetDataset):
         p_clip = ann['p_clip']
         clip_uid = p_clip.stem
         clip_len = len(ann['gt_st'])
+        gt_st = ann['gt_st']
 
         # get inputs
         required_len = (self.num_frames - 1) * self.frame_interval + 1
+        valid_indeces = gt_st[(gt_st['w'] != 0) & (gt_st['h'] != 0)].index.tolist()
+        valid_indeces = [idx for idx in valid_indeces if idx < clip_len - required_len]
         try:
-            start = np.random.randint(0, clip_len - required_len)
+            start = np.random.choice(valid_indeces) if self.split == 'train' else 0
         except:
             print(f'{p_clip}, {clip_uid}, {clip_len}')
         frame_idxs = np.arange(start, start + required_len, self.frame_interval)

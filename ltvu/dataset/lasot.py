@@ -190,10 +190,13 @@ class LaSOTFitDataset(LaSOTDataset):
         p_clip = ann['p_clip']
         clip_uid = p_clip.stem
         clip_len = len(ann['gt_st'])
+        gt_st = ann['gt_st']
 
         # get inputs
         required_len = (self.num_frames - 1) * self.frame_interval + 1
-        start = np.random.randint(0, clip_len - required_len)
+        valid_indeces = gt_st[(gt_st['w'] != 0) & (gt_st['h'] != 0)].index.tolist()
+        valid_indeces = [idx for idx in valid_indeces if idx < clip_len - required_len]
+        start = np.random.choice(valid_indeces) if self.split == 'train' else 0
         frame_idxs = np.arange(start, start + required_len, self.frame_interval)
 
         segment = self.get_segment_frames(ann, frame_idxs)  # [t, c, h, w]
@@ -308,8 +311,8 @@ if __name__ == '__main__':
     # python -Bm ltvu.dataset.lasot
     import hydra
     hydra.initialize(config_path='../../config', version_base='1.3')
-    config = hydra.compose(config_name='train', overrides=['dataset=lasot'])
-    config.dataset.clips_dir = '/data/datasets/LaSOT'
+    config = hydra.compose(config_name='train', overrides=['dataset=egotracks'])
+    config.dataset = config.dataset.lasot
     import lightning as L
     # L.seed_everything(42)
     ds = LaSOTFitDataset(config, split='train')
@@ -319,25 +322,28 @@ if __name__ == '__main__':
     # idx = 0  # landscape
     # idx = 565  # portrait
     idx = np.random.randint(0, len(ds))
-    sample = ds[idx]
-    segment = sample['segment']
-    gt_bboxes = sample['gt_bboxes']
-    T = len(segment)
+    
+    for idx in range(len(ds)):
+        sample = ds[idx]
+        segment = sample['segment']
+        gt_bboxes = sample['gt_bboxes']
+        query = sample = sample['query']
+        T = len(segment)
 
-    for t in range(0, T, T // 10):
-        image = plt.imshow(segment[t].permute(1, 2, 0).cpu().numpy())
-        y1, x1, y2, x2 = gt_bboxes[t] * (segment.shape[-2:] * 2)
-        ax = plt.gca()
-        ax.add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='red', lw=2))
-        img_io = io.BytesIO()
-        plt.savefig(img_io, format='png')
-        plt.close()
-        imgcat(img_io.getvalue())
-        print()
+    # for t in range(0, T, T // 10):
+    #     image = plt.imshow(segment[t].permute(1, 2, 0).cpu().numpy())
+    #     y1, x1, y2, x2 = gt_bboxes[t] * (segment.shape[-2:] * 2)
+    #     ax = plt.gca()
+    #     ax.add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='red', lw=2))
+    #     img_io = io.BytesIO()
+    #     plt.savefig(img_io, format='png')
+    #     plt.close()
+    #     imgcat(img_io.getvalue())
+    #     print()
 
-    image = sample['query']
-    img_io = io.BytesIO()
-    plt.imshow(image.permute(1, 2, 0).cpu().numpy())
-    plt.savefig(img_io, format='png')
-    imgcat(img_io.getvalue())
+    # image = sample['query']
+    # img_io = io.BytesIO()
+    # plt.imshow(image.permute(1, 2, 0).cpu().numpy())
+    # plt.savefig(img_io, format='png')
+    # imgcat(img_io.getvalue())
     print()
