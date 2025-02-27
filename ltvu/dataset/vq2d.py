@@ -155,8 +155,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return anns
 
     def sample_frame_idxs(self, num_frames: int, frame_interval: int, clip_len: int, gt_ext = None):
-        frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)                
-        # frame_idxs = self.frame_dash(frame_idxs)                
+        frame_idxs = sample_nearby_gt_frames(gt_ext, num_frames, frame_interval)
         frame_idxs = shift_indices_to_clip_range(frame_idxs, clip_len)
         return frame_idxs
 
