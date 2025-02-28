@@ -41,3 +41,7 @@ config/train_fast_sy.yaml
 config/train_sy.yaml
 config/debug/base_sy.yaml
 scripts/ttrain-multinode.sbatch
+scripts/train-multinode_ugrad.sbatch
+notebooks/qualitative_result.ipynb
+notebooks/pca2 copy.ipynb
+notebooks/ours_visualize.ipynb
