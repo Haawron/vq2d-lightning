@@ -89,6 +89,7 @@ class LitModule(L.LightningModule):
         self.frame_incremental = config.dataset.get('frame_incremental', False)
         self.box_aug_difficulty = config.get('box_aug_difficulty', False)
         self.late_epoch_box_aug = config.get('late_epoch_box_aug', 0)
+        self.compare_box_start_epoch = config.get('compare_box_start_epoch', 0)
 
     ############ major hooks ############
     
@@ -140,6 +141,8 @@ class LitModule(L.LightningModule):
                     extra_args['sim_mode']='min'
                 else:
                     extra_args['sim_mode']='max'
+        if self.current_epoch >= self.compare_box_start_epoch:
+            extra_args['enable_compare_box_loss']=True
         output_dict = self.model.forward(
             **batch,
             compute_loss=True,

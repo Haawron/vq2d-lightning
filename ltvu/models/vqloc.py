@@ -243,6 +243,9 @@ class ClipMatcher(nn.Module):
         
         # Box penalty
         box_penalty: bool = False,
+        compare_box_weight: float = 1.,
+        compare_box_exception: bool = False,
+        compare_only_pred_top: bool = False,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -330,7 +333,10 @@ class ClipMatcher(nn.Module):
         self.sim_between = sim_between
         if self.box_penalty:
             assert self.sim_between == 'random', f'if box_penalty is enabled, sim_between must be random, got {self.sim_between}'
-
+        self.compare_box_weight = compare_box_weight
+        self.compare_box_exception = compare_box_exception
+        self.compare_only_pred_top = compare_only_pred_top
+        
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
         self.guide_to_stx = guide_to_stx
@@ -804,6 +810,7 @@ class ClipMatcher(nn.Module):
         sim_mode = 'max',
         sim_thr = 0.0,
         enable_rt_pq_threshold=False,
+        enable_compare_box_loss=False,
 
         get_intermediate_features = False,
 
@@ -1107,22 +1114,31 @@ class ClipMatcher(nn.Module):
                 output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}, 'penalty_query': {}}}
                 pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_penalty_dict, 
                                             clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
-                _, _, _, _, penalty_reg_loss = self.compute_reg_losses(
+                loss_dict_penalty, _, _, _, penalty_reg_loss = self.compute_reg_losses(
                     pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
                     gts, gt_probs, training, use_hnm, device, output_dict_penalty)
                 
                 compare_gts = {
                     'before_query': before_query_mask,   # [b,t]
-                    'clip_with_bbox': preds_top['prob'], # [b,t]
-                    'clip_bbox': preds_top['bbox'],      # [b,t,4]
+                    'clip_with_bbox': preds_top['prob'].detach(), # [b,t]
+                    'clip_bbox': preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 
-                _, _, _, _, compare_reg_loss = self.compute_reg_losses(
-                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
-                    compare_gts, gt_probs, training, use_hnm, device, output_dict)
+                if self.compare_box_exception:
+                    # except_compare_loss = ['bbox_center', 'bbox_hw', 'bbox', 'prob']
+                    except_compare_loss = ['bbox_hw', 'bbox']
+                else:
+                    except_compare_loss = []
                 
+                loss_dict_compare, _, _, _, compare_reg_loss = self.compute_reg_losses(
+                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
+                    compare_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    
                 origin_reg_loss = total_loss
-                total_loss = (total_loss + penalty_reg_loss + compare_reg_loss) / 3
+                if enable_compare_box_loss:
+                    total_loss = (total_loss + penalty_reg_loss + compare_reg_loss * self.compare_box_weight) / (2 + self.compare_box_weight)
+                else:
+                    total_loss = (total_loss + penalty_reg_loss) / 2
                 
             if self.weight_singular > 0 or self.weight_entropy > 0 or self.weight_sinkhorn > 0 or self.weight_koleo > 0:
                 # penalize entropy of a normed score map while limiting sigma's
@@ -1215,9 +1231,21 @@ class ClipMatcher(nn.Module):
             if self.weight_koleo > 0:
                 log_dict.update({'loss_koleo': loss_koleo.detach()})
             if self.box_penalty and training:
-                log_dict.update({'penalty_reg_loss': penalty_reg_loss.detach()})
-                log_dict.update({'compare_reg_loss': compare_reg_loss.detach()})
                 log_dict.update({'origin_reg_loss': origin_reg_loss.detach()})
+                log_dict.update({
+                    'penalty_reg_loss': penalty_reg_loss.detach(),
+                    'penalty_reg_loss_bbox_center': loss_dict_penalty['loss_bbox_center'].mean(),
+                    'penalty_reg_loss_bbox_hw': loss_dict_penalty['loss_bbox_hw'].mean(),
+                    'penalty_reg_loss_bbox_giou': loss_dict_penalty['loss_bbox_giou'].mean(),
+                    'penalty_reg_loss_prob': loss_dict_penalty['loss_prob'].mean(),
+                })
+                log_dict.update({
+                    'compare_reg_loss': compare_reg_loss.detach(),
+                    'compare_reg_loss_bbox_center': loss_dict_compare['loss_bbox_center'].mean(),
+                    'compare_reg_loss_bbox_hw': loss_dict_compare['loss_bbox_hw'].mean(),
+                    'compare_reg_loss_bbox_giou': loss_dict_compare['loss_bbox_giou'].mean(),
+                    'compare_reg_loss_prob': loss_dict_compare['loss_prob'].mean(),
+                })
 
 
             # for logging - metrics
@@ -1276,7 +1304,7 @@ class ClipMatcher(nn.Module):
 
         return output_dict
 
-    def compute_reg_losses(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict):
+    def compute_reg_losses(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, except_loss=[], only_pred_top=False):
         # acutal loss calculation
         loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
             pred_dict, gts,
@@ -1287,11 +1315,15 @@ class ClipMatcher(nn.Module):
             weight_bbox_giou=self.weight_bbox_giou,
             weight_prob=self.weight_prob,
             use_hnm=use_hnm,
+            only_pred_top=only_pred_top,
         )
 
         loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]
+        assert except_loss == [] or all([f'loss_{e}' in loss_names for e in except_loss]), f'except_loss should be in {loss_names}'
         total_loss: torch.Tensor = torch.tensor(0., dtype=torch.float32, device=device, requires_grad=True)
         for loss_name in loss_names:
+            if loss_name in except_loss:
+                continue
             ww, l = loss_dict[f'weight_{loss_name}'], loss_dict[f'loss_{loss_name}']
             if training:
                 assert l.requires_grad, f'{loss_name} should require grad'
