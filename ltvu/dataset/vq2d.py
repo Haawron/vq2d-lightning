@@ -64,6 +64,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.frame_box_aug = ds_config.get('frame_box_aug')
         self.frame_random = ds_config.get('frame_random', False)
         self.aug_based_time = ds_config.get('aug_based_time', False)
+        self.frame_neighbor = ds_config.get('frame_neighbor', False)
         self.box_aug = ds_config.get('box_aug', False)
         self.aug_time = ds_config.get('aug_time', False)
         self.box_aug_mode = None
@@ -492,10 +493,53 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                         new_order.append(i)
                 return new_order
             
+            def reorder_boxes_for_time_neighbor(gt_idx_rand, mode="diff"):
+                
+                new_order = [i for i in range(len(gt_idx))]
+                delta = delta_total[gt_idx_rand]
+                
+                if mode == "diff":
+                    best_match = np.argmax(delta)
+                elif mode == "easy":
+                    best_match = np.argmin(delta)
+                
+                next_idx = gt_idx_rand + 1 if gt_idx_rand + 1 < len(gt_idx) and gt_idx_rand + 2 < len(gt_idx) else None
+
+                if next_idx and best_match != next_idx + 1 and best_match != gt_idx_rand - 1:
+                    original_future_change = delta_total[next_idx][next_idx + 1]
+                    new_future_change = delta_total[best_match][next_idx + 1]
+                    if new_future_change < original_future_change * 0.5:
+                        new_order = np.insert(new_order, next_idx, best_match)
+                        new_order = np.delete(new_order, best_match + 1)
+                    else:
+                        if best_match - 1 >= 0:
+                            original_change2 = delta_total[best_match][best_match - 1] 
+                            new_future_change2 = delta_total[gt_idx_rand][best_match - 1]
+                            
+                            tmp = new_order[next_idx]
+                            new_order[next_idx] = best_match
+                            if new_future_change2 >= original_change2 * 0.5:
+                                new_order[best_match] = tmp           
+                return new_order
+            
             # Compute new orderings
             if self.aug_based_time:
-                new_order_diff = reorder_boxes_for_time(mode="diff")
-                new_order_easy = reorder_boxes_for_time(mode="easy")
+                if self.frame_neighbor:
+                    for idx in range(self.aug_time):
+                        rand_idx = np.random.randint(0, len(gt_idx))
+                        new_order_diff = reorder_boxes_for_time_neighbor(rand_idx, mode="diff")
+                        new_order_easy = reorder_boxes_for_time_neighbor(rand_idx, mode="easy")
+                        
+                        if idx < self.aug_time - 1:
+                            tmp_idx_diff = gt_idx[new_order_diff]
+                            tmp_idx_easy = gt_idx[new_order_easy]
+                            if self.box_aug_mode == 'diff':
+                                delta_total = compute_bbox_deltas(gt_rt_original[tmp_idx_diff])
+                            else:
+                                delta_total = compute_bbox_deltas(gt_rt_original[tmp_idx_easy])
+                else:
+                    new_order_diff = reorder_boxes_for_time(mode="diff")
+                    new_order_easy = reorder_boxes_for_time(mode="easy")
             else:
                 new_order_diff = reorder_boxes(mode="diff")
                 new_order_easy = reorder_boxes(mode="easy")

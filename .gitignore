@@ -41,3 +41,4 @@ config/train_fast_sy.yaml
 config/train_sy.yaml
 config/debug/base_sy.yaml
 scripts/ttrain-multinode.sbatch
+notebooks/box_aug.ipynb
