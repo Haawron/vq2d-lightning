@@ -1114,14 +1114,19 @@ class ClipMatcher(nn.Module):
                 output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}, 'penalty_query': {}}}
                 pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_penalty_dict, 
                                             clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
-                loss_dict_penalty, _, _, _, penalty_reg_loss = self.compute_reg_losses(
+                loss_dict_penalty, penalty_preds_top, _, _, penalty_reg_loss = self.compute_reg_losses(
                     pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
                     gts, gt_probs, training, use_hnm, device, output_dict_penalty)
                 
-                compare_gts = {
+                compare_ori_gts = {
                     'before_query': before_query_mask,   # [b,t]
                     'clip_with_bbox': preds_top['prob'].detach(), # [b,t]
                     'clip_bbox': preds_top['bbox'].detach(),      # [b,t,4]
+                }
+                compare_exchange_gts = {
+                    'before_query': before_query_mask,   # [b,t]
+                    'clip_with_bbox': penalty_preds_top['prob'].detach(), # [b,t]
+                    'clip_bbox': penalty_preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 
                 if self.compare_box_exception:
@@ -1130,13 +1135,17 @@ class ClipMatcher(nn.Module):
                 else:
                     except_compare_loss = []
                 
-                loss_dict_compare, _, _, _, compare_reg_loss = self.compute_reg_losses(
+                loss_dict_compare_ori, _, _, _, compare_ori_reg_loss = self.compute_reg_losses(
                     pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
-                    compare_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    compare_ori_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                
+                loss_dict_compare_exchange, _, _, _, compare_exchange_reg_loss = self.compute_reg_losses(
+                    pred_dict, query_feat, clip_feat_stx, 
+                    compare_exchange_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
                     
                 origin_reg_loss = total_loss
                 if enable_compare_box_loss:
-                    total_loss = (total_loss + penalty_reg_loss + compare_reg_loss * self.compare_box_weight) / (2 + self.compare_box_weight)
+                    total_loss = (total_loss + penalty_reg_loss + (compare_ori_reg_loss +  compare_exchange_reg_loss) / 2 * self.compare_box_weight) / (2 + self.compare_box_weight)
                 else:
                     total_loss = (total_loss + penalty_reg_loss) / 2
                 
@@ -1240,11 +1249,11 @@ class ClipMatcher(nn.Module):
                     'penalty_reg_loss_prob': loss_dict_penalty['loss_prob'].mean(),
                 })
                 log_dict.update({
-                    'compare_reg_loss': compare_reg_loss.detach(),
-                    'compare_reg_loss_bbox_center': loss_dict_compare['loss_bbox_center'].mean(),
-                    'compare_reg_loss_bbox_hw': loss_dict_compare['loss_bbox_hw'].mean(),
-                    'compare_reg_loss_bbox_giou': loss_dict_compare['loss_bbox_giou'].mean(),
-                    'compare_reg_loss_prob': loss_dict_compare['loss_prob'].mean(),
+                    'compare_reg_loss': (compare_ori_reg_loss.detach() + compare_exchange_reg_loss.detach())/2,
+                    'compare_reg_loss_bbox_center': (loss_dict_compare_ori['loss_bbox_center'].mean() + loss_dict_compare_exchange['loss_bbox_center'].mean())/2,
+                    'compare_reg_loss_bbox_hw': (loss_dict_compare_ori['loss_bbox_hw'].mean() + loss_dict_compare_exchange['loss_bbox_hw'].mean())/2,
+                    'compare_reg_loss_bbox_giou': (loss_dict_compare_ori['loss_bbox_giou'].mean() + loss_dict_compare_exchange['loss_bbox_giou'].mean())/2,
+                    'compare_reg_loss_prob': (loss_dict_compare_ori['loss_prob'].mean() + loss_dict_compare_exchange['loss_prob'].mean())/2,
                 })
 
 
