@@ -246,6 +246,7 @@ class ClipMatcher(nn.Module):
         compare_box_weight: float = 1.,
         compare_box_exception: bool = False,
         compare_only_pred_top: bool = False,
+        compare_clip_penalty: bool = False,
 
         # temporal shift
         enable_temporal_shift_stx: bool = False,
@@ -336,6 +337,7 @@ class ClipMatcher(nn.Module):
         self.compare_box_weight = compare_box_weight
         self.compare_box_exception = compare_box_exception
         self.compare_only_pred_top = compare_only_pred_top
+        self.compare_clip_penalty = compare_clip_penalty
         
         self.enable_pca_guide = enable_pca_guide
         self.guide_from = guide_from
@@ -901,10 +903,30 @@ class ClipMatcher(nn.Module):
                 else:
                     query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
 
+        reorder_idxs = kwargs.get('reorder_idxs')
         if self.box_penalty and training:
             with self.backbone_context():
                 query_feat_dict = self.extract_feature(origin_query)
-                query_feat_penalty_dict = self.extract_feature(query)
+                if not self.compare_clip_penalty:
+                    query_feat_penalty_dict = self.extract_feature(query)
+            gt_penalty_probs, gt_penalty_bboxes = gt_probs, gt_bboxes
+            if self.compare_clip_penalty and reorder_idxs is not None:
+                rollback_idxs = torch.argsort(reorder_idxs)
+                clip_feat_penalty_dict = clip_feat_dict.copy()
+                gt_probs = gt_probs.gather(dim=1, index=rollback_idxs)
+                gt_bboxes = gt_bboxes.gather(dim=1, index=rollback_idxs.unsqueeze(-1).expand(b,t,4))
+                for k, v in clip_feat_dict.items():
+                    if isinstance(v, torch.Tensor):
+                        orig_shape = v.shape                 # (b * t, ...)
+                        new_shape = (b, t) + orig_shape[1:]  # (b, t, ...)
+                        v = v.view(new_shape)
+
+                        expand_shape = (b, t) + (1,) * (v.dim() - rollback_idxs.dim())
+                        rollback_idxs_exp = rollback_idxs.view(expand_shape).expand(b, t, *v.shape[2:])
+
+                        v = v.gather(dim=1, index=rollback_idxs_exp)
+
+                        clip_feat_dict[k] = v.view(orig_shape)
             if get_intermediate_features:
                 output_dict['feat']['penalty_query']['backbone'] = query_feat_penalty_dict['feat'].clone()
         else:
@@ -1107,27 +1129,49 @@ class ClipMatcher(nn.Module):
                 # 'center': None,                 # [b,t,2]
             }
             # acutal loss calculation
-            loss_dict, preds_top, gts, pos_mask, total_loss = self.compute_reg_losses(pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict)
+            loss_dict, preds_top, gts, pos_mask, total_loss = self.compute_reg_losses(pred_dict, gts, training, use_hnm, device)
 
             ################## Box Penalty ##################
             if self.box_penalty and training:
                 output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}, 'penalty_query': {}}}
-                pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_penalty_dict, 
-                                            clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
+                penalty_gts = {
+                    'before_query': before_query_mask,    # [b,t]
+                    'clip_with_bbox': gt_penalty_probs,   # [b,t]
+                    'clip_bbox': gt_penalty_bboxes,       # [b,t,4]
+                    }
+                if self.compare_clip_penalty and reorder_idxs is not None:
+                    pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_dict, 
+                                                clip_feat_penalty_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
+                else:
+                    pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_penalty_dict, 
+                                                clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
+                    
                 loss_dict_penalty, penalty_preds_top, _, _, penalty_reg_loss = self.compute_reg_losses(
-                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
-                    gts, gt_probs, training, use_hnm, device, output_dict_penalty)
-                
+                    pred_dict_penalty, penalty_gts, training, use_hnm, device)
+
+                prob_theta = .5
                 compare_ori_gts = {
                     'before_query': before_query_mask,   # [b,t]
-                    'clip_with_bbox': preds_top['prob'].detach(), # [b,t]
+                    'clip_with_bbox': gt_probs, # [b,t]
+                    # 'clip_with_bbox': (preds_top['prob'].detach() > prob_theta).float(), # [b,t]
                     'clip_bbox': preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 compare_exchange_gts = {
                     'before_query': before_query_mask,   # [b,t]
-                    'clip_with_bbox': penalty_preds_top['prob'].detach(), # [b,t]
+                    'clip_with_bbox': gt_penalty_probs, # [b,t]
+                    # 'clip_with_bbox': (penalty_preds_top['prob'].detach() > prob_theta).float(), # [b,t]
                     'clip_bbox': penalty_preds_top['bbox'].detach(),      # [b,t,4]
                 }
+                
+                if self.compare_clip_penalty and reorder_idxs is not None:
+                    for k, v in pred_dict_penalty.items():
+                        if isinstance(v, torch.Tensor) and v.shape[:2] == (b, t):
+                            expand_shape = (b, t) + (1,) * (v.dim() - rollback_idxs.dim())
+                            rollback_idxs_exp = rollback_idxs.view(expand_shape).expand(b, t, *v.shape[2:])
+
+                            v = v.gather(dim=1, index=rollback_idxs_exp)
+
+                            pred_dict_penalty[k] = v
                 
                 if self.compare_box_exception:
                     # except_compare_loss = ['bbox_center', 'bbox_hw', 'bbox', 'prob']
@@ -1136,12 +1180,10 @@ class ClipMatcher(nn.Module):
                     except_compare_loss = []
                 
                 loss_dict_compare_ori, _, _, _, compare_ori_reg_loss = self.compute_reg_losses(
-                    pred_dict_penalty, query_feat_penalty, clip_feat_stx_penalty, 
-                    compare_ori_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    pred_dict_penalty, compare_ori_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
                 
                 loss_dict_compare_exchange, _, _, _, compare_exchange_reg_loss = self.compute_reg_losses(
-                    pred_dict, query_feat, clip_feat_stx, 
-                    compare_exchange_gts, gt_probs, training, use_hnm, device, output_dict, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    pred_dict, compare_exchange_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
                     
                 origin_reg_loss = total_loss
                 if enable_compare_box_loss:
@@ -1313,7 +1355,7 @@ class ClipMatcher(nn.Module):
 
         return output_dict
 
-    def compute_reg_losses(self, pred_dict, query_feat, clip_feat_stx, gts, gt_probs, training, use_hnm, device, output_dict, except_loss=[], only_pred_top=False):
+    def compute_reg_losses(self, pred_dict, gts, training, use_hnm, device, except_loss=[], only_pred_top=False):
         # acutal loss calculation
         loss_dict, preds_top, gts, pos_mask = get_losses_with_anchor(
             pred_dict, gts,

@@ -66,6 +66,8 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.aug_based_time = ds_config.get('aug_based_time', False)
         self.box_aug = ds_config.get('box_aug', False)
         self.aug_time = ds_config.get('aug_time', False)
+        self.compare_clip_penalty = ds_config.get('compare_clip_penalty', False)
+        self.reverse_clip_penalty = ds_config.get('reverse_clip_penalty', False)
         self.box_aug_mode = None
         self.split = split
         self.movement = movement
@@ -109,8 +111,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         query = self.get_query(ann)
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
-        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug):
-            segment, gt_rt, before_delta, after_delta = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        reorder_idxs = np.arange(0, self.num_frames)
+        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug of self.compare_clip_penalty):
+            segment, gt_rt, gt_prob, before_delta, after_delta, reorder_idxs = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -121,6 +124,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'gt_bboxes': gt_rt.astype(np.float32),  # [t, 4], yxyx, normalized
             'gt_probs': gt_prob.astype(np.float32),  # [t], GT prob
             'before_query_mask': torch.tensor(frame_idxs < ann['query_frame']).bool(),  # [t], whether before the query frame, used for loss masking(?)
+            'reorder_idxs': torch.tensor(reorder_idxs),  # [t], normalized
 
             # for logging
             'video_uid': ann['video_uid'],  # str
@@ -186,21 +190,47 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return frames
     
     def frame_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
+        reorder_idxs = np.arange(0, self.num_frames)
         if self.split == 'train':
+            dash_rate, box_rate = 0, 0
             before_delta, after_delta = 0, 0
-            if not self.frame_incremental:
+            if self.compare_clip_penalty and self.reverse_clip_penalty:
+                reorder_idxs =  reorder_idxs[::-1]
+                segment = segment[reorder_idxs]
+                gt_rt = gt_rt[reorder_idxs]
+                gt_prob = gt_prob[reorder_idxs]
+            elif self.compare_clip_penalty:
+                if self.frame_dash_aug and self.frame_box_aug:
+                    dash_rate = 0.4
+                elif self.frame_dash_aug:
+                    dash_rate = 1
+                elif self.frame_box_aug:
+                    dash_rate = 0
+                else:
+                    assert False, 'Invalid frame augmentation configuration.'
+                    
+                if random.random() <= dash_rate:
+                    if self.frame_incremental_level >= 2:
+                        frame_stride = 2 if random.random() < 0.7 else 3
+                    else:
+                        frame_stride = 2
+                    segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, frame_stride)
+                else:
+                    segment, gt_rt, before_delta, after_delta, re_reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+            elif not self.frame_incremental:
                 if self.frame_dash_aug and random.random() < self.frame_dash_rate:
-                    segment, gt_rt = self.frame_dash(segment, gt_rt, self.frame_stride)
+                    segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, self.frame_stride)
                 if self.frame_box_aug and random.random() < 0.5:
                     if self.frame_random:
                         gt_idx = np.where(gt_prob == 1)[0]
-                        gt_idx_shuffled = np.random.permutation(gt_idx) 
+                        gt_idx_shuffled = np.random.permutation(gt_idx)
                         segment[gt_idx] = segment[gt_idx_shuffled]
                         gt_rt[gt_idx] = gt_rt[gt_idx_shuffled]
+                        reorder_idxs[gt_idx] = reorder_idxs[gt_idx_shuffled]
                     else:
-                        segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                        segment, gt_rt, before_delta, after_delta, re_reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                        reorder_idxs = reorder_idxs[re_reorder_idxs]
             elif self.frame_incremental:
-                dash_rate, box_rate = 0, 0
                 if self.frame_incremental_level == 0:
                     total_rate = 0.0
                     frame_stride = 2
@@ -224,14 +254,15 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                     
                 random_rate = random.random()
                 if random_rate < dash_rate:
-                    segment, gt_rt = self.frame_dash(segment, gt_rt, frame_stride)
+                    segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, frame_stride)
                 elif random_rate < dash_rate + box_rate:
-                    segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                    segment, gt_rt, before_delta, after_delta, reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
                     
-        return segment, gt_rt, before_delta, after_delta
+        return segment, gt_rt, gt_prob, before_delta, after_delta, reorder_idxs
     
-    def frame_dash(self, segment, gt_rt, frame_stride):
+    def frame_dash(self, segment, gt_rt, gt_prob, frame_stride):
         num_frames = self.num_frames 
+        new_order = np.arange(0, num_frames)
 
         if frame_stride == 2:
             forward = np.arange(0, num_frames, frame_stride)
@@ -256,21 +287,25 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
 
         segment = segment[new_order]
         gt_rt = gt_rt[new_order]
+        gt_prob = gt_prob[new_order]
 
-        return segment, gt_rt
+        return segment, gt_rt, gt_prob, new_order
     
     def frame_box(self, segment, gt_rt, gt_rt_ori, gt_prob):
-        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        reorder_idxs = np.arange(0, self.num_frames)
+        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta, reorder_idxs_easy, reorder_idxs_diff = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
         if self.box_aug_mode == 'diff':
             segment, gt_rt = aug_segment_diff, aug_gt_rt_diff
             after_delta = after_diff_delta
+            reorder_idxs = reorder_idxs_diff
         elif self.box_aug_mode == 'easy':
             segment, gt_rt = aug_segment_easy, aug_gt_rt_easy
             after_delta = after_easy_delta
+            reorder_idxs = reorder_idxs_easy
         elif self.box_aug_mode == None:
             after_delta = 0
             pass
-        return segment, gt_rt, before_delta, after_delta
+        return segment, gt_rt, before_delta, after_delta, reorder_idxs
 
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
@@ -434,6 +469,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         num_boxes = len(gt_box)
         before_delta, after_diff_delta, after_easy_delta = 0, 0, 0
         
+        reorder_idxs_easy = np.arange(0, self.num_frames)
+        reorder_idxs_diff = np.arange(0, self.num_frames)
+            
         if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
             # Compute total change (delta)
             delta_total = compute_bbox_deltas(gt_box)
@@ -508,13 +546,16 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             aug_gt_rt_easy[gt_idx] = aug_gt_rt_easy[gt_idx_new_easy]
             aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]
             
+            reorder_idxs_easy[gt_idx] = reorder_idxs_easy[gt_idx_new_easy]
+            reorder_idxs_diff[gt_idx] = reorder_idxs_diff[gt_idx_new_diff]
+            
             before_delta = np.mean(np.diagonal(delta_total, offset=1))
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_diff])
             after_diff_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_easy])
             after_easy_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))            
         
-        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta
+        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta, reorder_idxs_easy, reorder_idxs_diff
 
 
 def sample_nearby_gt_frames(
