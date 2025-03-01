@@ -197,7 +197,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             dash_rate, box_rate = 0, 0
             before_delta, after_delta = 0, 0
             if self.compare_clip_penalty and self.reverse_clip_penalty:
-                reorder_idxs =  reorder_idxs[::-1]
+                reorder_idxs = np.array(reorder_idxs[::-1])
                 segment = segment[reorder_idxs]
                 gt_rt = gt_rt[reorder_idxs]
                 gt_prob = gt_prob[reorder_idxs]
