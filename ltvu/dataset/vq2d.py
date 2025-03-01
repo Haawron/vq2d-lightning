@@ -114,7 +114,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
         reorder_idxs = np.arange(0, self.num_frames)
-        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug of self.compare_clip_penalty):
+        if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug or self.compare_clip_penalty):
             segment, gt_rt, gt_prob, before_delta, after_delta, reorder_idxs = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {

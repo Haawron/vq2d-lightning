@@ -907,8 +907,7 @@ class ClipMatcher(nn.Module):
         if self.box_penalty and training:
             with self.backbone_context():
                 query_feat_dict = self.extract_feature(origin_query)
-                if not self.compare_clip_penalty:
-                    query_feat_penalty_dict = self.extract_feature(query)
+                query_feat_penalty_dict = self.extract_feature(query)
             gt_penalty_probs, gt_penalty_bboxes = gt_probs, gt_bboxes
             if self.compare_clip_penalty and reorder_idxs is not None:
                 rollback_idxs = torch.argsort(reorder_idxs)
@@ -927,7 +926,7 @@ class ClipMatcher(nn.Module):
                         v = v.gather(dim=1, index=rollback_idxs_exp)
 
                         clip_feat_dict[k] = v.view(orig_shape)
-            if get_intermediate_features:
+            if get_intermediate_features and not self.compare_clip_penalty:
                 output_dict['feat']['penalty_query']['backbone'] = query_feat_penalty_dict['feat'].clone()
         else:
             with self.backbone_context():
@@ -1152,14 +1151,14 @@ class ClipMatcher(nn.Module):
                 prob_theta = .5
                 compare_ori_gts = {
                     'before_query': before_query_mask,   # [b,t]
-                    'clip_with_bbox': gt_probs, # [b,t]
-                    # 'clip_with_bbox': (preds_top['prob'].detach() > prob_theta).float(), # [b,t]
+                    # 'clip_with_bbox': gt_probs, # [b,t]
+                    'clip_with_bbox': gt_probs * (preds_top['prob'].detach().sigmoid() > prob_theta).float(), # [b,t]
                     'clip_bbox': preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 compare_exchange_gts = {
                     'before_query': before_query_mask,   # [b,t]
-                    'clip_with_bbox': gt_penalty_probs, # [b,t]
-                    # 'clip_with_bbox': (penalty_preds_top['prob'].detach() > prob_theta).float(), # [b,t]
+                    # 'clip_with_bbox': gt_penalty_probs, # [b,t]
+                    'clip_with_bbox': gt_penalty_probs * (penalty_preds_top['prob'].detach().sigmoid() > prob_theta).float(), # [b,t]
                     'clip_bbox': penalty_preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 
