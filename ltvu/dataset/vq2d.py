@@ -65,6 +65,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.frame_random = ds_config.get('frame_random', False)
         self.aug_based_time = ds_config.get('aug_based_time', False)
         self.frame_neighbor = ds_config.get('frame_neighbor', False)
+        self.frame_shift = ds_config.get('frame_shift', False)
         self.box_aug = ds_config.get('box_aug', False)
         self.aug_time = ds_config.get('aug_time', False)
         self.compare_clip_penalty = ds_config.get('compare_clip_penalty', False)
@@ -294,15 +295,16 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
     
     def frame_box(self, segment, gt_rt, gt_rt_ori, gt_prob):
         reorder_idxs = np.arange(0, self.num_frames)
-        aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta, reorder_idxs_easy, reorder_idxs_diff = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        box_aug_data = self.get_box_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+        before_delta = box_aug_data['before_delta']
         if self.box_aug_mode == 'diff':
-            segment, gt_rt = aug_segment_diff, aug_gt_rt_diff
-            after_delta = after_diff_delta
-            reorder_idxs = reorder_idxs_diff
+            segment, gt_rt = box_aug_data['aug_segment_diff'], box_aug_data['aug_gt_rt_diff']
+            after_delta = box_aug_data['after_diff_delta']
+            reorder_idxs = box_aug_data['reorder_idxs_diff']
         elif self.box_aug_mode == 'easy':
-            segment, gt_rt = aug_segment_easy, aug_gt_rt_easy
-            after_delta = after_easy_delta
-            reorder_idxs = reorder_idxs_easy
+            segment, gt_rt = box_aug_data['aug_segment_easy'], box_aug_data['aug_gt_rt_easy']
+            after_delta = box_aug_data['after_easy_delta']
+            reorder_idxs = box_aug_data['reorder_idxs_easy']
         elif self.box_aug_mode == None:
             after_delta = 0
             pass
@@ -559,6 +561,27 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                                 new_order[best_match] = tmp           
                 return new_order
             
+            def reorder_boxes_shift(rand_idx, gt_idx, gt_rt_original, mode="diff"):
+                new_order = []
+                delta_list = []
+                for num in gt_idx:
+                    if num == gt_idx[rand_idx]:
+                        continue
+                    tmp_gt_idx = gt_idx.copy()
+                    tmp_gt_idx = np.insert(tmp_gt_idx, rand_idx, num)
+                    valid_idx = np.where(tmp_gt_idx == num)[0]
+                    valid_idx = valid_idx[valid_idx != rand_idx]
+                    tmp_gt_idx = np.delete(tmp_gt_idx, valid_idx)
+                    new_order.append(tmp_gt_idx - tmp_gt_idx.min())
+                    
+                    tmp_gt_rt_ori = gt_rt_original.copy()
+                    delta = compute_bbox_deltas(tmp_gt_rt_ori[tmp_gt_idx])
+                    delta_list.append(np.mean(np.diagonal(delta, offset=1)))
+
+                max_idx = np.argmax(delta_list).tolist()
+                
+                return new_order[max_idx]
+            
             # Compute new orderings
             if self.aug_based_time:
                 if self.frame_neighbor:
@@ -574,6 +597,17 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                                 delta_total = compute_bbox_deltas(gt_rt_original[tmp_idx_diff])
                             else:
                                 delta_total = compute_bbox_deltas(gt_rt_original[tmp_idx_easy])
+                elif self.frame_shift:
+                    selected_idx = []
+                    for idx in range(self.aug_time):
+                        if idx == 0:
+                            rand_idx = np.random.randint(0, len(gt_idx))
+                        else:
+                            valid_choices = np.setdiff1d(np.arange(len(gt_idx)), selected_idx)
+                            rand_idx = np.random.choice(valid_choices)
+                        selected_idx.append(rand_idx)
+                        new_order_diff = reorder_boxes_shift(rand_idx, gt_idx, gt_rt_original, mode="diff")
+                        new_order_easy = reorder_boxes_shift(rand_idx, gt_idx, gt_rt_original, mode="easy")
                 else:
                     new_order_diff = reorder_boxes_for_time(mode="diff")
                     new_order_easy = reorder_boxes_for_time(mode="easy")
@@ -597,9 +631,22 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_diff])
             after_diff_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_easy])
-            after_easy_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))            
+            after_easy_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))  
+            
+        data = {
+            'aug_segment_diff': aug_segment_diff,
+            'aug_gt_rt_diff': aug_gt_rt_diff,
+            'aug_segment_easy': aug_segment_easy,
+            'aug_gt_rt_easy': aug_gt_rt_easy,
+            'before_delta': before_delta,
+            'after_diff_delta': after_diff_delta,
+            'after_easy_delta': after_easy_delta,
+            'reorder_idxs_easy': reorder_idxs_easy,
+            'reorder_idxs_diff': reorder_idxs_diff,
+        }          
         
-        return aug_segment_diff, aug_gt_rt_diff, aug_segment_easy, aug_gt_rt_easy, before_delta, after_diff_delta, after_easy_delta, reorder_idxs_easy, reorder_idxs_diff
+        
+        return data
 
 
 def sample_nearby_gt_frames(
