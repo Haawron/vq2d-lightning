@@ -194,31 +194,37 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
     def frame_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         reorder_idxs = np.arange(0, self.num_frames)
         if self.split == 'train':
-            dash_rate, box_rate = 0, 0
+            dash_rate, box_rate, reverse_rate = 0, 0, 0
             before_delta, after_delta = 0, 0
-            if self.compare_clip_penalty and self.reverse_clip_penalty:
-                reorder_idxs = np.array(reorder_idxs[::-1])
-                segment = segment[reorder_idxs]
-                gt_rt = gt_rt[reorder_idxs]
-                gt_prob = gt_prob[reorder_idxs]
-            elif self.compare_clip_penalty:
-                if self.frame_dash_aug and self.frame_box_aug:
-                    dash_rate = 0.4
-                elif self.frame_dash_aug:
+            if self.compare_clip_penalty:
+                if self.frame_box_aug and self.frame_dash_aug and not self.reverse_clip_penalty:
+                    box_rate, dash_rate, reverse_rate = 0.6, 0.4, 0.
+                elif self.frame_box_aug and not self.frame_dash_aug and self.reverse_clip_penalty:
+                    box_rate, dash_rate, reverse_rate = 0.6, 0., 0.4
+                elif self.frame_box_aug and not self.frame_dash_aug and not self.reverse_clip_penalty:
+                    box_rate = 1
+                elif not self.frame_box_aug and self.frame_dash_aug and not self.reverse_clip_penalty:
                     dash_rate = 1
-                elif self.frame_box_aug:
-                    dash_rate = 0
+                elif not self.frame_box_aug and not self.frame_dash_aug and self.reverse_clip_penalty:
+                    reverse_rate = 0
                 else:
                     assert False, 'Invalid frame augmentation configuration.'
-                    
-                if random.random() <= dash_rate:
+                
+                random_rate = random.random()
+                if random_rate <= dash_rate:
                     if self.frame_incremental_level >= 2:
                         frame_stride = 2 if random.random() < 0.7 else 3
                     else:
                         frame_stride = 2
                     segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, frame_stride)
+                elif random_rate <= dash_rate + box_rate:
+                    segment, gt_rt, before_delta, after_delta, reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
                 else:
-                    segment, gt_rt, before_delta, after_delta, re_reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                    reorder_idxs = np.array(reorder_idxs[::-1])
+                    segment = segment[reorder_idxs]
+                    gt_rt = gt_rt[reorder_idxs]
+                    gt_prob = gt_prob[reorder_idxs]
+                    
             elif not self.frame_incremental:
                 if self.frame_dash_aug and random.random() < self.frame_dash_rate:
                     segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, self.frame_stride)
@@ -234,13 +240,14 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                         reorder_idxs = reorder_idxs[re_reorder_idxs]
             elif self.frame_incremental:
                 if self.frame_incremental_level == 0:
-                    total_rate = 0.0
+                    total_rate = 0.2
+                    total_rate = 1
                     frame_stride = 2
                 elif self.frame_incremental_level == 1:
-                    total_rate = 0.2
+                    total_rate = 0.4
                     frame_stride = 2
                 elif self.frame_incremental_level == 2:
-                    total_rate = 0.4
+                    total_rate = 0.6
                     frame_stride = 2 if random.random() < 0.7 else 3
                 elif self.frame_incremental_level == 3:
                     total_rate = 0.6
@@ -255,9 +262,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                     dash_rate = total_rate
                     
                 random_rate = random.random()
-                if random_rate < dash_rate:
+                if random_rate <= dash_rate:
                     segment, gt_rt, gt_prob, reorder_idxs = self.frame_dash(segment, gt_rt, gt_prob, frame_stride)
-                elif random_rate < dash_rate + box_rate:
+                elif random_rate <= dash_rate + box_rate:
                     segment, gt_rt, before_delta, after_delta, reorder_idxs = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
                     
         return segment, gt_rt, gt_prob, before_delta, after_delta, reorder_idxs

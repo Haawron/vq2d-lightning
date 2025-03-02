@@ -928,8 +928,7 @@ class ClipMatcher(nn.Module):
             else:
                 with self.backbone_context():
                     query_feat_dict = self.extract_feature(origin_query)
-                    if not self.compare_clip_penalty:
-                        query_feat_penalty_dict = self.extract_feature(query)
+                    query_feat_penalty_dict = self.extract_feature(query)
             if get_intermediate_features and not self.compare_clip_penalty:
                 output_dict['feat']['penalty_query']['backbone'] = query_feat_penalty_dict['feat'].clone()
         else:
@@ -1188,8 +1187,7 @@ class ClipMatcher(nn.Module):
                             pred_dict_penalty[k] = v
                 
                 if self.compare_box_exception:
-                    # except_compare_loss = ['bbox_center', 'bbox_hw', 'bbox', 'prob']
-                    except_compare_loss = ['bbox_hw', 'bbox']
+                    except_compare_loss = ['prob']  # ['bbox_center', 'bbox_hw', 'bbox_giou', 'prob']
                 else:
                     except_compare_loss = []
                 
@@ -1384,7 +1382,7 @@ class ClipMatcher(nn.Module):
         )
 
         loss_names = [k.replace('loss_', '') for k in loss_dict.keys() if 'loss_' in k]
-        assert except_loss == [] or all([f'loss_{e}' in loss_names for e in except_loss]), f'except_loss should be in {loss_names}'
+        assert except_loss == [] or all([f'{e}' in loss_names for e in except_loss]), f'except_loss should be in {loss_names}'
         total_loss: torch.Tensor = torch.tensor(0., dtype=torch.float32, device=device, requires_grad=True)
         for loss_name in loss_names:
             if loss_name in except_loss:
