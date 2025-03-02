@@ -66,6 +66,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         self.aug_based_time = ds_config.get('aug_based_time', False)
         self.frame_neighbor = ds_config.get('frame_neighbor', False)
         self.frame_shift = ds_config.get('frame_shift', False)
+        self.gt_consider = ds_config.get('gt_consider', False)
         self.box_aug = ds_config.get('box_aug', False)
         self.aug_time = ds_config.get('aug_time', False)
         self.box_aug_mode = None
@@ -112,7 +113,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         segment, gt_rt, gt_rt_ori = self.pad_and_resize(segment, gt_rt)  # [t, c, s, s], [t, 4]
         
         if self.split == 'train' and (self.frame_dash_aug or self.frame_box_aug):
-            segment, gt_rt, before_delta, after_delta = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
+            segment, gt_rt, gt_prob, before_delta, after_delta = self.frame_aug(segment, gt_rt, gt_rt_ori, gt_prob)
 
         sample = {
             # inputs
@@ -201,7 +202,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                         segment[gt_idx] = segment[gt_idx_shuffled]
                         gt_rt[gt_idx] = gt_rt[gt_idx_shuffled]
                     else:
-                        segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                        segment, gt_rt, before_delta, after_delta, gt_prob = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
             elif self.frame_incremental:
                 dash_rate, box_rate = 0, 0
                 if self.frame_incremental_level == 0:
@@ -229,9 +230,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
                 if random_rate < dash_rate:
                     segment, gt_rt = self.frame_dash(segment, gt_rt, frame_stride)
                 elif random_rate < dash_rate + box_rate:
-                    segment, gt_rt, before_delta, after_delta = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
+                    segment, gt_rt, before_delta, after_delta, gt_prob = self.frame_box(segment, gt_rt, gt_rt_ori, gt_prob)
                     
-        return segment, gt_rt, before_delta, after_delta
+        return segment, gt_rt, gt_prob, before_delta, after_delta
     
     def frame_dash(self, segment, gt_rt, frame_stride):
         num_frames = self.num_frames 
@@ -268,13 +269,15 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if self.box_aug_mode == 'diff':
             segment, gt_rt = box_aug_data['aug_segment_diff'], box_aug_data['aug_gt_rt_diff']
             after_delta = box_aug_data['after_diff_delta']
+            gt_prob = box_aug_data['aug_gt_prob_diff']
         elif self.box_aug_mode == 'easy':
             segment, gt_rt = box_aug_data['aug_segment_easy'], box_aug_data['aug_gt_rt_easy']
             after_delta = box_aug_data['after_easy_delta']
+            gt_prob = box_aug_data['aug_gt_prob_easy']
         elif self.box_aug_mode == None:
             after_delta = 0
             pass
-        return segment, gt_rt, before_delta, after_delta
+        return segment, gt_rt, before_delta, after_delta, gt_prob
 
 
     def pad_and_resize(self, frames: torch.Tensor, bboxes: np.ndarray):
@@ -423,7 +426,11 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         return bboxes, seg_with_gt.astype(np.float32)
    
     def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
-        gt_idx = np.where(gt_prob == 1)[0]
+        if self.gt_consider:
+            gt_idx = gt_prob.copy()
+            gt_idx = gt_idx.astype(int)
+        else:
+            gt_idx = np.where(gt_prob == 1)[0]
         if self.aug_based_time and len(gt_idx) > self.aug_time:
             gt_idx_rand = np.random.choice(gt_idx, self.aug_time, replace=False)
         else:
@@ -437,8 +444,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         gt_box = gt_rt_original[gt_idx]
         num_boxes = len(gt_box)
         before_delta, after_diff_delta, after_easy_delta = 0, 0, 0
+        aug_gt_prob_diff = gt_prob.copy()
+        aug_gt_prob_easy = gt_prob.copy()
         
-        if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
+        if not (len(gt_box) <=2):
             # Compute total change (delta)
             delta_total = compute_bbox_deltas(gt_box)
             
@@ -593,6 +602,10 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_easy])
             after_easy_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))  
             
+            if self.gt_consider:
+                aug_gt_prob_diff[gt_idx] = aug_gt_prob_diff[gt_idx_new_diff]
+                aug_gt_prob_diff[gt_idx] = aug_gt_prob_diff[gt_idx_new_easy]
+            
         data = {
             'aug_segment_diff': aug_segment_diff,
             'aug_gt_rt_diff': aug_gt_rt_diff,
@@ -600,7 +613,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             'aug_gt_rt_easy': aug_gt_rt_easy,
             'before_delta': before_delta,
             'after_diff_delta': after_diff_delta,
-            'after_easy_delta': after_easy_delta
+            'after_easy_delta': after_easy_delta,
+            'aug_gt_prob_diff': aug_gt_prob_diff,
+            'aug_gt_prob_easy': aug_gt_prob_easy
         }          
         
         return data
