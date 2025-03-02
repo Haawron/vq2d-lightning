@@ -241,7 +241,6 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             elif self.frame_incremental:
                 if self.frame_incremental_level == 0:
                     total_rate = 0.2
-                    total_rate = 1
                     frame_stride = 2
                 elif self.frame_incremental_level == 1:
                     total_rate = 0.4
