@@ -441,6 +441,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         if not (len(gt_box) <=2 or gt_idx_rand.shape[0] <= 2):
             # Compute total change (delta)
             delta_total = compute_bbox_deltas(gt_box)
+            original_delta_total = delta_total.copy()
             
             def reorder_boxes(mode="diff"):
                 """
@@ -587,7 +588,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             aug_gt_rt_easy[gt_idx] = aug_gt_rt_easy[gt_idx_new_easy]
             aug_segment_easy[gt_idx] = aug_segment_easy[gt_idx_new_easy]
             
-            before_delta = np.mean(np.diagonal(delta_total, offset=1))
+            before_delta = np.mean(np.diagonal(original_delta_total, offset=1))
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_diff])
             after_diff_delta = np.mean(np.diagonal(aug_diff_delta, offset=1))
             aug_diff_delta = compute_bbox_deltas(gt_box[new_order_easy])
@@ -838,36 +839,106 @@ if __name__ == '__main__':
     config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_box_aug'])
     # config = hydra.compose(config_name='train', overrides=['dataset=vq2d', '+experiment=frame_dash'])
     # config.dataset.clips_dir = '/data/datasets/LaSOT'
+    ds_config = config.dataset
     import lightning as L
+    import argparse
+    from pathlib import Path
+    import json
     # L.seed_everything(42)
+    
     ds = VQ2DFitDataset(config, split='train')
-    from imgcat import imgcat
-    import matplotlib.pyplot as plt
-    import io
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument("--world-size", type=int, default=1)
+    parser.add_argument("--confidence", type=float, default=0.25)
+    args = parser.parse_args()
+    ds.box_aug_mode='diff'
+    
+    # ver1
+    ds.frame_box_aug = True
+    dir_name = 'ver1'
+    
+    # ver2-t-2
+    # ds.aug_based_time=True
+    # ds.aug_time=2
+    # dir_name = 'ver2-t-2'
+    
+    # ver2-t=3
+    ds.aug_based_time=True
+    dir_name = 'ver2-t-3'
+    
+    # # ver3-t-2
+    # ds.frame_neighbor=True
+    # ds.aug_time=2
+    # dir_name = 'ver3-t-2'
+    
+    # # # # ver3-t-3
+    # ds.frame_neighbor=True
+    # ds.aug_time=3
+    # dir_name = 'ver3-t-3'
+    
+    # # # # ver4
+    ds.frme_shift=True
+    ds.aug_time=2
+    dir_name = 'ver4'
+    
+    p_out_root = Path(f'/data/soyeonhong/vq2d/vq2d-lightning/outputs/{dir_name}')
+    p_out_root.mkdir(parents=True, exist_ok=True)
+    
+    # from imgcat import imgcat
+    # import matplotlib.pyplot as plt
+    # import io
     # idx = 0  # landscape
     # idx = 565  # portrait
-    for i in range(1000):
-        idx = np.random.randint(0, len(ds))
-        sample = ds[idx]
-        print(sample['seg_idxs'])
-    segment = sample['segment']
-    gt_bboxes = sample['gt_bboxes']
-    T = len(segment)
+    
+    dl = torch.utils.data.DataLoader(
+        ds,
+        batch_size=ds_config.batch_size,
+        shuffle=True,
+        pin_memory=ds_config.pin_memory,
+        prefetch_factor=ds_config.prefetch_factor,
+        persistent_workers=ds_config.persistent_workers,
+        num_workers=ds_config.num_workers,
+        drop_last=True,
+        )
 
-    for t in range(0, T, T // 10):
-        image = plt.imshow(segment[t].permute(1, 2, 0).cpu().numpy())
-        y1, x1, y2, x2 = gt_bboxes[t] * (segment.shape[-2:] * 2)
-        ax = plt.gca()
-        ax.add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='red', lw=2))
-        img_io = io.BytesIO()
-        plt.savefig(img_io, format='png')
-        plt.close()
-        imgcat(img_io.getvalue())
-        print()
+    diffrence_all = []
+    for i, sample in enumerate(dl):
+        
+        p_out = p_out_root / f'diff_{i}.json'
+        
+        if p_out.exists():
+            continue
+        difference = sample['experiment']['frame_aug']['difference']
+        
+        json.dump(difference.tolist(), open(p_out, 'w'))
+        
+        print(f'{p_out} saved.')
+        
+    
+    # for i in range(1000):
+    #     idx = np.random.randint(0, len(ds))
+    #     sample = ds[idx]
+    #     print(sample['seg_idxs'])
+    # segment = sample['segment']
+    # gt_bboxes = sample['gt_bboxes']
+    # T = len(segment)
 
-    image = sample['query']
-    img_io = io.BytesIO()
-    plt.imshow(image.permute(1, 2, 0).cpu().numpy())
-    plt.savefig(img_io, format='png')
-    imgcat(img_io.getvalue())
-    print()
+    # for t in range(0, T, T // 10):
+    #     image = plt.imshow(segment[t].permute(1, 2, 0).cpu().numpy())
+    #     y1, x1, y2, x2 = gt_bboxes[t] * (segment.shape[-2:] * 2)
+    #     ax = plt.gca()
+    #     ax.add_patch(plt.Rectangle((x1, y1), x2 - x1, y2 - y1, fill=False, edgecolor='red', lw=2))
+    #     img_io = io.BytesIO()
+    #     plt.savefig(img_io, format='png')
+    #     plt.close()
+    #     imgcat(img_io.getvalue())
+    #     print()
+
+    # image = sample['query']
+    # img_io = io.BytesIO()
+    # plt.imshow(image.permute(1, 2, 0).cpu().numpy())
+    # plt.savefig(img_io, format='png')
+    # imgcat(img_io.getvalue())
+    # print()
