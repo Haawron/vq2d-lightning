@@ -487,6 +487,9 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
         aug_gt_prob_diff = gt_prob.copy()
         aug_gt_prob_easy = gt_prob.copy()
         
+        reorder_idxs_easy = np.arange(0, self.num_frames)
+        reorder_idxs_diff = np.arange(0, self.num_frames)
+        
         if not (len(gt_box) <=2):
             # Compute total change (delta)
             delta_total = compute_bbox_deltas(gt_box)

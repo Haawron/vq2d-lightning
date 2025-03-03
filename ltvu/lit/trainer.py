@@ -62,7 +62,7 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
             filename='epoch={epoch}-iou={Val/iou:.4f}')
         ckpt_callback_prob = ModelCheckpoint(
             dirpath=runtime_outdir,
-            save_last=False,
+            save_last=True,
             monitor='Val/prob_acc',
             auto_insert_metric_name=False,
             mode='max',
