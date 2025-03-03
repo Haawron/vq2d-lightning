@@ -904,11 +904,12 @@ class ClipMatcher(nn.Module):
                     query = rt_pos_queries[torch.arange(b), top_sim_idx] # [b,c,h2,w2]
 
         reorder_idxs = kwargs.get('reorder_idxs')
-        if self.box_penalty and training:
+        if self.box_penalty:
             gt_penalty_probs, gt_penalty_bboxes = gt_probs, gt_bboxes
             if self.compare_clip_penalty and reorder_idxs is not None:
                 rollback_idxs = torch.argsort(reorder_idxs)
                 clip_feat_penalty_dict = clip_feat_dict.copy()
+                penalty_before_query_mask = before_query_mask.gather(dim=1, index=reorder_idxs)
                 gt_probs = gt_probs.gather(dim=1, index=rollback_idxs)
                 gt_bboxes = gt_bboxes.gather(dim=1, index=rollback_idxs.unsqueeze(-1).expand(b,t,4))
                 for k, v in clip_feat_dict.items():
@@ -940,7 +941,11 @@ class ClipMatcher(nn.Module):
         def inner_forward(query_feat_dict, clip_feat_dict, output_dict, get_intermediate_features, use_hnm, compute_loss, device, t, b,
                           start_after_stx=None):
             h, w = clip_feat_dict['h'], clip_feat_dict['w']
-            if start_after_stx is None:
+            if start_after_stx is not None:
+                clip_feat = start_after_stx
+                query_feat = None
+                clip_feat_stx = None
+            else:
                 query_feat = query_feat_dict['feat']
                 clip_feat = clip_feat_dict['feat']
 
@@ -1044,11 +1049,7 @@ class ClipMatcher(nn.Module):
                         tgt=clip_feat, tgt_mask=stx_tgt_mask,
                         memory=query_feat_expanded, memory_mask=stx_mem_mask)
                     clip_feat = rearrange(clip_feat, '(b t) (h w) c -> (b t) c h w', b=b, h=h)
-
-            else:
-                clip_feat = start_after_stx
-                query_feat = None
-            clip_feat_stx = clip_feat
+                clip_feat_stx = clip_feat
 
             # down-size feature
             for down_head in self.down_heads:
@@ -1139,10 +1140,10 @@ class ClipMatcher(nn.Module):
             loss_dict, preds_top, gts, pos_mask, total_loss = self.compute_reg_losses(pred_dict, gts, training, use_hnm, device)
 
             ################## Box Penalty ##################
-            if self.box_penalty and training:
+            if self.box_penalty:
                 output_dict_penalty = {'feat': {'clip': {}, 'query': {}, 'guide': {}, 'penalty_query': {}}}
                 penalty_gts = {
-                    'before_query': before_query_mask,    # [b,t]
+                    'before_query': penalty_before_query_mask,    # [b,t]
                     'clip_with_bbox': gt_penalty_probs,   # [b,t]
                     'clip_bbox': gt_penalty_bboxes,       # [b,t,4]
                     }
@@ -1155,6 +1156,7 @@ class ClipMatcher(nn.Module):
                     pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_dict, 
                                                 clip_feat_penalty_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b,
                                                 start_after_stx=penalty_clip_feat_stx)
+                    assert query_feat_penalty == None and clip_feat_stx_penalty == None, f'not reuse feature for penalty'
                 else:
                     pred_dict_penalty, output_dict_penalty, query_feat_penalty, clip_feat_stx_penalty = inner_forward(query_feat_penalty_dict, 
                                                 clip_feat_dict, output_dict_penalty, get_intermediate_features, use_hnm, compute_loss, device, t, b)
@@ -1170,12 +1172,19 @@ class ClipMatcher(nn.Module):
                     'clip_bbox': preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 compare_exchange_gts = {
-                    'before_query': before_query_mask,   # [b,t]
+                    'before_query': penalty_before_query_mask,   # [b,t]
                     # 'clip_with_bbox': gt_penalty_probs, # [b,t]
                     'clip_with_bbox': gt_penalty_probs * (penalty_preds_top['prob'].detach().sigmoid() > prob_theta).float(), # [b,t]
                     'clip_bbox': penalty_preds_top['bbox'].detach(),      # [b,t,4]
                 }
                 
+                if self.compare_box_exception:
+                    except_compare_loss = ['prob']  # ['bbox_center', 'bbox_hw', 'bbox_giou', 'prob']
+                else:
+                    except_compare_loss = []
+                    
+                pred_dict_penalty_swap_like_origin = pred_dict_penalty.copy()
+                pred_dict_swap_like_penalty = pred_dict.copy()
                 if self.compare_clip_penalty and reorder_idxs is not None:
                     for k, v in pred_dict_penalty.items():
                         if isinstance(v, torch.Tensor) and v.shape[:2] == (b, t):
@@ -1184,18 +1193,21 @@ class ClipMatcher(nn.Module):
 
                             v = v.gather(dim=1, index=rollback_idxs_exp)
 
-                            pred_dict_penalty[k] = v
-                
-                if self.compare_box_exception:
-                    except_compare_loss = ['prob']  # ['bbox_center', 'bbox_hw', 'bbox_giou', 'prob']
-                else:
-                    except_compare_loss = []
+                            pred_dict_penalty_swap_like_origin[k] = v
+                    for k, v in pred_dict.items():
+                        if isinstance(v, torch.Tensor) and v.shape[:2] == (b, t):
+                            expand_shape = (b, t) + (1,) * (v.dim() - reorder_idxs.dim())
+                            reorder_idxs_exp = reorder_idxs.view(expand_shape).expand(b, t, *v.shape[2:])
+
+                            v = v.gather(dim=1, index=reorder_idxs_exp)
+
+                            pred_dict_swap_like_penalty[k] = v
                 
                 loss_dict_compare_ori, _, _, _, compare_ori_reg_loss = self.compute_reg_losses(
-                    pred_dict_penalty, compare_ori_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    pred_dict_penalty_swap_like_origin, compare_ori_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
                 
                 loss_dict_compare_exchange, _, _, _, compare_exchange_reg_loss = self.compute_reg_losses(
-                    pred_dict, compare_exchange_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
+                    pred_dict_swap_like_penalty, compare_exchange_gts, training, use_hnm, device, except_loss=except_compare_loss, only_pred_top=self.compare_only_pred_top)
                     
                 origin_reg_loss = total_loss
                 if enable_compare_box_loss:
@@ -1293,7 +1305,7 @@ class ClipMatcher(nn.Module):
                 log_dict.update({'loss_sinkhorn': loss_sinkhorn.detach()})
             if self.weight_koleo > 0:
                 log_dict.update({'loss_koleo': loss_koleo.detach()})
-            if self.box_penalty and training:
+            if self.box_penalty:
                 log_dict.update({'origin_reg_loss': origin_reg_loss.detach()})
                 log_dict.update({
                     'penalty_reg_loss': penalty_reg_loss.detach(),
