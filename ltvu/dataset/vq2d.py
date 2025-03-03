@@ -467,7 +467,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
    
     def get_box_aug(self, segment, gt_rt, gt_rt_ori, gt_prob):
         if self.gt_consider:
-            gt_idx = gt_prob.copy()
+            gt_idx = np.arange(0, self.num_frames)
             gt_idx = gt_idx.astype(int)
         else:
             gt_idx = np.where(gt_prob == 1)[0]
@@ -651,7 +651,7 @@ class VQ2DFitDataset(torch.utils.data.Dataset):
             
             if self.gt_consider:
                 aug_gt_prob_diff[gt_idx] = aug_gt_prob_diff[gt_idx_new_diff]
-                aug_gt_prob_diff[gt_idx] = aug_gt_prob_diff[gt_idx_new_easy]
+                aug_gt_prob_easy[gt_idx] = aug_gt_prob_easy[gt_idx_new_easy]
             
         data = {
             'aug_segment_diff': aug_segment_diff,
