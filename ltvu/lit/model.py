@@ -197,11 +197,8 @@ class LitModule(L.LightningModule):
         if getattr(self.trainer.datamodule, "dataset", False) and getattr(self.trainer.datamodule.dataset, "track_continual", False):
             preds_top = self.continual_tracking(batch, batch_idx, batch['qset_uuid'][0], device)
         else:    
-            output_dict = self.model.forward(**batch, compute_loss=True, training=False)
-            # bbox: [b,t,4], in pixels wrt the original, yxyx, float
-            # prob: [b,t], logits, float
+            output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
             preds_top = output_dict['info_dict']['preds_top']
-        output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
 
         t_e = time.time()
         fps = frames * bsz / (t_e - t_s)
@@ -255,7 +252,7 @@ class LitModule(L.LightningModule):
             seg_batch = dm.on_after_batch_transfer(seg_batch, dataloader_idx=0)
             seg_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in seg_batch.items()}
             
-            segment_output_dict = self.model.forward(**seg_batch, compute_loss=True, training=False, get_intermediate_features=True)
+            segment_output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True, get_intermediate_features=True)
             segment_top = segment_output_dict['info_dict']['preds_top']
             
             segment_oris = torch.cat([segment_oris, segment_ori], dim=1) if segment_oris is not None else segment_ori
