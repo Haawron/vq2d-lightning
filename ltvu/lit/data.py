@@ -51,6 +51,7 @@ class LitVQ2DDataModule(L.LightningDataModule):
         self.eval_on_train = ds_config.get('eval_on_train', False)
         self.movement = ds_config.get('movement', "")
         self.dataset = None 
+        self.track_continual = ds_config.get('track_continual')
 
         aug_config = config.augment
         self.segment_aug: bool = aug_config.segment.apply
@@ -427,17 +428,29 @@ class LitTrek150DataModule(LitVQ2DDataModule):
         self.dataset = Trek150EvalDataset(self.config, split='test')
         print(f"Number of GPUs available: {self.config.num_gpus}")
         print(f'Number of clips: {len(self.dataset.anns)}')
-        return torch.utils.data.DataLoader(
-            self.dataset,
-            batch_size=self.batch_size,
-            sampler=BalancedClipSampler(self.dataset, int(self.config.num_gpus)),
-            shuffle=False,
-            pin_memory=self.pin_memory,
-            prefetch_factor=self.prefetch_factor,
-            persistent_workers=self.persistent_workers,
-            num_workers=self.num_workers,
-            drop_last=False,
-        )
+        if self.track_continual:
+            return torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=self.batch_size,
+                sampler=BalancedClipSampler(self.dataset, int(self.config.num_gpus)),
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                self.dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                pin_memory=self.pin_memory,
+                prefetch_factor=self.prefetch_factor,
+                persistent_workers=self.persistent_workers,
+                num_workers=self.num_workers,
+                drop_last=False,
+            )
 
     def test_dataloader(self):
         raise NotImplementedError
