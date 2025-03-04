@@ -21,7 +21,7 @@ rt_pos_query:
 model:
   sim_between: 'random'
   box_penalty: True
-  compare_box_weight: 0.3
+  compare_box_weight: 1
   compare_only_pred_top: False
   compare_clip_penalty : ${dataset.compare_clip_penalty}
-  compare_box_exception: True
+  compare_box_exception: False
