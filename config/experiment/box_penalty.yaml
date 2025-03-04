@@ -1,0 +1,27 @@
+# @package _global_
+
+# usage: python train.py +experiment=box_penalty
+
+# trainer:
+#   max_epochs: 53
+
+dataset:
+  box_penalty: True
+  compare_clip_penalty: True
+  reverse_clip_penalty: False
+compare_box_start_epoch: 0
+
+rt_pos_query:
+  rt_pos_query_dir: 'outputs/rt_pos_queries/${dataset.name}/train'
+  late_epoch_rt_pos: 0
+  mode: 'easy'
+  enable_rt_pq_threshold: True
+  sim_thr: 0.0
+
+model:
+  sim_between: 'random'
+  box_penalty: True
+  compare_box_weight: 1
+  compare_only_pred_top: False
+  compare_clip_penalty : ${dataset.compare_clip_penalty}
+  compare_box_exception: False

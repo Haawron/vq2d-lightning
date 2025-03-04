@@ -8,6 +8,8 @@ dataset:
   aug_based_time: False
   aug_time: 3
   frame_neighbor: False
+  frame_shift: False
+  gt_consider: False
 
 late_epoch_box_aug: 0
 box_aug_difficulty: False

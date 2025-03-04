@@ -46,4 +46,15 @@ scripts/train-multinode_ugrad.sbatch
 notebooks/qualitative_result.ipynb
 notebooks/pca2 copy.ipynb
 notebooks/ours_visualize.ipynb
+download_trackingnet.py
+object_extraction.py
+ours_stats.py
+ltvu/__metrics.py
+ltvu/_metrics.py
+ltvu/utils/_compute_results.py
+notebooks/got-10k.ipynb
+notebooks/ours_stats.ipynb
+scripts/eeval-multinode.sh
+scripts/tmp.sh
+scripts/tmptmp.sh
 scripts/eval_trek150.sbatch

@@ -208,6 +208,7 @@ def get_losses_with_anchor(
     weight_bbox_hw = 1.,
     weight_bbox_giou = .3,
     weight_prob = 100.,
+    only_pred_top = False,
 ):
     if use_hnm:
         gts = replicate_sample_for_hnm(gts)
@@ -219,6 +220,15 @@ def get_losses_with_anchor(
     anchor = preds['anchor']        # [1,1,N,4]
     b,t,N = pred_prob.shape
     device = pred_prob.device
+    
+    if only_pred_top:
+        # get top prediction
+        pred_prob, top_idx = torch.max(pred_prob, dim=-1)                                                   # [b,t], [b,t]
+        pred_bbox = torch.gather(pred_bbox, dim=2, index=repeat(top_idx, 'b t -> b t n c', n=1, c=4))       # [b,t,1,4]
+        pred_prob = pred_prob.unsqueeze(-1)                                                                 # [b,t,1]
+        pred_center = torch.gather(pred_center, dim=2, index=repeat(top_idx, 'b t -> b t n c', n=1, c=2))   # [b,t,1,2]
+        pred_hw = torch.gather(pred_hw, dim=2, index=repeat(top_idx, 'b t -> b t n c', n=1, c=2))           # [b,t,1,2]
+        N=1  
 
     if 'center' not in gts.keys():
         gts['center'] = (gts['clip_bbox'][...,:2] + gts['clip_bbox'][...,2:]) / 2.0
