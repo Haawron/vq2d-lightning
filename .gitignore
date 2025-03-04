@@ -46,3 +46,4 @@ scripts/train-multinode_ugrad.sbatch
 notebooks/qualitative_result.ipynb
 notebooks/pca2 copy.ipynb
 notebooks/ours_visualize.ipynb
+scripts/eval_trek150.sbatch
