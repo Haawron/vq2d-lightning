@@ -121,8 +121,8 @@ class CheckpointLogger(Callback):
                 if callback.monitor == "Val/prob_acc":
                     best_ckpt_path_prob = callback.best_model_path
                     if trainer.is_global_zero and best_ckpt_path_prob:
-                        print(f"Best IOU ckpt   : {best_ckpt_path_prob}")
+                        print(f"Best Prob epoch : {best_ckpt_path_prob}")
                 elif callback.monitor == "Val/iou":
                     best_ckpt_path_iou = callback.best_model_path
                     if trainer.is_global_zero and best_ckpt_path_iou:
-                        print(f"Best Prob epoch : {best_ckpt_path_iou}")
+                        print(f"Best IOU ckpt   : {best_ckpt_path_iou}")
