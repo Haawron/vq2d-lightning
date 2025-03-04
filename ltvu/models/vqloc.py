@@ -813,6 +813,7 @@ class ClipMatcher(nn.Module):
         sim_thr = 0.0,
         enable_rt_pq_threshold=False,
         enable_compare_box_loss=False,
+        predict = False,
 
         get_intermediate_features = False,
 
@@ -927,6 +928,7 @@ class ClipMatcher(nn.Module):
                 with self.backbone_context():
                     query_feat_dict = self.extract_feature(origin_query if random.randint(0, 1) == 1 else query)
             else:
+                penalty_before_query_mask = before_query_mask
                 with self.backbone_context():
                     query_feat_dict = self.extract_feature(origin_query)
                     query_feat_penalty_dict = self.extract_feature(query)
@@ -1122,6 +1124,24 @@ class ClipMatcher(nn.Module):
         pred_dict, output_dict, query_feat, clip_feat_stx = inner_forward(query_feat_dict, clip_feat_dict, output_dict,    
                                                                           get_intermediate_features, use_hnm, 
                                                                           compute_loss, device, t, b)
+        
+        if predict:
+            gts = {
+                'before_query': before_query_mask,  # [b,t]
+                'clip_with_bbox': gt_probs,         # [b,t]
+                'clip_bbox': gt_bboxes,             # [b,t,4]
+            }
+            loss_dict, preds_top, gts, pos_mask, total_loss = self.compute_reg_losses(pred_dict, gts, training, use_hnm, device)
+            
+            info_dict = {
+                'loss_dict': loss_dict,     # losses starting with 'loss_', weights starting with 'weight_', iou, giou
+                'preds_top': preds_top,     # bbox: [b,t,4], prob: [b,t]
+                'gts': gts,                 # gts with hw, center computed
+            }
+
+            output_dict.update({'info_dict': info_dict})  # for debugging
+            return output_dict
+            
         
         if compute_loss:
             assert before_query_mask is not None

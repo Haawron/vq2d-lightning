@@ -190,7 +190,7 @@ class LitModule(L.LightningModule):
         device = batch['segment'].device
         frames = batch['segment'].shape[1]
         t_s = time.time()
-        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
 
         t_e = time.time()
         fps = frames * bsz / (t_e - t_s)

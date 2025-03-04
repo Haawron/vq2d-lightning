@@ -5,10 +5,11 @@ import hydra.utils
 from omegaconf import OmegaConf, DictConfig, open_dict
 
 import torch
+import os
 
 import lightning as L
 from lightning.pytorch.callbacks import (
-    LearningRateMonitor, ModelSummary, ModelCheckpoint, TQDMProgressBar,
+    LearningRateMonitor, ModelSummary, ModelCheckpoint, TQDMProgressBar, Callback
 )
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
@@ -62,14 +63,20 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
             filename='epoch={epoch}-iou={Val/iou:.4f}')
         ckpt_callback_prob = ModelCheckpoint(
             dirpath=runtime_outdir,
-            save_last=True,
+            save_last=False,
             monitor='Val/prob_acc',
             auto_insert_metric_name=False,
             mode='max',
             save_top_k=1,
             filename='epoch={epoch}-prob_acc={Val/prob_acc:.4f}')
+        ckpt_callback_last = ModelCheckpoint(
+            dirpath=runtime_outdir,
+            filename='last-{epoch}')
         callbacks.append(ckpt_callback_iou)
         callbacks.append(ckpt_callback_prob)
+        callbacks.append(ckpt_callback_last)
+        callbacks.append(CheckpointLogger())
+        callbacks.append(ChangeFilePermissionsCallback(runtime_outdir))
     else:
         ckpt_callback_prob = None
 
@@ -96,3 +103,26 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
         callbacks=callbacks,
     )
     return trainer, ckpt_callback_prob
+
+class ChangeFilePermissionsCallback(Callback):
+    def __init__(self, dirpath):
+        self.dirpath = dirpath
+
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        for filename in os.listdir(self.dirpath):
+            if filename.endswith('.ckpt'):
+                filepath = os.path.join(self.dirpath, filename)
+                os.chmod(filepath, 0o644)  # rw-r--r-- 권한 설정
+
+class CheckpointLogger(Callback):
+    def on_train_epoch_end(self, trainer, pl_module):
+        for callback in trainer.callbacks:
+            if isinstance(callback, ModelCheckpoint):
+                if callback.monitor == "Val/prob_acc":
+                    best_ckpt_path_prob = callback.best_model_path
+                    if trainer.is_global_zero and best_ckpt_path_prob:
+                        print(f"Best IOU ckpt   : {best_ckpt_path_prob}")
+                elif callback.monitor == "Val/iou":
+                    best_ckpt_path_iou = callback.best_model_path
+                    if trainer.is_global_zero and best_ckpt_path_iou:
+                        print(f"Best Prob epoch : {best_ckpt_path_iou}")
