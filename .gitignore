@@ -57,3 +57,4 @@ notebooks/ours_stats.ipynb
 scripts/eeval-multinode.sh
 scripts/tmp.sh
 scripts/tmptmp.sh
+scripts/eval_trek150.sbatch
