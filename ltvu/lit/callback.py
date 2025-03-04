@@ -25,6 +25,7 @@ class PerSegmentWriter(BasePredictionWriter):
         self.p_metrics = self.p_outdir / 'metrics.json'
         self.p_metrics_log = self.p_outdir / 'metrics.log'
         self.rank_seg_preds = []
+        self.fps = []
         self.test_submit = test_submit
         self.official_anns_dir = Path(official_anns_dir)
         self.movement = movement
@@ -55,6 +56,8 @@ class PerSegmentWriter(BasePredictionWriter):
 
     def write_on_batch_end(self, trainer, pl_module, prediction: list[dict], batch_indices, batch, batch_idx, dataloader_idx):
         for pred_output in prediction:
+            if 'fps' in list(pred_output.keys()):
+                self.fps.append(pred_output['fps'])
             qset_uuid = pred_output['qset_uuid']
             seg_idx = pred_output['seg_idx']
             num_segments = pred_output['num_segments']
@@ -63,12 +66,21 @@ class PerSegmentWriter(BasePredictionWriter):
         if batch_idx % 100 == 0:  # checkpointing
             self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
             torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
+            
+            if not len(self.fps) == 0:
+                p_fps = self.p_tmp_outdir / f'fps-{trainer.global_rank}.json'
+                json.dump(self.fps, p_fps.open('w'))
 
     def on_predict_epoch_end(self, trainer, pl_module):
         """Merge segmented features and write to json."""
 
         self.rank_seg_preds = sorted(self.rank_seg_preds, key=lambda x: x[:-1])
         torch.save(self.rank_seg_preds, self.p_tmp_outdir / f'rank-{trainer.global_rank}.pt')
+        
+        if not len(self.fps) == 0:
+            p_fps = self.p_tmp_outdir / f'fps-{trainer.global_rank}.json'
+            json.dump(self.fps, p_fps.open('w'))
+            
         if trainer.world_size > 1:
             trainer.strategy.barrier()
 
@@ -82,6 +94,15 @@ class PerSegmentWriter(BasePredictionWriter):
                     if qset_uuid not in all_seg_preds:
                         all_seg_preds[qset_uuid] = [None] * num_segments
                     all_seg_preds[qset_uuid][seg_idx] = pred_output
+        
+            if not len(self.fps) == 0:
+                all_fps = []                    
+                for p_fps_result in self.p_tmp_outdir.glob('*.json'):
+                    fps = json.loads(p_fps_result.read_text())
+                    all_fps.extend(fps)
+                print('##############################################')
+                print(f'Average FPS: {sum(all_fps)/len(all_fps)}')
+                print('##############################################')
 
             # merge features
             print('Merging features...')

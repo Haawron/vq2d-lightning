@@ -34,3 +34,15 @@ tem.py
 scripts/submit.sh
 data/egotracks/
 ours_visualize/
+config/base_sy.yaml
+config/eval_fast_sy.yaml
+config/eval_sy.yaml
+config/train_fast_sy.yaml
+config/train_sy.yaml
+config/debug/base_sy.yaml
+scripts/ttrain-multinode.sbatch
+notebooks/box_aug.ipynb
+scripts/train-multinode_ugrad.sbatch
+notebooks/qualitative_result.ipynb
+notebooks/pca2 copy.ipynb
+notebooks/ours_visualize.ipynb

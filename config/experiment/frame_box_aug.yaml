@@ -1,0 +1,13 @@
+# @package _global_
+
+# usage: python train.py +experiment=frame_aug
+
+dataset:
+  frame_box_aug: True
+  frame_random: False
+  aug_based_time: False
+  aug_time: 3
+  frame_neighbor: False
+
+late_epoch_box_aug: 0
+box_aug_difficulty: False

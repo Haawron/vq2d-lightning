@@ -10,6 +10,7 @@ from lightning.pytorch.loggers import WandbLogger
 
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 from PIL import Image, ImageDraw
 from pathlib import Path
 from transformers import get_linear_schedule_with_warmup
@@ -86,11 +87,16 @@ class LitModule(L.LightningModule):
         self.rt_pos_query = config.get('rt_pos_query')
         self.track_continual = config.dataset.get('track_continual')
         self.track_last = config.dataset.get('track_last')
+        self.frame_box_aug = config.dataset.get('frame_box_aug', False)
+        self.frame_dash_aug = config.dataset.get('frame_dash_aug', False)
+        self.frame_incremental = config.dataset.get('frame_incremental', False)
+        self.box_aug_difficulty = config.get('box_aug_difficulty', False)
+        self.late_epoch_box_aug = config.get('late_epoch_box_aug', 0)
 
     ############ major hooks ############
     
     def on_train_batch_start(self, batch, batch_idx):
-        if getattr(self.trainer.datamodule, "dataset", False) and hasattr(self.trainer.datamodule.dataset, "frame_incremental_level"):
+        if self.frame_incremental:
             global_step = self.trainer.global_step
             dataset = self.trainer.datamodule.dataset
             
@@ -101,13 +107,19 @@ class LitModule(L.LightningModule):
             elif global_step >= self.max_steps * 0.15:
                 dataset.frame_incremental_level = 1
                 
-            self.log("frame_incremental_level", dataset.frame_incremental_level, 
+            self.log("frame_aug_level", dataset.frame_incremental_level, 
                     on_step=True, prog_bar=True, rank_zero_only=True)
-        
-
             
-        # self.log("frame_incremental_level", self.dataset.frame_incremental_level, 
-        #          on_step=True, prog_bar=True, rank_zero_only=True)
+        if self.frame_box_aug:
+            dataset = self.trainer.datamodule.dataset
+            if self.current_epoch >= self.late_epoch_box_aug:
+                dataset.box_aug_mode = 'diff'
+            else:
+                if self.box_aug_difficulty:
+                    dataset.box_aug_mode = 'easy'
+                else:
+                    dataset.box_aug_mode = None
+        
 
     def training_step(self, batch, batch_idx):
         bsz = batch['segment'].shape[0]
@@ -138,7 +150,14 @@ class LitModule(L.LightningModule):
             max_epochs=self.trainer.max_epochs,
             **extra_args
         )
-
+        if self.frame_box_aug:
+            self.log("before_delta", torch.mean(batch['experiment']['frame_aug']['before_delta'].float()), 
+                     on_step=True, prog_bar=True, rank_zero_only=True)
+            self.log("after_delta", torch.mean(batch['experiment']['frame_aug']['after_delta'].float()), 
+                     on_step=True, prog_bar=True, rank_zero_only=True)
+            self.log("delta_difference", torch.mean(batch['experiment']['frame_aug']['difference'].float()), 
+                     on_step=True, prog_bar=True, rank_zero_only=True)
+            
         assert output_dict['loss'].requires_grad
         assert torch.isfinite(output_dict['loss']), f'Loss is {output_dict["loss"]}'
         log_dict = set_prefix_to_keys(output_dict['log_dict'], 'Train')
@@ -169,6 +188,8 @@ class LitModule(L.LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
         bsz = batch['segment'].shape[0]
         device = batch['segment'].device
+        frames = batch['segment'].shape[1]
+        t_s = time.time()
         
         if getattr(self.trainer.datamodule, "dataset", False) and getattr(self.trainer.datamodule.dataset, "track_continual", False):
             preds_top = self.continual_tracking(batch, batch_idx, batch['qset_uuid'][0], device)
@@ -177,6 +198,13 @@ class LitModule(L.LightningModule):
             # bbox: [b,t,4], in pixels wrt the original, yxyx, float
             # prob: [b,t], logits, float
             preds_top = output_dict['info_dict']['preds_top']
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False)
+
+        t_e = time.time()
+        fps = frames * bsz / (t_e - t_s)
+        # bbox: [b,t,4], in pixels wrt the original, yxyx, float
+        # prob: [b,t], logits, float
+        preds_top = output_dict['info_dict']['preds_top']
         pred_outputs = []
         for bidx in range(bsz):
             ow, oh = batch['original_width'][bidx], batch['original_height'][bidx]
@@ -186,7 +214,8 @@ class LitModule(L.LightningModule):
             bbox_xyxy -= torch.tensor([0, pad_size_float, 0, pad_size_float], device=device)
             bbox_xyxy *= ow  # unnormalize
             bbox_xyxy = bbox_xyxy.clamp(torch.tensor(0, device=device), torch.tensor([ow, oh, ow, oh], device=device))
-            pred_outputs.append({
+            
+            data = {
                 # crucial information for segment indexing
                 'qset_uuid': batch['qset_uuid'][bidx],
                 'seg_idx': batch['seg_idx'][bidx].item(),  # 0-based
@@ -199,8 +228,10 @@ class LitModule(L.LightningModule):
                 # for debugging, visualization or analysis
                 'clip_uid': batch['clip_uid'][bidx],
                 'frame_idxs': batch['frame_idxs'][bidx].cpu(),  # check missing or duplicated frames (last frame can be duplicated)
-            })
-            
+            }
+            if bidx == 0:
+                data['fps'] = fps
+            pred_outputs.append(data)
         return pred_outputs
     
     def continual_tracking(self, batch, batch_idx, qset_uuid, device):
