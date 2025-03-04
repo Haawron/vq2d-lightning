@@ -198,13 +198,12 @@ class LitModule(L.LightningModule):
             preds_top = self.continual_tracking(batch, batch_idx, batch['qset_uuid'][0], device)
         else:    
             output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
+            # bbox: [b,t,4], in pixels wrt the original, yxyx, float
+            # prob: [b,t], logits, float
             preds_top = output_dict['info_dict']['preds_top']
 
         t_e = time.time()
         fps = frames * bsz / (t_e - t_s)
-        # bbox: [b,t,4], in pixels wrt the original, yxyx, float
-        # prob: [b,t], logits, float
-        preds_top = output_dict['info_dict']['preds_top']
         pred_outputs = []
         for bidx in range(bsz):
             ow, oh = batch['original_width'][bidx], batch['original_height'][bidx]
@@ -258,8 +257,8 @@ class LitModule(L.LightningModule):
             segment_oris = torch.cat([segment_oris, segment_ori], dim=1) if segment_oris is not None else segment_ori
             bboxes = torch.cat([bboxes, segment_top['bbox']], dim=1) if bboxes is not None else segment_top['bbox']
             probs = torch.cat([probs, segment_top['prob']], dim=1) if probs is not None else segment_top['prob']
-            clips_cls = torch.cat([clips_cls, segment_output_dict['feat']['clip_cls']], dim=0) if clips_cls is not None else segment_output_dict['feat']['clip_cls']
-            query_cls = segment_output_dict['feat']['query_cls']
+            # clips_cls = torch.cat([clips_cls, segment_output_dict['feat']['clip_cls']], dim=0) if clips_cls is not None else segment_output_dict['feat']['clip_cls']
+            # query_cls = segment_output_dict['feat']['query_cls']
                 
             segment_scores = probs[0].cpu()
             top_idx = len(segment_oris[0])-1 if self.track_last else segment_scores.argmax()
