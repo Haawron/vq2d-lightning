@@ -11,3 +11,4 @@ rt_pos_query:
 
 model:
   sim_between: 'random'
+  p: 0.5

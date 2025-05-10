@@ -217,6 +217,7 @@ class ClipMatcher(nn.Module):
 
         # EPQ (HQQ)
         sim_between: str = 'query',
+        p: float = 0.5,
 
         # cls token score
         enable_cls_token_score = False,
@@ -332,6 +333,7 @@ class ClipMatcher(nn.Module):
 
         self.box_penalty = box_penalty
         self.sim_between = sim_between
+        self.p = p
         if self.box_penalty:
             assert self.sim_between == 'random', f'if box_penalty is enabled, sim_between must be random, got {self.sim_between}'
         self.compare_box_weight = compare_box_weight
@@ -841,12 +843,12 @@ class ClipMatcher(nn.Module):
         ############################################################################################################################################################
         origin_query = query
         if rt_pos and training:
-            if self.box_penalty or ((random.randint(0, 1) == 1 or self.debug) and self.sim_between == 'random'):
+            if self.box_penalty or ((random.random() < self.p or self.debug) and self.sim_between == 'random'):
                 valid_indices = rt_pos_idx != -1
                 random_idx = torch.multinomial(valid_indices.float(), num_samples=1).squeeze(1)
                 query = rt_pos_queries[torch.arange(b), random_idx]
             
-            if (random.randint(0, 1) == 1 or self.debug) and self.sim_between != 'random':
+            if (random.random() < self.p or self.debug) and self.sim_between != 'random':
                 rt_pos_queries = rearrange(rt_pos_queries, 'b t c h w -> (b t) c h w') # [b*t,c,h,w]
                 with self.backbone_context():
                     query_feat_dict = self.extract_feature(query)
@@ -926,7 +928,7 @@ class ClipMatcher(nn.Module):
                         clip_feat_dict[k] = v.view(orig_shape)
                         
                 with self.backbone_context():
-                    query_feat_dict = self.extract_feature(origin_query if random.randint(0, 1) == 1 else query)
+                    query_feat_dict = self.extract_feature(query if random.random() < self.p else origin_query)
             else:
                 penalty_before_query_mask = before_query_mask
                 with self.backbone_context():
