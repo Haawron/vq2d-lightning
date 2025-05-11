@@ -17,6 +17,58 @@ source ./scripts/_setup.sh
 
 
 ########################################################################################
+# 실험 가이드라인
+########################################################################################
+# Baseline 설정
+# python train.py --config-name train_fast_jh \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     model.late_reduce=true \
+#     +model.enable_temporal_shift_conv_summary=true \
+
+# VQAug On
+# +experiment=\[thr_rt_pos_query\] \
+
+
+# EMAug On
+# +experiment=\[frame_box_aug\] \
+
+
+# LC loss On (EMAug와 함께 사용)
+# +experiment=\[box_penalty\] \
+
+
+# TAG On    (cls_token_score : High-level attention Guidence, pca_guide : Mid-level)
+# +experiment=\[cls_token_score,pca_guide\] \
+# 주의 High-level 에는 cls_repair_neighbor 가 True, cls_scaling_type 이 sigmoid_mean 이다.
+
+
+# CORE Loss On (서플 내용이므로 항상 On)
+# +model.weight_entropy=0.1 \
+
+
+# ETC
+# +model.ignore_border=false \ 추가 하지 않아도 됨 - CORE Loss 관련 설정이고 기본이 false
+
+# model.cls_scaling_type='sigmoid_mean' \
+# model.cls_repair_neighbor=true \ 
+# 위 두개는 High-level에 포함시켰기 때문에 
+
+########################################################################################
+# 실험 가이드라인
+########################################################################################
+
+
+########################################################################################
+# # ICCV_OURS
+python train.py --config-name train_fast_jh \
+    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+    model.late_reduce=true \
+    +model.enable_temporal_shift_conv_summary=true \
+    +model.weight_entropy=0.1 \
+    +experiment=\[thr_rt_pos_query,frame_box_aug,box_penalty,cls_token_score,pca_guide\] \
+
+
+########################################################################################
 
 # python train.py --config-name train_fast \
 #     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
@@ -84,22 +136,22 @@ source ./scripts/_setup.sh
 #     batch_size=5 \
 
 
-# OURS CLIP-vitl14
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
-    model.late_reduce=true \
-    +model.weight_entropy=0.1 \
-    +model.ignore_border=false \
-    model.cls_scaling_type='sigmoid_mean' \
-    +model.cls_repair_neighbor=true \
-    +model.enable_temporal_shift_conv_summary=true \
-    model.backbone_name='clip-hf' \
-    model.backbone_type='vitl14' \
-    dataset.segment_size=\[336,336\] \
-    dataset.query_size=\[336,336\] \
-    model.resolution_transformer=24 \
-    model.num_anchor_regions=24
+# # OURS CLIP-vitl14
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     +experiment=\[thr_rt_pos_query,cls_token_score,pca_guide\] \
+#     model.late_reduce=true \
+#     +model.weight_entropy=0.1 \
+#     +model.ignore_border=false \
+#     model.cls_scaling_type='sigmoid_mean' \
+#     +model.cls_repair_neighbor=true \
+#     +model.enable_temporal_shift_conv_summary=true \
+#     model.backbone_name='clip-hf' \
+#     model.backbone_type='vitl14' \
+#     dataset.segment_size=\[336,336\] \
+#     dataset.query_size=\[336,336\] \
+#     model.resolution_transformer=24 \
+#     model.num_anchor_regions=24
 
 ########################################################################################
 
@@ -141,16 +193,16 @@ python train.py --config-name train_fast \
 #     model.num_anchor_regions=28 \
 #     batch_size=3 \
 
-# Baseline CLIP-vitl14
-python train.py --config-name train_fast \
-    +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
-    model.late_reduce=true \
-    model.backbone_name='clip-hf' \
-    model.backbone_type='vitl14' \
-    dataset.segment_size=\[336,336\] \
-    dataset.query_size=\[336,336\] \
-    model.resolution_transformer=24 \
-    model.num_anchor_regions=24 \
+# # Baseline CLIP-vitl14
+# python train.py --config-name train_fast \
+#     +model_adjust=\[no_sttx,no_bottleneck,conv_summary\] \
+#     model.late_reduce=true \
+#     model.backbone_name='clip-hf' \
+#     model.backbone_type='vitl14' \
+#     dataset.segment_size=\[336,336\] \
+#     dataset.query_size=\[336,336\] \
+#     model.resolution_transformer=24 \
+#     model.num_anchor_regions=24 \
 
 ########################################################################################
 

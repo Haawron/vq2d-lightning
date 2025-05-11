@@ -19,7 +19,7 @@ einops
 timm
 av
 opencv-python
+geomloss
 fire
 pims
 pot
-geomloss

@@ -222,9 +222,9 @@ class ClipMatcher(nn.Module):
         # cls token score
         enable_cls_token_score = False,
         cls_norm = False,
-        cls_repair_neighbor = False,
+        cls_repair_neighbor: bool = True, # Default setting changed to True
         cls_scaling = 1,
-        cls_scaling_type = 'softmax',
+        cls_scaling_type: str = 'sigmoid_mean', # Default setting changed from softmax to sigmoid_mean
         cls_learnable_scaling = False,
 
         # PCA Guide
