@@ -23,3 +23,4 @@ geomloss
 fire
 pims
 pot
+tqdm

@@ -16,9 +16,13 @@ __pycache__/
 /.env
 not_extracted*
 *.gz
+.vscode/
+
+
+
+# 아래는 무조건 제거할 것임
 notebooks/diffusion/
 notebooks/dino_repair/
-.vscode/
 config/base_jh.yaml
 scripts/ttrain.sbatch
 scripts/__setup.sh
@@ -52,9 +56,11 @@ ours_stats.py
 ltvu/__metrics.py
 ltvu/_metrics.py
 ltvu/utils/_compute_results.py
-notebooks/got-10k.ipynb
 notebooks/ours_stats.ipynb
+notebooks/got-10k.ipynb
 scripts/eeval-multinode.sh
 scripts/tmp.sh
 scripts/tmptmp.sh
 scripts/eval_trek150.sbatch
+checkpoint/
+check.ipynb

@@ -14,7 +14,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 
-from ltvu.lit.callback import PerSegmentWriter, PerSegmentWriterEgoTracks, PerSegmentWriterLaSOT, PerSegmentWriterTrek150
+from ltvu.lit.callback import PerSegmentWriter
 
 
 type_loggers = WandbLogger | CSVLogger
@@ -38,20 +38,6 @@ def get_trainer(config, jid, enable_progress_bar=False, enable_checkpointing=Tru
             official_anns_dir=config.dataset.official_anns_dir,
             test_submit=config.dataset.get('test_submit', False),
             movement=movement))
-    elif task == 'egotracks':
-        callbacks.append(PerSegmentWriterEgoTracks(
-            output_dir=runtime_outdir / 'egotracks',
-            official_anns_dir=config.dataset.official_anns_dir,
-            test_submit=config.dataset.get('test_submit', False)))
-    elif task == 'lasot':
-        callbacks.append(PerSegmentWriterLaSOT(
-            output_dir=runtime_outdir / 'lasot',
-            official_anns_dir=config.dataset.official_anns_dir))
-    elif task == 'trek150':
-        callbacks.append(PerSegmentWriterTrek150(
-            output_dir=runtime_outdir / 'trek150',
-            official_anns_dir=config.dataset.official_anns_dir,
-            config=config))
 
     if enable_checkpointing:
         ckpt_callback_iou = ModelCheckpoint(
@@ -113,7 +99,7 @@ class ChangeFilePermissionsCallback(Callback):
         for filename in os.listdir(self.dirpath):
             if filename.endswith('.ckpt'):
                 filepath = os.path.join(self.dirpath, filename)
-                os.chmod(filepath, 0o644)  # rw-r--r-- 권한 설정
+                os.chmod(filepath, 0o644)  # Setting file permissions to rw-r--r--
 
 class CheckpointLogger(Callback):
     def on_train_epoch_end(self, trainer, pl_module):

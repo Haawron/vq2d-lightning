@@ -19,4 +19,4 @@ hostname
 # python -Bm ltvu.preprocess --splits 'val' --short-side 520 --whole
 
 # 320ss
-python -Bm ltvu.preprocess --splits 'val' --short-side 320 --whole
+python -Bm ltvu.preprocess --splits 'val' --short-side 320 --whole --raw_clips_dir '/data/datasets/ego4d_data/v2/clips' --ego4d_dir '/data/datasets/ego4d_data/v2'

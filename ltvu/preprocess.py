@@ -102,110 +102,6 @@ def generate_flat_annotations_vq2d(p_official_ann: Path):
     return flat_anns
 
 
-def generate_flat_annotations_egotracks(p_official_ann: Path):
-    """
-    Usage
-    -----
-    
-    Basic usage:
-    
-        from pathlib import Path
-        from ltvu.preprocess import generate_flat_annotations_egotracks
-        p_official_ann = Path('data/egotracks/egotracks_val_anno.json')
-        flat_anns = generate_flat_annotations_egotracks(p_official_ann)
-    """
-
-    REPORTED_INVALID_CLIP_UIDS = {
-        # egotracks
-        # https://discuss.ego4d-data.org/t/egotracks-dataset-download-failure/218/28?page=2
-        '59daca91-5433-48a4-92fc-422b406b551f',
-        'db211359-c259-4515-9d6c-be521711b6d0',
-        '87b52dc5-3ac3-47e7-9648-1b719049732f',
-        'b7fc5f98-e5d5-405d-8561-68cbefa75106'
-    }
-
-    def polish_bbox_dict(bbox: dict):
-        key_map = {
-            'frame_number': 'fno',
-            'x': 'x', 'y': 'y', 'width': 'w', 'height': 'h',
-            'original_width': None, 'original_height': None}
-        bbox = {kk: v for k, v in bbox.items() if (kk:=key_map.get(k)) is not None}
-        bbox = {k: round(v, 2) if isinstance(v, float) else v for k, v in bbox.items()}
-        return bbox
-
-    p_official_ann = Path(p_official_ann)
-    all_anns = json.load(p_official_ann.open())
-    is_annotated = 'unannotated' not in p_official_ann.stem
-    flat_anns = []
-    count_invalids = 0
-    for ann_video in all_anns['videos']:
-        video_uid = ann_video['video_uid']
-        if len(ann_video['clips']) == 0:
-            flat_anns.append({'video_uid': video_uid})
-            continue
-        for ann_clip in ann_video['clips']:
-            clip_uid = ann_clip['clip_uid']
-            if clip_uid is None or clip_uid in REPORTED_INVALID_CLIP_UIDS:
-                continue
-            clip_duration = ann_clip['video_end_sec'] - ann_clip['video_start_sec']
-            clip_fps = ann_clip['clip_fps']
-            for ann_annots in ann_clip['annotations']:
-                for qset_id, qset in ann_annots['query_sets'].items():
-                    if 'is_valid' in qset and not qset['is_valid']:
-                        count_invalids += 1
-                        continue
-
-                    oh, ow = qset['visual_crop']['original_height'], qset['visual_crop']['original_width']
-                    sample = {
-                        'video_uid': video_uid,
-                        'clip_uid': clip_uid,
-                        'query_set': qset_id,
-                        'clip_fps': clip_fps,
-                        'clip_duration': clip_duration,
-                        'original_width': ow,
-                        'original_height': oh,
-                        'query_frame': qset.get('query_frame', 1000000),
-                        'object_title': qset['object_title'],
-                        'visual_crop': polish_bbox_dict(qset['visual_crop']),
-                    }
-
-                    if sample['query_frame'] == 1000000:  # egotracks test
-                        del sample['query_frame']
-
-                    sample['uuid_ltt'] = f'{clip_uid}_{qset_id}_{qset["object_title"]}'
-
-                    if is_annotated:  # at most 2 samples will be added
-                        rt = [polish_bbox_dict(bbox) for bbox in qset['response_track']]
-                        flat_anns.append({
-                            **sample,
-                            'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
-                            'response_track': rt,
-                        })
-
-                        if 'lt_track' in qset:
-                            ltt = sorted(
-                                [polish_bbox_dict(bbox) for bbox in qset['lt_track']],
-                                key=lambda x: x['fno'])
-                            if 'visual_clip' in qset:
-                                vcl = sorted(
-                                    [polish_bbox_dict(bbox) for bbox in qset['visual_clip']],
-                                    key=lambda x: x['fno'])
-                                assert len(vcl) == vcl[-1]['fno'] - vcl[0]['fno'] + 1
-                            else:
-                                vcl = []
-
-                            flat_anns.append({
-                                **sample,
-                                'response_track_valid_range': [rt[0]['fno'], rt[-1]['fno']],
-                                'response_track': rt,
-                                'lt_track': ltt,
-                                'visual_clip': vcl,
-                            })
-                    else:
-                        flat_anns.append(sample)
-    return flat_anns
-
-
 class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -226,11 +122,6 @@ class FrameExtractAndSaveAsTarfileDataset(torch.utils.data.Dataset):
                 split = 'test_unannotated'
             p_official_ann = p_ego4d_dir / 'annotations' / f'vq_{split}.json'
             all_anns = generate_flat_annotations_vq2d(p_official_ann)
-        elif task == 'egotracks':
-            if split == 'test':
-                split = 'challenge_test_unannotated'
-            p_official_ann = p_ego4d_dir / 'egotracks' / f'egotracks_{split}.json'
-            all_anns = generate_flat_annotations_egotracks(p_official_ann)
 
         clip2anns = defaultdict(list)
         for ann in all_anns:
@@ -367,6 +258,8 @@ def main(
     whole = False, world_size = 1, rank = 0,
     only_gather: bool = False,
     clip_uids: list[str] = [],
+    raw_clips_dir: str = '/data/datasets/ego4d_data/v2/clips',
+    ego4d_dir: str = '/data/datasets/ego4d_data/v2',
 ):
     """
     Usage
@@ -386,22 +279,18 @@ def main(
 
         python -m ltvu.preprocess --split val --whole
 
-    Run preprocessing for egotracks train:
-    
-        python -m ltvu.preprocess --task egotracks --split train --whole
-
     Run only gathering tarfiles:
 
-        python -m ltvu.preprocess --task egotracks --split train --whole --only_gather
+        python -m ltvu.preprocess --task vq2d --split train --whole --only_gather
 
     Run preprocessing for few clips and whole clip:
 
-        python -Bm ltvu.preprocess --task egotracks --whole --clip_uids '["17b73c0a-afda-4944-b2ed-450c9ef97849", "622c1b29-76c6-4845-95df-7e54792687d4", "d1419b9b-2944-421b-ba6f-0ddac32d5521", "ae8727ba-fe6f-4411-b277-48a8b7326a2a", "74130fd9-3e7b-482a-9627-0f53ac672f57", "59daca91-5433-48a4-92fc-422b406b551f", "72f95d60-cf26-4821-8d79-4ec72c748031", "87b52dc5-3ac3-47e7-9648-1b719049732f", "b7fc5f98-e5d5-405d-8561-68cbefa75106", "db211359-c259-4515-9d6c-be521711b6d0", "78a01e40-6ab7-4c4f-b596-b8908eff923"]'
+        python -Bm ltvu.preprocess --task vq2d --whole --clip_uids '["17b73c0a-afda-4944-b2ed-450c9ef97849", "622c1b29-76c6-4845-95df-7e54792687d4", "d1419b9b-2944-421b-ba6f-0ddac32d5521", "ae8727ba-fe6f-4411-b277-48a8b7326a2a", "74130fd9-3e7b-482a-9627-0f53ac672f57", "59daca91-5433-48a4-92fc-422b406b551f", "72f95d60-cf26-4821-8d79-4ec72c748031", "87b52dc5-3ac3-47e7-9648-1b719049732f", "b7fc5f98-e5d5-405d-8561-68cbefa75106", "db211359-c259-4515-9d6c-be521711b6d0", "78a01e40-6ab7-4c4f-b596-b8908eff923"]'
     """
 
     assert split in ('train', 'val', 'test_unannotated', 'challenge_test_unannotated')
 
-    print(f'Preprocessing {"VQ2D" if task == 'vq2d' else 'EgoTracks' if task == 'egotracks' else '???'} frames with short_side={short_side}, split={split}')
+    print(f'Preprocessing {"VQ2D" if task == 'vq2d' else '???'} frames with short_side={short_side}, split={split}')
     p_tarfiles_dir = Path(f'./outputs/frames')
     p_tarfiles_tmpdir = p_tarfiles_dir / f'tmp/{rank}/'
 
@@ -438,7 +327,8 @@ def main(
                     p_tarfile.unlink()
         else:
             p_tarfiles_tmpdir.mkdir(exist_ok=True, parents=True)
-        ds = ds_class(short_side=short_side, task=task, split=split, p_tarfiles_dir=p_tarfiles_tmpdir, clip_uids=clip_uids)
+        ds = ds_class(short_side=short_side, task=task, split=split, p_tarfiles_dir=p_tarfiles_tmpdir, clip_uids=clip_uids,
+                      p_raw_clips_dir=Path(raw_clips_dir), p_ego4d_dir=Path(ego4d_dir))
 
         length = len(ds)
         sampler = torch.utils.data.distributed.DistributedSampler(

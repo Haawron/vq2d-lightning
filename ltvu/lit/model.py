@@ -74,7 +74,7 @@ class LitModule(L.LightningModule):
         if isinstance(config, dict):  # eval.py, config from a checkpoint, for backward compatibility
             config = OmegaConf.create(config)
         self.config = config
-        self.model: VQLoC = hydra.utils.instantiate(
+        self.model: HERO = hydra.utils.instantiate(
             config.model, compile_backbone=config.get('compile', True))
         self.fix_backbone = config.model.fix_backbone
 
@@ -85,8 +85,6 @@ class LitModule(L.LightningModule):
         self.max_steps = self.config.trainer.max_steps
 
         self.rt_pos_query = config.get('rt_pos_query')
-        self.track_continual = config.dataset.get('track_continual')
-        self.track_last = config.dataset.get('track_last')
         self.frame_box_aug = config.dataset.get('frame_box_aug', False)
         self.frame_dash_aug = config.dataset.get('frame_dash_aug', False)
         self.frame_incremental = config.dataset.get('frame_incremental', False)
@@ -194,13 +192,11 @@ class LitModule(L.LightningModule):
         frames = batch['segment'].shape[1]
         t_s = time.time()
         
-        if getattr(self.trainer.datamodule, "dataset", False) and getattr(self.trainer.datamodule.dataset, "track_continual", False):
-            preds_top = self.continual_tracking(batch, batch_idx, batch['qset_uuid'][0], device)
-        else:    
-            output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
-            # bbox: [b,t,4], in pixels wrt the original, yxyx, float
-            # prob: [b,t], logits, float
-            preds_top = output_dict['info_dict']['preds_top']
+  
+        output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True)
+        # bbox: [b,t,4], in pixels wrt the original, yxyx, float
+        # prob: [b,t], logits, float
+        preds_top = output_dict['info_dict']['preds_top']
 
         t_e = time.time()
         fps = frames * bsz / (t_e - t_s)
@@ -232,49 +228,6 @@ class LitModule(L.LightningModule):
                 data['fps'] = fps
             pred_outputs.append(data)
         return pred_outputs
-    
-    def continual_tracking(self, batch, batch_idx, qset_uuid, device):
-        dm = self.trainer.datamodule
-        segment_loader = dm.get_segment_item(qset_uuid)
-        max_len = len(segment_loader)
-            
-        pred_query = None
-        segment_oris, bboxes, probs, clips_cls = None, None, None, None
-        query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{0}.png'
-        query_save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_image(segment_loader[0]['query'][0], query_save_path)
-        for i, seg_batch in enumerate(segment_loader):
-            
-            segment_ori = seg_batch['segment']
-            if pred_query is not None:
-                seg_batch['query'] = pred_query
-            seg_batch = dm.on_after_batch_transfer(seg_batch, dataloader_idx=0)
-            seg_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in seg_batch.items()}
-            
-            segment_output_dict = self.model.forward(**batch, compute_loss=True, training=False, predict=True, get_intermediate_features=True)
-            segment_top = segment_output_dict['info_dict']['preds_top']
-            
-            segment_oris = torch.cat([segment_oris, segment_ori], dim=1) if segment_oris is not None else segment_ori
-            bboxes = torch.cat([bboxes, segment_top['bbox']], dim=1) if bboxes is not None else segment_top['bbox']
-            probs = torch.cat([probs, segment_top['prob']], dim=1) if probs is not None else segment_top['prob']
-            # clips_cls = torch.cat([clips_cls, segment_output_dict['feat']['clip_cls']], dim=0) if clips_cls is not None else segment_output_dict['feat']['clip_cls']
-            # query_cls = segment_output_dict['feat']['query_cls']
-                
-            segment_scores = probs[0].cpu()
-            top_idx = len(segment_oris[0])-1 if self.track_last else segment_scores.argmax()
-            # cls_sim = torch.nn.functional.cosine_similarity(clips_cls, query_cls, dim=-1).cpu() # [t]
-            # top_idx = cls_sim.argmax()
-            
-            pred_query = dm.dataset.instance_get_query(qset_uuid, bboxes[0].cpu().numpy(), top_idx).unsqueeze(0).to(device)
-            query_save_path = Path(self.trainer.default_root_dir) / 'query' / qset_uuid / f'{qset_uuid}_{top_idx}.png'
-            save_image(pred_query[0], query_save_path)
-            
-        segment_tops = {
-            'bbox': bboxes,
-            'prob': probs,
-        }
-        
-        return segment_tops
 
     def configure_optimizers(self):
         optim_config = self.config.optim

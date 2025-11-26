@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=lasot-resize
+#SBATCH --job-name=vq2d-resize
 #SBATCH --output=logs/slurm/%j--%x.log
 #SBATCH --error=logs/slurm/%j--%x.err
 #SBATCH --time=4-0

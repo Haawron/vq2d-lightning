@@ -176,7 +176,7 @@ class InferenceContext:
         torch.set_float32_matmul_precision(self.prec_prev)
 
 
-class ClipMatcher(nn.Module):
+class HERO(nn.Module):
     def __init__(self,
         compile_backbone = True,
         backbone_precision = 'bf16',
@@ -712,7 +712,7 @@ class ClipMatcher(nn.Module):
         }
 
 
-    def get_vqloc_sttx_mask(self, src, t):
+    def get_hero_sttx_mask(self, src, t):
         if not torch.is_tensor(self.temporal_mask):
             device = src.device
             hw = src.shape[1] // t
@@ -874,7 +874,6 @@ class ClipMatcher(nn.Module):
                     sim = F.cosine_similarity(rt_pos_queries_cls, query_cls, dim=-1) # [b,t]
 
                 sim_mask = (sim > sim_thr) & valid_gt_mask # [b,t]
-                sim_mask_num = sim_mask.sum() / b
                 batch_has_valid = sim_mask.any(dim=-1) # [b]
 
                 rand_indices_per_batch = torch.zeros(b, dtype=torch.long, device=sim.device)  # [b]
@@ -1078,7 +1077,7 @@ class ClipMatcher(nn.Module):
             if len(self.feat_corr_transformer) > 0:
                 clip_feat = rearrange(clip_feat, '(b t) c h w -> b (t h w) c', b=b) + self.pe_3d
                 if self.apply_sttx_mask:
-                    mask = self.get_vqloc_sttx_mask(clip_feat, t)
+                    mask = self.get_hero_sttx_mask(clip_feat, t)
                     sttx_src_mask = mask
                 for sttx_layer in self.feat_corr_transformer:
                     sttx_layer: nn.TransformerEncoderLayer  # written for pylance
@@ -1383,8 +1382,6 @@ class ClipMatcher(nn.Module):
             if self.enable_pca_guide:
                 log_dict.update({'score_maps_mean': self.score_maps_mean})
                 log_dict.update({'score_maps_std': self.score_maps_std})
-            # if locals().get('sim_mask_num') is not None and enable_rt_pq_threshold:
-            #     log_dict.update({'sim_mask_num': locals().get('sim_mask_num').item()})
 
             # not for logging but just in case we need it
             info_dict = {
@@ -1502,7 +1499,7 @@ if __name__ == '__main__':
 
     @hydra.main(config_path='../../config', config_name='base', version_base='1.3')
     def main(config: DictConfig):
-        model = ClipMatcher(config).cuda()
+        model = HERO(config).cuda()
         print('Model with {} parameters'.format(sum(p.numel() for p in model.parameters())))
         print(config.model.cpt_path)
         checkpoint = torch.load(config.model.cpt_path, map_location='cpu', weights_only=True)

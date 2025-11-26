@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - augment: base
-  - model: vqloc
+  - model: hero
   - dataset: vq2d
   - override hydra/job_logging: none
   - override hydra/hydra_logging: none
@@ -26,8 +26,8 @@ YY: ${now:%Y}
 mm: ${now:%m}  # month
 dd: ${now:%d}  # day
 runtime_outdir: ${runtime_outdir:}
-num_gpus: ${oc.env:SLURM_GPUS_ON_NODE}
-total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE} * ${oc.env:SLURM_JOB_NUM_NODES,1}'}
+num_gpus: ${oc.env:SLURM_GPUS_ON_NODE,1}
+total_bsz: ${eval:'${dataset.batch_size} * ${oc.env:SLURM_GPUS_ON_NODE,1} * ${oc.env:SLURM_JOB_NUM_NODES,1}'}
 max_steps: ${eval:'${trainer.max_epochs} * ${dataset.num_train_samples} // ${total_bsz} + 1'}
 
 

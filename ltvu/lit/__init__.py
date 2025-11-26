@@ -1,3 +1,3 @@
-from .data import LitVQ2DDataModule, LitEgoTracksDataModule, LitLaSOTDataModule, LitTrek150DataModule
+from .data import LitVQ2DDataModule
 from .model import LitModule
 from .trainer import get_trainer
